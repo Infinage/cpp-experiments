@@ -15,6 +15,9 @@ all: $(OUTPUTS)
 	$(CXX) $(CXXFLAGS) -o $@ $<
 	@echo "Executing $@.."
 	@./$@
+
+git-clone.out: git-clone.cpp
+	$(CXX) $(CXXFLAGS) -o $@ $< -I./include/
 	
 # Clean up the project
 clean:
