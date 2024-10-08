@@ -12,13 +12,12 @@ OUTPUTS = $(SOURCES:.cpp=.out)
 all: $(OUTPUTS)
 
 %.out: %.cpp
-	$(CXX) $(CXXFLAGS) -o $@ $<
+	$(CXX) $<  $(CXXFLAGS) -o $@ $(EXTRA-CONFIGS)
 	@echo "Executing $@.."
 	@./$@
 
-git-clone.out: git-clone.cpp
-	$(CXX) $(CXXFLAGS) -o $@ $< -I./include/
-	
+minesweeper.out: EXTRA-CONFIGS = -L/home/kael/cpplib/lib -I/home/kael/cpplib/include -lftxui-component -lftxui-dom  -lftxui-screen
+
 # Clean up the project
 clean:
 	rm -f $(OUTPUTS)
