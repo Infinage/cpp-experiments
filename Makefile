@@ -12,15 +12,15 @@ OUTPUTS = $(SOURCES:.cpp=.out)
 all: $(OUTPUTS)
 
 %.out: %.cpp
-	$(CXX) $<  $(CXXFLAGS) -o $@ $(EXTRA-CONFIGS)
+	$(CXX) $<  $(CXXFLAGS) -o "build/$@" $(EXTRA-CONFIGS)
 	@echo "Executing $@.."
-	@./$@
+	@./build/$@
 
 # We make use of FTXUI for minesweeper, include library
 minesweeper.out: EXTRA-CONFIGS = -L/home/kael/cpplib/lib -I/home/kael/cpplib/include -lftxui-component -lftxui-dom  -lftxui-screen
 
 # Clean up the project
 clean:
-	rm -f $(OUTPUTS)
+	rm -f build/*
 
 .PHONY: all run clean
