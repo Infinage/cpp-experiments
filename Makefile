@@ -16,6 +16,7 @@ all: $(OUTPUTS)
 	@echo "Executing $@.."
 	@./$@
 
+# We make use of FTXUI for minesweeper, include library
 minesweeper.out: EXTRA-CONFIGS = -L/home/kael/cpplib/lib -I/home/kael/cpplib/include -lftxui-component -lftxui-dom  -lftxui-screen
 
 # Clean up the project
