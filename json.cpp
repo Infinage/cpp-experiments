@@ -5,6 +5,7 @@
 #include <cctype>
 #include <cstddef>
 #include <iostream>
+#include <memory>
 #include <stdexcept>
 #include <string>
 #include <unordered_set>
@@ -18,8 +19,12 @@
 // Types of JSON objects
 enum NODE_TYPE: short {value, array, object};
 
+// Forward declaration
+class JSONNode;
+
 // Types of JSON Simple values
 using JSON_VALUE_TYPE = std::variant<std::string, std::nullptr_t, int, double, bool>;
+using JSONNode_Ptr = std::shared_ptr<JSONNode>;
 
 class JSONNode {
     private:
@@ -56,28 +61,28 @@ class JSONValueNode: public JSONNode {
 
 class JSONArrayNode: public JSONNode {
     private:
-        std::vector<JSONNode*> values;
+        std::vector<JSONNode_Ptr> values;
 
     public:
         JSONArrayNode(const JSON_VALUE_TYPE &k): JSONNode(k, NODE_TYPE::array) {};
-        JSONArrayNode(const JSON_VALUE_TYPE &k, std::vector<JSONNode*> &v): JSONNode(k, NODE_TYPE::array), values(v) {};
-        JSONArrayNode(std::vector<JSONNode*> &v): JSONNode("", NODE_TYPE::array), values(v) {};
+        JSONArrayNode(const JSON_VALUE_TYPE &k, std::vector<JSONNode_Ptr> &v): JSONNode(k, NODE_TYPE::array), values(v) {};
+        JSONArrayNode(std::vector<JSONNode_Ptr> &v): JSONNode("", NODE_TYPE::array), values(v) {};
 
         std::size_t size() {
             return values.size();
         }
 
-        void push(JSONNode *node) {
+        void push(JSONNode_Ptr node) {
             values.push_back(node);
         }
 
-        JSONNode *pop() {
-            JSONNode *result = values.back();
+        std::weak_ptr<JSONNode> pop() {
+            std::weak_ptr<JSONNode> result = values.back();
             values.pop_back();
             return result;
         }
 
-        const JSONNode *operator[] (std::size_t idx) {
+        JSONNode_Ptr &operator[] (std::size_t idx) {
             if (idx < values.size())
                 return values[idx];
             else
@@ -85,18 +90,18 @@ class JSONArrayNode: public JSONNode {
         }
 
         // Iterators
-        std::vector<JSONNode*>::iterator begin() { return values.begin(); }
-        std::vector<JSONNode*>::iterator end() { return values.end(); }
-        std::vector<JSONNode*>::const_iterator cbegin() const { return values.cbegin(); }
-        std::vector<JSONNode*>::const_iterator cend() const { return values.cend(); }
+        std::vector<JSONNode_Ptr>::iterator begin() { return values.begin(); }
+        std::vector<JSONNode_Ptr>::iterator end() { return values.end(); }
+        std::vector<JSONNode_Ptr>::const_iterator cbegin() const { return values.cbegin(); }
+        std::vector<JSONNode_Ptr>::const_iterator cend() const { return values.cend(); }
 };
 
 class JSONObjectNode: public JSONNode {
     private:
-        std::vector<JSONNode*> values;
-        bool checkDuplicates(std::vector<JSONNode*> &v) {
+        std::vector<JSONNode_Ptr> values;
+        bool checkDuplicates(std::vector<JSONNode_Ptr> &v) {
             std::unordered_set<JSON_VALUE_TYPE> st;
-            for (JSONNode *ele: v) {
+            for (JSONNode_Ptr &ele: v) {
                 if (st.find(ele->getKey()) != st.end())
                     return false;
                 else
@@ -108,13 +113,13 @@ class JSONObjectNode: public JSONNode {
     public:
         JSONObjectNode(const JSON_VALUE_TYPE &k): JSONNode(k, NODE_TYPE::object) {};
 
-        JSONObjectNode(std::vector<JSONNode*> &v): JSONNode("", NODE_TYPE::object) {
+        JSONObjectNode(std::vector<JSONNode_Ptr> &v): JSONNode("", NODE_TYPE::object) {
             if (!checkDuplicates(v))
                 throw std::invalid_argument("Duplicate key found");
             values = v;
         }
 
-        JSONObjectNode(const JSON_VALUE_TYPE &k, std::vector<JSONNode*> &v): JSONNode(k, NODE_TYPE::object) {
+        JSONObjectNode(const JSON_VALUE_TYPE &k, std::vector<JSONNode_Ptr> &v): JSONNode(k, NODE_TYPE::object) {
             if (!checkDuplicates(v))
                 throw std::invalid_argument("Duplicate key found");
             values = v;
@@ -124,7 +129,7 @@ class JSONObjectNode: public JSONNode {
             return values.size();
         }
 
-        void push(JSONNode *node) {
+        void push(JSONNode_Ptr node) {
             auto it = find(node->getKey());
             if (it == values.end())
                 values.push_back(node);
@@ -132,15 +137,15 @@ class JSONObjectNode: public JSONNode {
                 values[(std::size_t)(it - values.begin())] = node;
         }
 
-        std::vector<JSONNode*>::iterator find(JSON_VALUE_TYPE &k) {
-            for (std::vector<JSONNode*>::iterator it = values.begin(); it < values.end(); it++) {
+        std::vector<JSONNode_Ptr>::iterator find(JSON_VALUE_TYPE &k) {
+            for (std::vector<JSONNode_Ptr>::iterator it = values.begin(); it < values.end(); it++) {
                 if ((*it)->getKey() == k)
                     return it;
             }
             return values.end();
         }
 
-        const JSONNode *operator[] (JSON_VALUE_TYPE &k) {
+        JSONNode_Ptr operator[] (JSON_VALUE_TYPE &k) {
             auto it = find(k);
             if (it != values.end())
                 return *it;
@@ -149,10 +154,10 @@ class JSONObjectNode: public JSONNode {
         }
 
         // Iterators
-        std::vector<JSONNode*>::iterator begin() { return values.begin(); }
-        std::vector<JSONNode*>::iterator end() { return values.end(); }
-        std::vector<JSONNode*>::const_iterator cbegin() const { return values.cbegin(); }
-        std::vector<JSONNode*>::const_iterator cend() const { return values.cend(); }
+        std::vector<JSONNode_Ptr>::iterator begin() { return values.begin(); }
+        std::vector<JSONNode_Ptr>::iterator end() { return values.end(); }
+        std::vector<JSONNode_Ptr>::const_iterator cbegin() const { return values.cbegin(); }
+        std::vector<JSONNode_Ptr>::const_iterator cend() const { return values.cend(); }
 };
 
 
@@ -171,7 +176,11 @@ public:
         return {idx + 1, acc};
     }
 
-    static std::string dumps(JSONNode &root, bool ignoreKeys = true) {
+    static JSONNode_Ptr parse(std::string &raw) {
+        return nullptr;
+    }
+
+    static std::string dumps(JSONNode_Ptr root, bool ignoreKeys = true) {
 
         auto simple_format = [] (JSON_VALUE_TYPE &v) -> std::string {
             // string, nullptr_t, int, double, bool
@@ -187,27 +196,27 @@ public:
                 return std::get<bool>(v)? "true": "false";
         };
 
-        std::string keyStr = {ignoreKeys? "": simple_format(root.getKey()) + ": "};
+        std::string keyStr = {ignoreKeys? "": simple_format(root->getKey()) + ": "};
 
-        if (root.getType() == NODE_TYPE::value) {
-            JSONValueNode &v = static_cast<JSONValueNode&>(root);
+        if (root->getType() == NODE_TYPE::value) {
+            JSONValueNode &v = static_cast<JSONValueNode&>(*root);
             return keyStr + simple_format(v.getValue());
         }
 
-        else if (root.getType() == NODE_TYPE::array) {
+        else if (root->getType() == NODE_TYPE::array) {
             std::string result {keyStr + "["};
-            JSONArrayNode &v = static_cast<JSONArrayNode&>(root);
-            for (JSONNode *nxt: v)
-                result += dumps(*nxt, true) + ", ";
+            JSONArrayNode &v = static_cast<JSONArrayNode&>(*root);
+            for (JSONNode_Ptr nxt: v)
+                result += dumps(nxt, true) + ", ";
             result += v.size() > 0?"\b\b]": "]";
             return result;
         }
 
         else {
             std::string result {keyStr + "{"};
-            JSONObjectNode &v = static_cast<JSONObjectNode&>(root);
-            for (JSONNode *nxt: v)
-                result += dumps(*nxt, false) + ", ";
+            JSONObjectNode &v = static_cast<JSONObjectNode&>(*root);
+            for (JSONNode_Ptr nxt: v)
+                result += dumps(nxt, false) + ", ";
             result += v.size() > 0?"\b\b}": "}";
             return result;
         } 
@@ -216,36 +225,34 @@ public:
 
 int main() {
 
-    /* Sample JSON Document creation */
-
+    // Sample JSON Document creation //
     // Array
-    JSONValueNode one{1};
-    JSONValueNode two{2};
-    JSONValueNode three{3};
-    std::vector<JSONNode*> arrValues{&one, &two, &three};
-    JSONArrayNode arr_{"array", arrValues};
+    JSONNode_Ptr one     = std::make_shared<JSONValueNode>(1);
+    JSONNode_Ptr two     = std::make_shared<JSONValueNode>(2);
+    JSONNode_Ptr three   = std::make_shared<JSONValueNode>(3);
+    std::vector<JSONNode_Ptr> arrValues{one, two, three};
+    JSONNode_Ptr arr_    = std::make_shared<JSONArrayNode>("array", arrValues);
 
     // Simple Data types
-    JSONValueNode bool_{"boolean", true};
-    JSONValueNode null_{"null", nullptr};
-    JSONValueNode int_{"number", 123};
-    JSONValueNode float_{"float", 1.0};
-    JSONValueNode string_{"string", "Hello world"};
+    JSONNode_Ptr bool_   = std::make_shared<JSONValueNode>("boolean", true);
+    JSONNode_Ptr null_   = std::make_shared<JSONValueNode>("null", nullptr);
+    JSONNode_Ptr int_    = std::make_shared<JSONValueNode>("number", 123);
+    JSONNode_Ptr float_  = std::make_shared<JSONValueNode>("float", 1.0);
+    JSONNode_Ptr string_ = std::make_shared<JSONValueNode>("string", "Hello world");
 
     // Object
-    JSONValueNode a{"a", "b"};
-    JSONValueNode c{"c", "d"};
-    std::vector<JSONNode*> objValues{&a, &c};
-    JSONObjectNode obj_{"object", objValues};
+    JSONNode_Ptr a       = std::make_shared<JSONValueNode>("a", "b");
+    JSONNode_Ptr c       = std::make_shared<JSONValueNode>("c", "d");
+    JSONNode_Ptr empty   = std::make_shared<JSONValueNode>("", "empty");
+    std::vector<JSONNode_Ptr> objValues{a, c, empty};
+    JSONNode_Ptr obj_    = std::make_shared<JSONObjectNode>("object", objValues);
 
     // Create the root object
-    std::vector<JSONNode*> rootValues{&arr_, &bool_, &null_, &int_, &float_, &string_, &obj_};
-    JSONObjectNode root{rootValues};
+    std::vector<JSONNode_Ptr> rootValues{arr_, bool_, null_, int_, float_, string_, obj_};
+    JSONNode_Ptr root    = std::make_shared<JSONObjectNode>(rootValues);
 
     // Serialize & print the result
     std::cout << JSONParser::dumps(root) << "\n";
-
-    /* End of sample Document creation */
 
     return 0;
 }
