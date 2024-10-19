@@ -4,15 +4,12 @@
 
 #include <cctype>
 #include <cstddef>
-#include <exception>
 #include <iostream>
-#include <fstream>
-#include <stack>
 #include <stdexcept>
 #include <string>
+#include <unordered_set>
 #include <variant>
 #include <vector>
-#include <unordered_map>>
 
 /*
  * Data structure to store the nodes in a JSON Document
@@ -26,75 +23,136 @@ using JSON_VALUE_TYPE = std::variant<std::string, std::nullptr_t, int, double, b
 
 class JSONNode {
     private:
-        std::string key;
-        const NODE_TYPE type;
+        JSON_VALUE_TYPE key;
+        NODE_TYPE type;
 
     public:
-        JSONNode(const std::string &k, NODE_TYPE t):
+        JSONNode(const JSON_VALUE_TYPE &k, NODE_TYPE t):
             key(k), type(t) {};
 
         NODE_TYPE getType() {
             return type;
         }
 
-        std::string getKey() {
+        JSON_VALUE_TYPE &getKey() {
             return key;
         }
 };
 
-class JSONValueNode: JSONNode {
+class JSONValueNode: public JSONNode {
     private:
         JSON_VALUE_TYPE value;
 
     public:
-        JSONValueNode(const std::string &k, const JSON_VALUE_TYPE &v):
+        JSONValueNode(const JSON_VALUE_TYPE &v): JSONNode("", NODE_TYPE::value), value(v) {};
+
+        JSONValueNode(const JSON_VALUE_TYPE &k, const JSON_VALUE_TYPE &v):
             JSONNode(k, NODE_TYPE::value), value(v) {};
+
+        JSON_VALUE_TYPE &getValue() {
+            return value;
+        }
 };
 
-class JSONArrayNode: JSONNode {
+class JSONArrayNode: public JSONNode {
     private:
-        std::vector<JSONNode> values;
+        std::vector<JSONNode*> values;
 
     public:
-        JSONArrayNode(const std::string &k): JSONNode(k, NODE_TYPE::array) {};
+        JSONArrayNode(const JSON_VALUE_TYPE &k): JSONNode(k, NODE_TYPE::array) {};
+        JSONArrayNode(const JSON_VALUE_TYPE &k, std::vector<JSONNode*> &v): JSONNode(k, NODE_TYPE::array), values(v) {};
+        JSONArrayNode(std::vector<JSONNode*> &v): JSONNode("", NODE_TYPE::array), values(v) {};
 
-        void push(JSONNode node) {
+        std::size_t size() {
+            return values.size();
+        }
+
+        void push(JSONNode *node) {
             values.push_back(node);
         }
 
-        JSONNode pop() {
-            JSONNode result = values.back();
+        JSONNode *pop() {
+            JSONNode *result = values.back();
             values.pop_back();
             return result;
         }
 
-        const JSONNode &operator[] (std::size_t idx) {
+        const JSONNode *operator[] (std::size_t idx) {
             if (idx < values.size())
                 return values[idx];
+            else
+                throw std::invalid_argument("Out of bounds");
         }
+
+        // Iterators
+        std::vector<JSONNode*>::iterator begin() { return values.begin(); }
+        std::vector<JSONNode*>::iterator end() { return values.end(); }
+        std::vector<JSONNode*>::const_iterator cbegin() const { return values.cbegin(); }
+        std::vector<JSONNode*>::const_iterator cend() const { return values.cend(); }
 };
 
-class JSONObjectNode: JSONNode {
+class JSONObjectNode: public JSONNode {
     private:
-        std::vector<JSONNode> values;
+        std::vector<JSONNode*> values;
+        bool checkDuplicates(std::vector<JSONNode*> &v) {
+            std::unordered_set<JSON_VALUE_TYPE> st;
+            for (JSONNode *ele: v) {
+                if (st.find(ele->getKey()) != st.end())
+                    return false;
+                else
+                    st.insert(ele->getKey());
+            }
+            return true;
+        }
 
     public:
-        JSONObjectNode(const std::string &k): JSONNode(k, NODE_TYPE::object) {};
+        JSONObjectNode(const JSON_VALUE_TYPE &k): JSONNode(k, NODE_TYPE::object) {};
 
-        bool exists(std::string &k) {
-            for (JSONNode &node: values) {
-                if (node.getKey() == k)
-                    return true;
-            }
-            return false;
+        JSONObjectNode(std::vector<JSONNode*> &v): JSONNode("", NODE_TYPE::object) {
+            if (!checkDuplicates(v))
+                throw std::invalid_argument("Duplicate key found");
+            values = v;
         }
 
-        const JSONNode &operator[] (std::string &k) {
-            for (JSONNode &node: values) {
-                if (node.getKey() == k)
-                    return node;
-            }
+        JSONObjectNode(const JSON_VALUE_TYPE &k, std::vector<JSONNode*> &v): JSONNode(k, NODE_TYPE::object) {
+            if (!checkDuplicates(v))
+                throw std::invalid_argument("Duplicate key found");
+            values = v;
         }
+
+        std::size_t size() {
+            return values.size();
+        }
+
+        void push(JSONNode *node) {
+            auto it = find(node->getKey());
+            if (it == values.end())
+                values.push_back(node);
+            else
+                values[(std::size_t)(it - values.begin())] = node;
+        }
+
+        std::vector<JSONNode*>::iterator find(JSON_VALUE_TYPE &k) {
+            for (std::vector<JSONNode*>::iterator it = values.begin(); it < values.end(); it++) {
+                if ((*it)->getKey() == k)
+                    return it;
+            }
+            return values.end();
+        }
+
+        const JSONNode *operator[] (JSON_VALUE_TYPE &k) {
+            auto it = find(k);
+            if (it != values.end())
+                return *it;
+            else
+                throw std::invalid_argument("Key not found: ");
+        }
+
+        // Iterators
+        std::vector<JSONNode*>::iterator begin() { return values.begin(); }
+        std::vector<JSONNode*>::iterator end() { return values.end(); }
+        std::vector<JSONNode*>::const_iterator cbegin() const { return values.cbegin(); }
+        std::vector<JSONNode*>::const_iterator cend() const { return values.cend(); }
 };
 
 
@@ -112,63 +170,82 @@ public:
         }
         return {idx + 1, acc};
     }
+
+    static std::string dumps(JSONNode &root, bool ignoreKeys = true) {
+
+        auto simple_format = [] (JSON_VALUE_TYPE &v) -> std::string {
+            // string, nullptr_t, int, double, bool
+            if (std::get_if<std::string>(&v) != nullptr)
+                return "\"" + std::get<std::string>(v) + "\"";
+            else if (std::get_if<std::nullptr_t>(&v) != nullptr)
+                return "null";
+            else if (std::get_if<int>(&v) != nullptr)
+                return std::to_string(std::get<int>(v));
+            else if (std::get_if<double>(&v) != nullptr)
+                return std::to_string(std::get<double>(v));
+            else
+                return std::get<bool>(v)? "true": "false";
+        };
+
+        std::string keyStr = {ignoreKeys? "": simple_format(root.getKey()) + ": "};
+
+        if (root.getType() == NODE_TYPE::value) {
+            JSONValueNode &v = static_cast<JSONValueNode&>(root);
+            return keyStr + simple_format(v.getValue());
+        }
+
+        else if (root.getType() == NODE_TYPE::array) {
+            std::string result {keyStr + "["};
+            JSONArrayNode &v = static_cast<JSONArrayNode&>(root);
+            for (JSONNode *nxt: v)
+                result += dumps(*nxt, true) + ", ";
+            result += v.size() > 0?"\b\b]": "]";
+            return result;
+        }
+
+        else {
+            std::string result {keyStr + "{"};
+            JSONObjectNode &v = static_cast<JSONObjectNode&>(root);
+            for (JSONNode *nxt: v)
+                result += dumps(*nxt, false) + ", ";
+            result += v.size() > 0?"\b\b}": "}";
+            return result;
+        } 
+    }
 };
 
-int main(int argc, char* argv[]) {
-    using JSONCombined = std::variant<JSONSimple, JSONCompound>;
+int main() {
 
-    if (argc <= 1)
-        std::cout << "Usage: ./json.out <filename>\n";
-    else {
-        std::string fname {argv[1]};
-        std::ifstream ifs({fname});
+    /* Sample JSON Document creation */
 
-        if (!ifs) {
-            std::cout << "IO Error!";
-            return 1;
-        } else {
+    // Array
+    JSONValueNode one{1};
+    JSONValueNode two{2};
+    JSONValueNode three{3};
+    std::vector<JSONNode*> arrValues{&one, &two, &three};
+    JSONArrayNode arr_{"array", arrValues};
 
-            // TODO: Read piece by piece
-            std::string json {""}, buffer;
-            while (ifs) {
-                std::getline(ifs, buffer);
-                json += buffer + "\n";
-            }
+    // Simple Data types
+    JSONValueNode bool_{"boolean", true};
+    JSONValueNode null_{"null", nullptr};
+    JSONValueNode int_{"number", 123};
+    JSONValueNode float_{"float", 1.0};
+    JSONValueNode string_{"string", "Hello world"};
 
-            std::size_t N = json.size(), i {0};
-            std::stack<JSONCombined> stk;
-            buffer.clear();
-            while (i < N){
-                if (json[i] == '{' || json[i] == '[')
-                    stk.push(std::string{json[i]});
-                else if (json[i] == '"') {
-                    std::tie(i, buffer) = JSONParser::extractString(i, N, json);
-                    stk.push(buffer);
-                } else if (json[i] == '}') {
-                    JSONCombined topElem = stk.top();
-                    stk.pop();
-                    std::map<JSONSimple, JSONCompound> mpp;
-                    while (topElem != nullptr && topElem != "{") {
-                        JSONCombined key, value; 
-                        value = stk.top();
-                        stk.pop();
-                        key = stk.top();
-                        stk.pop();
-                        mpp[key] = value;
-                    }
-                    stk.push(mpp);
-                } else if (json[i] == ']') {
-                    auto topElem = std::get_if<JSONSimple>(&stk.top());
-                    std::vector<JSONSimple> vec;
-                    while (topElem != nullptr && *topElem != "{") {
-                        JSONCombined curr = stk.top();
-                        vec.push_back(curr);
-                    }
-                }
-                i++;
-            }
+    // Object
+    JSONValueNode a{"a", "b"};
+    JSONValueNode c{"c", "d"};
+    std::vector<JSONNode*> objValues{&a, &c};
+    JSONObjectNode obj_{"object", objValues};
 
-        }
-    }
+    // Create the root object
+    std::vector<JSONNode*> rootValues{&arr_, &bool_, &null_, &int_, &float_, &string_, &obj_};
+    JSONObjectNode root{rootValues};
+
+    // Serialize & print the result
+    std::cout << JSONParser::dumps(root) << "\n";
+
+    /* End of sample Document creation */
+
     return 0;
 }
