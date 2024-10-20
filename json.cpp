@@ -1,5 +1,5 @@
 /*
- * https://stackoverflow.com/questions/19543326/datatypes-for-representing-json-in-c
+ * Logic Credits: https://stackoverflow.com/questions/19543326/datatypes-for-representing-json-in-c
  */
 
 #include <algorithm>
@@ -10,6 +10,7 @@
 #include <iterator>
 #include <memory>
 #include <numeric>
+#include <sstream>
 #include <stack>
 #include <stdexcept>
 #include <string>
@@ -186,42 +187,67 @@ public:
     }
 
     static JSON_VALUE_TYPE simple_parse(std::string &token) {
+
         // string, nullptr_t, int, double, bool
         std::vector<bool> isDigit;
         std::transform(token.begin(), token.end(), std::back_inserter(isDigit), [](char ch) { return std::isdigit(ch); });
         std::size_t digitCount = std::accumulate(isDigit.begin(), isDigit.end(), (std::size_t) 0, [](std::size_t sum, bool b) {
                 return sum + (b? 1: 0);
         });
+        std::invalid_argument error = std::invalid_argument("Invalid value: " + token);
+
+        /* Check if leading zeros exist in a int or a double */
+        auto leadingZeros = [] (std::string &tok) -> bool {
+            std::size_t firstDigit = tok.find_first_of("0123456789");
+            return (tok[firstDigit] == '0' && firstDigit + 1 < tok.size() && std::isdigit(tok[firstDigit + 1]));
+        };
+
         if (token == "null")
             return nullptr;
+
         else if (token == "true" || token == "false")
             return token == "true";
-        else if (token[0] == '"' && token.back() == '"')
-            return token.substr(1, token.size() - 2);
-        else if (digitCount == token.size() || (digitCount == token.size() - 1 && token[0] == '-'))
-            return std::stoi(token);
+
+        else if (token[0] == '"' && token.back() == '"') {
+            if (token.find_first_of("\t\n") == std::string::npos) return token.substr(1, token.size() - 2);
+            else throw error;
+        }
+
+        else if (digitCount == token.size() || (digitCount == token.size() - 1 && token[0] == '-')) {
+            if (!leadingZeros(token)) return std::stoi(token);
+            else throw error;
+        }
+
         else if (
                 (digitCount == token.size() - 1 && token.find('.') != std::string::npos) ||
                 (digitCount == token.size() - 2 && token.find('.') != std::string::npos && token[0] == '-')
-            )
-            return std::stod(token);
-        else if (token.find_first_of("eE") != std::string::npos) {
-            try {
-                return std::stod(token);
-            } catch (const std::invalid_argument& e) {
-                throw std::invalid_argument("Invalid scientific notation: " + token);
-            }
+            ) {
+            if (!leadingZeros(token)) return std::stod(token);
+            else throw error;
         }
+
+        else if (token.find_first_of("eE") != std::string::npos) {
+            char *ptr;
+            double result = std::strtod(token.c_str(), &ptr);
+            if (*ptr == '\0' && !leadingZeros(token)) return result;
+            else throw error;
+        }
+
         else
-            throw std::invalid_argument("Invalid value: " + token + "; Digit Count: " + std::to_string(digitCount));
+            throw error;
     }
 
     static JSONNode_Ptr loads(std::string &raw) {
-        std::unordered_set<char> splChars{'{', '}', '[', ']', ',', ':'};
+
+        std::unordered_set<char> 
+            splChars{'{', '}', '[', ']', ',', ':'},
+            validEscapes{'"', '\\', '/', 'b', 'f', 'n', 'r', 't', 'u'};
         std::string acc{""};
         std::stack<std::pair<char, std::size_t>> validateStk;
         std::stack<std::variant<std::string, JSONNode_Ptr>> tokens;
         bool processingString = false, currCharEscaped = false;
+        long commas = 0, commasExpected = 0, colons = 0, colonsExpected = 0;
+
         for (char ch: raw) {
             if (ch == '"' || processingString) {
                 acc += ch;
@@ -238,8 +264,12 @@ public:
                 // Logic to handle escape sequences
                 if (ch == '\\')
                     currCharEscaped = !currCharEscaped;
-                else if (currCharEscaped)
-                    currCharEscaped = false;
+                else if (currCharEscaped) {
+                    if (validEscapes.find(ch) == validEscapes.end())
+                        throw std::invalid_argument("Invalid Escape \\" + std::string(1, ch));
+                    else
+                        currCharEscaped = false;
+                }
 
             } else if (!std::isspace(ch)) {
                 if (!std::isspace(ch) && splChars.find(ch) == splChars.end())
@@ -249,8 +279,8 @@ public:
                     acc.clear();
                 }
 
-                if ((ch == '}' && validateStk.top().first != '{') || (ch == ']' && validateStk.top().first != '['))
-                    throw std::logic_error("Invalid JSON");
+                if ((ch == '}' && (validateStk.empty() || validateStk.top().first != '{')) || (ch == ']' && (validateStk.empty() || validateStk.top().first != '[')))
+                    throw std::invalid_argument("Invalid JSON");
                 else if (ch == '{' || ch == '[')
                     validateStk.push({ch, tokens.size()});
                 else if (ch == '}' || ch == ']') {
@@ -268,7 +298,10 @@ public:
                         std::string key {""};
                         if (prevCh == '{') {
                             key = std::get<std::string>(tokens.top());
-                            key = key.substr(1, key.size() - 2);
+                            if (key[0] != '"' || key.back() != '"' || key.find_first_of("\n\t") != std::string::npos)
+                                throw std::invalid_argument("Invalid JSON");
+                            else
+                                key = key.substr(1, key.size() - 2);
                             tokens.pop();
                         }
                         values.back()->setKey(key);
@@ -282,11 +315,25 @@ public:
                     else
                         tokens.push(std::make_shared<JSONArrayNode>(values));
 
+                    // Based on the objects and arrays we are having, we can compute how many we expect to have
+                    // [1, 2, 3] (2 commas for 2 objs) | {"a": 1, "b": 2, "c": 3} (3 colons for 3 objs)
+                    commasExpected += std::max((long)values.size() - 1, 0L);
+                    colonsExpected += prevCh == '{'? values.size(): 0L;
+
+                } else if (ch == ',' || ch == ':') {
+                    commas += (ch == ','? 1: 0);
+                    colons += (ch == ':'? 1: 0);
                 }
             }
         }
 
-        return std::get<JSONNode_Ptr>(tokens.top());
+        if (
+                commasExpected == commas && colonsExpected == colons &&
+                tokens.size() == 1 && std::holds_alternative<JSONNode_Ptr>(tokens.top())
+            )
+            return std::get<JSONNode_Ptr>(tokens.top());
+        else
+            throw std::logic_error("Invalid JSON");
     }
 
     /* Helper function to print JSON_VALUE_TYPE obj */
@@ -384,14 +431,17 @@ int main(int argc, char* argv[]) {
 
         } else {
 
-            std::string raw{""}, buffer;
-            while (ifs) {
-                std::getline(ifs, buffer);
-                raw += buffer + "\n";
-            }
+            // Read from file
+            std::ostringstream raw;
+            std::string buffer;
+            while (std::getline(ifs, buffer))
+                raw << buffer << "\n";
+
+            // Convert to string
+            std::string jsonStr = raw.str();
 
             // Parse string into JSON Root obj
-            JSONNode_Ptr root = JSONParser::loads(raw);
+            JSONNode_Ptr root = JSONParser::loads(jsonStr);
 
             // Serialize & print the result
             std::cout << JSONParser::dumps(root) << "\n";
