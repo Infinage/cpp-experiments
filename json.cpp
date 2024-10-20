@@ -1,7 +1,5 @@
 /*
  * https://stackoverflow.com/questions/19543326/datatypes-for-representing-json-in-c
- *
- * Update std::variant::get_if to use holds_alternative
  */
 
 #include <algorithm>
@@ -87,8 +85,8 @@ class JSONArrayNode: public JSONNode {
             values.push_back(node);
         }
 
-        std::weak_ptr<JSONNode> pop() {
-            std::weak_ptr<JSONNode> result = values.back();
+        JSONNode_Ptr pop() {
+            JSONNode_Ptr result = values.back();
             values.pop_back();
             return result;
         }
@@ -198,23 +196,52 @@ public:
             return nullptr;
         else if (token == "true" || token == "false")
             return token == "true";
-        else if (digitCount == token.size())
-            return std::stoi(token);
-        else if (digitCount == token.size() - 1 && token.find('.') != std::string::npos)
-            return std::stod(token);
         else if (token[0] == '"' && token.back() == '"')
             return token.substr(1, token.size() - 2);
+        else if (digitCount == token.size() || (digitCount == token.size() - 1 && token[0] == '-'))
+            return std::stoi(token);
+        else if (
+                (digitCount == token.size() - 1 && token.find('.') != std::string::npos) ||
+                (digitCount == token.size() - 2 && token.find('.') != std::string::npos && token[0] == '-')
+            )
+            return std::stod(token);
+        else if (token.find_first_of("eE") != std::string::npos) {
+            try {
+                return std::stod(token);
+            } catch (const std::invalid_argument& e) {
+                throw std::invalid_argument("Invalid scientific notation: " + token);
+            }
+        }
         else
             throw std::invalid_argument("Invalid value: " + token + "; Digit Count: " + std::to_string(digitCount));
     }
 
-    static JSONNode_Ptr parse(std::string &raw) {
+    static JSONNode_Ptr loads(std::string &raw) {
         std::unordered_set<char> splChars{'{', '}', '[', ']', ',', ':'};
         std::string acc{""};
         std::stack<std::pair<char, std::size_t>> validateStk;
         std::stack<std::variant<std::string, JSONNode_Ptr>> tokens;
+        bool processingString = false, currCharEscaped = false;
         for (char ch: raw) {
-            if (!std::isspace(ch)) {
+            if (ch == '"' || processingString) {
+                acc += ch;
+
+                // Put everything demarcated by a quote inside
+                if (ch == '"' && !currCharEscaped) {
+                    processingString = !processingString;
+                    if (!processingString) {
+                        tokens.push(acc);
+                        acc.clear();
+                    }
+                }
+
+                // Logic to handle escape sequences
+                if (ch == '\\')
+                    currCharEscaped = !currCharEscaped;
+                else if (currCharEscaped)
+                    currCharEscaped = false;
+
+            } else if (!std::isspace(ch)) {
                 if (!std::isspace(ch) && splChars.find(ch) == splChars.end())
                     acc += ch;
                 else if (acc.size()) {
@@ -232,7 +259,7 @@ public:
                     std::vector<JSONNode_Ptr> values;
                     while (tokens.size() > startPos) {
                         std::variant<std::string, JSONNode_Ptr>& valMixed = tokens.top();
-                        if (std::get_if<JSONNode_Ptr>(&valMixed) != nullptr)
+                        if (std::holds_alternative<JSONNode_Ptr>(valMixed))
                             values.push_back(std::get<JSONNode_Ptr>(valMixed));
                         else
                             values.push_back(std::make_shared<JSONValueNode>(simple_parse(std::get<std::string>(valMixed))));
@@ -265,13 +292,13 @@ public:
     /* Helper function to print JSON_VALUE_TYPE obj */
     static std::string simple_format (JSON_VALUE_TYPE &v) {
         // string, nullptr_t, int, double, bool
-        if (std::get_if<std::string>(&v) != nullptr)
+        if (std::holds_alternative<std::string>(v))
             return "\"" + std::get<std::string>(v) + "\"";
-        else if (std::get_if<std::nullptr_t>(&v) != nullptr)
+        else if (std::holds_alternative<std::nullptr_t>(v))
             return "null";
-        else if (std::get_if<int>(&v) != nullptr)
+        else if (std::holds_alternative<int>(v))
             return std::to_string(std::get<int>(v));
-        else if (std::get_if<double>(&v) != nullptr)
+        else if (std::holds_alternative<double>(v))
             return std::to_string(std::get<double>(v));
         else
             return std::get<bool>(v)? "true": "false";
@@ -357,7 +384,6 @@ int main(int argc, char* argv[]) {
 
         } else {
 
-            // TODO: Read piece by piece
             std::string raw{""}, buffer;
             while (ifs) {
                 std::getline(ifs, buffer);
@@ -365,7 +391,7 @@ int main(int argc, char* argv[]) {
             }
 
             // Parse string into JSON Root obj
-            JSONNode_Ptr root = JSONParser::parse(raw);
+            JSONNode_Ptr root = JSONParser::loads(raw);
 
             // Serialize & print the result
             std::cout << JSONParser::dumps(root) << "\n";
