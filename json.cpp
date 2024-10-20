@@ -1,12 +1,17 @@
 /*
  * https://stackoverflow.com/questions/19543326/datatypes-for-representing-json-in-c
+ *
+ * Update std::variant::get_if to use holds_alternative
  */
 
+#include <algorithm>
 #include <cctype>
 #include <cstddef>
 #include <fstream>
 #include <iostream>
+#include <iterator>
 #include <memory>
+#include <numeric>
 #include <stack>
 #include <stdexcept>
 #include <string>
@@ -30,22 +35,22 @@ using JSONNode_Ptr = std::shared_ptr<JSONNode>;
 
 class JSONNode {
     private:
-        JSON_VALUE_TYPE key;
+        std::string key;
         NODE_TYPE type;
 
     public:
-        JSONNode(const JSON_VALUE_TYPE &k, NODE_TYPE t):
+        JSONNode(const std::string &k, NODE_TYPE t):
             key(k), type(t) {};
 
         NODE_TYPE getType() {
             return type;
         }
 
-        JSON_VALUE_TYPE &getKey() {
+        std::string &getKey() {
             return key;
         }
 
-        void setKey(const JSON_VALUE_TYPE &k) {
+        void setKey(const std::string &k) {
             key = k;
         }
 };
@@ -57,7 +62,7 @@ class JSONValueNode: public JSONNode {
     public:
         JSONValueNode(const JSON_VALUE_TYPE &v): JSONNode("", NODE_TYPE::value), value(v) {};
 
-        JSONValueNode(const JSON_VALUE_TYPE &k, const JSON_VALUE_TYPE &v):
+        JSONValueNode(const std::string &k, const JSON_VALUE_TYPE &v):
             JSONNode(k, NODE_TYPE::value), value(v) {};
 
         JSON_VALUE_TYPE &getValue() {
@@ -70,8 +75,8 @@ class JSONArrayNode: public JSONNode {
         std::vector<JSONNode_Ptr> values;
 
     public:
-        JSONArrayNode(const JSON_VALUE_TYPE &k): JSONNode(k, NODE_TYPE::array) {};
-        JSONArrayNode(const JSON_VALUE_TYPE &k, std::vector<JSONNode_Ptr> &v): JSONNode(k, NODE_TYPE::array), values(v) {};
+        JSONArrayNode(const std::string &k): JSONNode(k, NODE_TYPE::array) {};
+        JSONArrayNode(const std::string &k, std::vector<JSONNode_Ptr> &v): JSONNode(k, NODE_TYPE::array), values(v) {};
         JSONArrayNode(std::vector<JSONNode_Ptr> &v): JSONNode("", NODE_TYPE::array), values(v) {};
 
         std::size_t size() {
@@ -117,7 +122,7 @@ class JSONObjectNode: public JSONNode {
         }
 
     public:
-        JSONObjectNode(const JSON_VALUE_TYPE &k): JSONNode(k, NODE_TYPE::object) {};
+        JSONObjectNode(const std::string &k): JSONNode(k, NODE_TYPE::object) {};
 
         JSONObjectNode(std::vector<JSONNode_Ptr> &v): JSONNode("", NODE_TYPE::object) {
             if (!checkDuplicates(v))
@@ -125,7 +130,7 @@ class JSONObjectNode: public JSONNode {
             values = v;
         }
 
-        JSONObjectNode(const JSON_VALUE_TYPE &k, std::vector<JSONNode_Ptr> &v): JSONNode(k, NODE_TYPE::object) {
+        JSONObjectNode(const std::string &k, std::vector<JSONNode_Ptr> &v): JSONNode(k, NODE_TYPE::object) {
             if (!checkDuplicates(v))
                 throw std::invalid_argument("Duplicate key found");
             values = v;
@@ -143,7 +148,7 @@ class JSONObjectNode: public JSONNode {
                 values[(std::size_t)(it - values.begin())] = node;
         }
 
-        std::vector<JSONNode_Ptr>::iterator find(JSON_VALUE_TYPE &k) {
+        std::vector<JSONNode_Ptr>::iterator find(std::string &k) {
             for (std::vector<JSONNode_Ptr>::iterator it = values.begin(); it < values.end(); it++) {
                 if ((*it)->getKey() == k)
                     return it;
@@ -151,7 +156,7 @@ class JSONObjectNode: public JSONNode {
             return values.end();
         }
 
-        JSONNode_Ptr operator[] (JSON_VALUE_TYPE &k) {
+        JSONNode_Ptr operator[] (std::string &k) {
             auto it = find(k);
             if (it != values.end())
                 return *it;
@@ -182,16 +187,34 @@ public:
         return {idx + 1, acc};
     }
 
-    static JSONNode_Ptr parse(std::string &raw) {
+    static JSON_VALUE_TYPE simple_parse(std::string &token) {
+        // string, nullptr_t, int, double, bool
+        std::vector<bool> isDigit;
+        std::transform(token.begin(), token.end(), std::back_inserter(isDigit), [](char ch) { return std::isdigit(ch); });
+        std::size_t digitCount = std::accumulate(isDigit.begin(), isDigit.end(), (std::size_t) 0, [](std::size_t sum, bool b) {
+                return sum + (b? 1: 0);
+        });
+        if (token == "null")
+            return nullptr;
+        else if (token == "true" || token == "false")
+            return token == "true";
+        else if (digitCount == token.size())
+            return std::stoi(token);
+        else if (digitCount == token.size() - 1 && token.find('.') != std::string::npos)
+            return std::stod(token);
+        else if (token[0] == '"' && token.back() == '"')
+            return token.substr(1, token.size() - 2);
+        else
+            throw std::invalid_argument("Invalid value: " + token + "; Digit Count: " + std::to_string(digitCount));
+    }
 
-        // Clean string & validate
-        std::unordered_set<char> splChars{'{', '}', '[', ']', ','};
+    static JSONNode_Ptr parse(std::string &raw) {
+        std::unordered_set<char> splChars{'{', '}', '[', ']', ',', ':'};
         std::string acc{""};
-        std::stack<std::pair<char, std::size_t>> stk;
+        std::stack<std::pair<char, std::size_t>> validateStk;
         std::stack<std::variant<std::string, JSONNode_Ptr>> tokens;
         for (char ch: raw) {
             if (!std::isspace(ch)) {
-
                 if (!std::isspace(ch) && splChars.find(ch) == splChars.end())
                     acc += ch;
                 else if (acc.size()) {
@@ -199,30 +222,33 @@ public:
                     acc.clear();
                 }
 
-                if ((ch == '}' && stk.top().first != '{') || (ch == ']' && stk.top().first != '['))
+                if ((ch == '}' && validateStk.top().first != '{') || (ch == ']' && validateStk.top().first != '['))
                     throw std::logic_error("Invalid JSON");
                 else if (ch == '{' || ch == '[')
-                    stk.push({ch, tokens.size()});
+                    validateStk.push({ch, tokens.size()});
                 else if (ch == '}' || ch == ']') {
-
-                    auto [prevCh, startPos] = stk.top();
-                    stk.pop();
+                    auto [prevCh, startPos] = validateStk.top();
+                    validateStk.pop();
                     std::vector<JSONNode_Ptr> values;
                     while (tokens.size() > startPos) {
-                        auto &curr = tokens.top();
-                        if (curr.index() == 1)
-                            values.push_back(std::get<JSONNode_Ptr>(curr));
-                        else {
-                            std::string &token = std::get<std::string>(curr);
-                            if (token.back() == ':') {
-                                token.pop_back();
-                                values.back()->setKey(token);
-                            }
-                            else
-                                values.push_back(simple_parse(token));
-                        }
+                        std::variant<std::string, JSONNode_Ptr>& valMixed = tokens.top();
+                        if (std::get_if<JSONNode_Ptr>(&valMixed) != nullptr)
+                            values.push_back(std::get<JSONNode_Ptr>(valMixed));
+                        else
+                            values.push_back(std::make_shared<JSONValueNode>(simple_parse(std::get<std::string>(valMixed))));
                         tokens.pop();
+
+                        std::string key {""};
+                        if (prevCh == '{') {
+                            key = std::get<std::string>(tokens.top());
+                            key = key.substr(1, key.size() - 2);
+                            tokens.pop();
+                        }
+                        values.back()->setKey(key);
                     }
+
+                    // Stack pop yields in reverse order - unreverse it
+                    std::ranges::reverse(values);
 
                     if (prevCh == '{')
                         tokens.push(std::make_shared<JSONObjectNode>(values));
@@ -236,27 +262,27 @@ public:
         return std::get<JSONNode_Ptr>(tokens.top());
     }
 
+    /* Helper function to print JSON_VALUE_TYPE obj */
+    static std::string simple_format (JSON_VALUE_TYPE &v) {
+        // string, nullptr_t, int, double, bool
+        if (std::get_if<std::string>(&v) != nullptr)
+            return "\"" + std::get<std::string>(v) + "\"";
+        else if (std::get_if<std::nullptr_t>(&v) != nullptr)
+            return "null";
+        else if (std::get_if<int>(&v) != nullptr)
+            return std::to_string(std::get<int>(v));
+        else if (std::get_if<double>(&v) != nullptr)
+            return std::to_string(std::get<double>(v));
+        else
+            return std::get<bool>(v)? "true": "false";
+    }
+
     static std::string dumps(JSONNode_Ptr root, bool ignoreKeys = true) {
-
-        auto simple_format = [] (JSON_VALUE_TYPE &v) -> std::string {
-            // string, nullptr_t, int, double, bool
-            if (std::get_if<std::string>(&v) != nullptr)
-                return "\"" + std::get<std::string>(v) + "\"";
-            else if (std::get_if<std::nullptr_t>(&v) != nullptr)
-                return "null";
-            else if (std::get_if<int>(&v) != nullptr)
-                return std::to_string(std::get<int>(v));
-            else if (std::get_if<double>(&v) != nullptr)
-                return std::to_string(std::get<double>(v));
-            else
-                return std::get<bool>(v)? "true": "false";
-        };
-
         if (root == nullptr)
             return "";
 
         else {
-            std::string keyStr = {ignoreKeys? "": simple_format(root->getKey()) + ": "};
+            std::string keyStr = {ignoreKeys? "": "\"" + root->getKey() + "\": "};
 
             if (root->getType() == NODE_TYPE::value) {
                 JSONValueNode &v = static_cast<JSONValueNode&>(*root);
@@ -312,6 +338,9 @@ int main(int argc, char* argv[]) {
     // Create the root object
     std::vector<JSONNode_Ptr> rootValues{arr_, bool_, null_, int_, float_, string_, obj_};
     JSONNode_Ptr root    = std::make_shared<JSONObjectNode>(rootValues);
+
+    // Serialize & print the result
+    std::cout << JSONParser::dumps(root) << "\n";
     */
 
     if (argc != 2)
