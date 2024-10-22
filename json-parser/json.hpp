@@ -1,60 +1,23 @@
-/*
+#ifndef JSON_HPP
+#define JSON_HPP
 
+/*
  * Inspiration: https://codingchallenges.fyi/challenges/challenge-json-parser
  * Data Structure credits: https://stackoverflow.com/questions/19543326/datatypes-for-representing-json-in-c
-  
  * Design decisions:
        1. Mimic (imperfectly) python's JSON module: loads, dumps
        2. Throw errors instead of a cout + nullptr
        3. Vector used for both Arrays & Objects following the stackoverflow thread, to maintain the insertion order
-  
- * Module can be used to create JSON Documents as follows:
-   ```
-   // Array
-   JSON::JSONNode_Ptr one     = JSON::helper::createNode(1);
-   JSON::JSONNode_Ptr two     = JSON::helper::createNode(2);
-   JSON::JSONNode_Ptr three   = JSON::helper::createNode(3);
-   JSON::JSONNode_Ptr arr_    = JSON::helper::createArray("array", {one, two, three});
-
-   // Simple Data types
-   JSON::JSONNode_Ptr bool_   = JSON::helper::createNode("boolean", true);
-   JSON::JSONNode_Ptr null_   = JSON::helper::createNode("null", nullptr);
-   JSON::JSONNode_Ptr int_    = JSON::helper::createNode("number", 123);
-   JSON::JSONNode_Ptr float_  = JSON::helper::createNode("float", 1.0);
-   JSON::JSONNode_Ptr string_ = JSON::helper::createNode("string", "Hello world");
-
-   // Object
-   JSON::JSONNode_Ptr a       = JSON::helper::createNode("a", "b");
-   JSON::JSONNode_Ptr c       = JSON::helper::createNode("c", "d");
-   JSON::JSONNode_Ptr empty   = JSON::helper::createNode("", "empty");
-   JSON::JSONNode_Ptr obj_    = JSON::helper::createObject("object", {a, c, empty});
-
-   // Create the root object
-   JSON::JSONNode_Ptr root    = JSON::helper::createObject({arr_, bool_, null_, int_, float_, string_, obj_});
-
-   // Serialize & print the result
-   std::cout << JSON::Parser::dumps(root) << "\n";
-   ```
-
- * Module can be used to parse JSON files provided the file is already loaded into memory
-   ```
-   // Parse string into JSON Root obj
-   JSON::JSONNode_Ptr root = JSON::Parser::loads(jsonStr);
-
-   // Serialize & print the result
-   std::cout << JSON::Parser::dumps(root) << "\n";
-  ```
+ * Library can be used to create JSON Documents (refer example-document.cpp)
+ * Module can be used to parse JSON files provided the file is already loaded into memory (refer validate-json.cpp)
  */
 
 #include <algorithm>
 #include <cctype>
 #include <cstddef>
-#include <fstream>
-#include <iostream>
 #include <iterator>
 #include <memory>
 #include <numeric>
-#include <sstream>
 #include <stack>
 #include <stdexcept>
 #include <string>
@@ -332,17 +295,26 @@ namespace JSON {
         }
     }
 
-    // Handles logic to Parse JSON from strings and to Dump JSON into strings
+    // Handles logic To parse JSON from strings (and) To Dump JSON into string
     class Parser {
         public:
+            // Load from a string in memory into JSON
             static JSONNode_Ptr loads(std::string &raw) {
+
                 std::unordered_set<char> 
+                    // List of special characters that seperate the individual tokens
                     splChars{'{', '}', '[', ']', ',', ':'},
+
+                    // List of valid characters that can follow a '\'
                     validEscapes{'"', '\\', '/', 'b', 'f', 'n', 'r', 't', 'u'};
-                std::string acc{""};
+
+                // Capture what opening brace we encountered while keeping track of position
                 std::stack<std::pair<char, std::size_t>> validateStk;
                 std::stack<std::variant<std::string, JSONNode_Ptr>> tokens;
+                std::string acc{""};
                 bool processingString = false, currCharEscaped = false;
+
+                // We count commas, colons and compute the expected values to check if the JSON is valid
                 long commas = 0, commasExpected = 0, colons = 0, colonsExpected = 0;
 
                 for (char ch: raw) {
@@ -361,6 +333,8 @@ namespace JSON {
                         // Logic to handle escape sequences
                         if (ch == '\\')
                             currCharEscaped = !currCharEscaped;
+
+                        // Next char following an escape char
                         else if (currCharEscaped) {
                             if (validEscapes.find(ch) == validEscapes.end())
                                 throw std::invalid_argument("Invalid Escape \\" + std::string(1, ch));
@@ -368,33 +342,56 @@ namespace JSON {
                                 currCharEscaped = false;
                         }
 
+
                     } else if (!std::isspace(ch)) {
+                        // Accumulate until we hit a special character
+                        // Note that strings are already capture in the above if block
+                        // Here capture integers, bools, nulls, etc
                         if (!std::isspace(ch) && splChars.find(ch) == splChars.end())
                             acc += ch;
+
                         else if (acc.size()) {
                             tokens.push(acc);
                             acc.clear();
                         }
 
-                        if ((ch == '}' && (validateStk.empty() || validateStk.top().first != '{')) || (ch == ']' && (validateStk.empty() || validateStk.top().first != '[')))
+                        // We hit a closing paren but dont have a matching one -> invalid json
+                        if (
+                                (ch == '}' && (validateStk.empty() || validateStk.top().first != '{')) ||
+                                (ch == ']' && (validateStk.empty() || validateStk.top().first != '['))
+                            )
                             throw std::invalid_argument("Invalid JSON");
+
                         else if (ch == '{' || ch == '[')
                             validateStk.push({ch, tokens.size()});
-                        else if (ch == '}' || ch == ']') {
+
+                        // End paren but not invalid, pop until closing pair is
+                        // hit, creating nodes for tokens in between
+                        else if (ch == '}' || ch == ']') { 
                             auto [prevCh, startPos] = validateStk.top();
                             validateStk.pop();
                             std::vector<JSONNode_Ptr> values;
                             while (tokens.size() > startPos) {
                                 std::variant<std::string, JSONNode_Ptr>& valMixed = tokens.top();
+                                // If we encounter a token that had already been
+                                // processed into a node, push it as is
                                 if (std::holds_alternative<JSONNode_Ptr>(valMixed))
                                     values.push_back(std::get<JSONNode_Ptr>(valMixed));
+
+                                // String token - needs processing
                                 else
                                     values.push_back(std::make_shared<JSONValueNode>(helper::simple_parse(std::get<std::string>(valMixed))));
+
+                                // Pop at last for keeping the '&' reference valid
                                 tokens.pop();
 
+                                // If object we need to check for keys, if arrays
+                                // auto set key as empty strings
                                 std::string key {""};
                                 if (prevCh == '{') {
                                     key = std::get<std::string>(tokens.top());
+                                    // Similar to how we checked for newlines & tabs in values,
+                                    // ensure key strings dont have these as well
                                     if (key[0] != '"' || key.back() != '"' || key.find_first_of("\n\t") != std::string::npos)
                                         throw std::invalid_argument("Invalid JSON");
                                     else
@@ -433,6 +430,11 @@ namespace JSON {
                     throw std::logic_error("Invalid JSON");
             }
 
+            // JSON object to a string
+            // Note that the JSONNode's may or may not have a key
+            // Regardless we display what is present if the node is contained inside
+            // an object. We hide what is present when the parent is an array
+            // Recursive function for simplicity :)
             static std::string dumps(JSONNode_Ptr root, bool ignoreKeys = true) {
                 if (root == nullptr)
                     return "";
@@ -465,43 +467,6 @@ namespace JSON {
                 }
             }
     };
-
 }
 
-
-int main(int argc, char* argv[]) {
-
-    if (argc != 2)
-        std::cout << "Usage: ./json.out <filepath>\n";
-
-    else {
-
-        std::string fname{argv[1]};
-        std::ifstream ifs({fname});
-
-        if (!ifs) {
-            std::cout << "IO Error\n";
-            return 1;
-
-        } else {
-
-            // Read from file
-            std::ostringstream raw;
-            std::string buffer;
-            while (std::getline(ifs, buffer))
-                raw << buffer << "\n";
-
-            // Convert to string
-            std::string jsonStr = raw.str();
-
-            // Parse string into JSON Root obj
-            JSON::JSONNode_Ptr root = JSON::Parser::loads(jsonStr);
-
-            // Serialize & print the result
-            std::cout << JSON::Parser::dumps(root) << "\n";
-
-        }
-    }
-
-    return 0;
-}
+#endif
