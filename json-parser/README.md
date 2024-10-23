@@ -23,7 +23,7 @@ This project offers a lightweight, header-only JSON library in C++ (`json.hpp`) 
 - **validate-json.cpp**: Program that validates JSON files, given a path argument. In addition to validation, it benchmarks the runtime (in milliseconds) for processing each JSON file. This can help assess performance with files of varying sizes.
 - **create-json.cpp**: Example program that demonstrates creating a JSON document using the library.
 - **manipulate-json.cpp**: Demonstrates loading a JSON document, casting nodes to object references, modifying keys, and adding new elements.
-- **test/**: Directory containing sample JSON files (`passXX.json`, `failXX.json`, `benchxx.json`) for validation.
+- **test/**: Directory containing sample JSON files (`passXX.json`, `failXX.json`, `benchxx.json`) for validation. Includes 318 additional tests from the [JSONTestSuite](https://github.com/nst/JSONTestSuite/tree/master/test_parsing) under `test/extras/`.
 
 ## Building the Project
 
@@ -46,7 +46,7 @@ To validate JSON files in the `test/` directory, run:
 make test
 ```
 
-This will execute `validate-json.out` on the test files and print the results to the console.
+This will execute `validate-json.out` on the test files and print the results to the console. Tests under `test/extras` are not included by default and must be run manually if desired.
 
 ## Creating Sample JSON Documents
 

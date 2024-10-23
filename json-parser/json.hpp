@@ -266,6 +266,9 @@ namespace JSON {
                 return (tok[firstDigit] == '0' && firstDigit + 1 < tok.size() && std::isdigit(tok[firstDigit + 1]));
             };
 
+            // Position of '.' for decimals
+            std::size_t dotPos = token.find('.');
+
             // Begin Parsing Logic -----------------------
 
             // NULLPTR
@@ -290,10 +293,11 @@ namespace JSON {
             }
 
             // DOUBLE - Same as LONG but one less digit allowed for the decimal point
-            // Ensure there are no leading zeros
+            // Ensure there are no leading zeros, also check if '.' succeeds and preceeds a digit
             else if (
-                    (digitCount == token.size() - 1 && token.find('.') != std::string::npos) ||
-                    (digitCount == token.size() - 2 && token.find('.') != std::string::npos && token[0] == '-')
+                    ((digitCount == token.size() - 1 && dotPos != std::string::npos && dotPos != 0) ||
+                    (digitCount == token.size() - 2 && dotPos != std::string::npos && token[0] == '-' && dotPos != 1)) &&
+                    dotPos != token.size() - 1
                 ) {
                 if (!leadingZeros(token)) return std::stod(token);
                 else throw error;
@@ -407,7 +411,9 @@ namespace JSON {
                                 // auto set key as empty strings
                                 std::string key {""};
                                 if (prevCh == '{') {
-                                    key = std::get<std::string>(tokens.top());
+                                    // If tokens.size() is insufficient we set key to a value that will fail
+                                    key = tokens.size() > 0? std::get<std::string>(tokens.top()): "*";
+
                                     // Similar to how we checked for newlines & tabs in values,
                                     // ensure key strings dont have these as well
                                     if (key[0] != '"' || key.back() != '"' || key.find_first_of("\n\t") != std::string::npos)
@@ -440,7 +446,7 @@ namespace JSON {
                 }
 
                 if (
-                        commasExpected == commas && colonsExpected == colons &&
+                        commasExpected == commas && colonsExpected == colons && acc.size() == 0 &&
                         tokens.size() == 1 && std::holds_alternative<JSONNode_Ptr>(tokens.top())
                     )
                     return std::get<JSONNode_Ptr>(tokens.top());

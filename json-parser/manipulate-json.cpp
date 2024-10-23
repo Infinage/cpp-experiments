@@ -12,7 +12,7 @@ int main() {
     }
 
     // Before manipulation
-    std::cout << raw << "\n";
+    std::cout << "Original ->\n" << raw << "\n";
 
     JSON::JSONNode_Ptr root {JSON::Parser::loads(raw)};
     
@@ -24,5 +24,5 @@ int main() {
 
     // Serialize the output
     std::string processed {JSON::Parser::dumps(root)};
-    std::cout << JSON::helper::pretty(processed) << "\n";
+    std::cout << "Modified ->\n" << JSON::helper::pretty(processed) << "\n";
 }

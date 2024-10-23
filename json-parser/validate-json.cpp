@@ -59,11 +59,11 @@ int main(int argc, char* argv[]) {
         std::ranges::sort(files);
 
         // For formatting
-        std::string lineSep = std::string(85, '-');
+        std::string lineSep = std::string(105, '-');
 
         // Header line
         std::cout << std::format(
-            "{}\n| {:<35} | {:>15} | {:>15} | {:^7} |\n{}\n", lineSep,
+            "{}\n| {:<55} | {:>15} | {:>15} | {:^7} |\n{}\n", lineSep,
             "File", "Size", "Time Taken", "Status", lineSep
         );
 
@@ -77,10 +77,13 @@ int main(int argc, char* argv[]) {
             double fsize {(double) std::filesystem::file_size(fpath) / 1024};
             double elapsedMS {(double) std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count() / 1000.0};
             std::string status {isValid ? "✅": "❌"};
+            std::string fpathDisplay {fpath};
+            if (fpath.size() > 55) 
+                fpathDisplay = "..." + fpath.substr(fpath.size() - 52);
 
             std::cout << std::format(
-                "| {:<35} | {:>12.2f} KB | {:>12.2f} ms | {:^8} |\n", 
-                fpath, fsize, elapsedMS, status
+                "| {:<55} | {:>12.2f} KB | {:>12.2f} ms | {:^8} |\n", 
+                fpathDisplay, fsize, elapsedMS, status
             );
         }
 
