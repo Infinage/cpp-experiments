@@ -1,6 +1,6 @@
 # JSON Parser and Validator
 
-This project provides a simple C++ header-only JSON library (`json.hpp`) that can be used to create, parse, and validate JSON documents. It also includes two example programs: one for validating JSON files (`validate-json.cpp`) and another for generating sample JSON documents (`example-document.cpp`).
+This project offers a lightweight, header-only JSON library in C++ (`json.hpp`) that enables easy creation, parsing, and validation of JSON documents. It also includes three example programs: one for validating JSON files (`validate-json.cpp`), another for generating sample JSON documents (`create-json.cpp`), and a third for manipulating existing JSON data (`manipulate-json.cpp`)
 
 ### Additional Information
 - **Inspiration**: [Coding Challenges JSON Parser](https://codingchallenges.fyi/challenges/challenge-json-parser)
@@ -10,6 +10,7 @@ This project provides a simple C++ header-only JSON library (`json.hpp`) that ca
 1. Mimic (imperfectly) Python's JSON module with `loads` and `dumps` methods.
 2. Throw errors instead of using failing silently by returning a `nullptr`.
 3. Use `std::vector` for both arrays and objects to maintain insertion order, following insights from the Stack Overflow thread.
+4. Allow arbitrary nesting depth: The parser is designed to support arbitrary levels of nesting. This means that test cases like `fail18.json`, which may contain deep nesting, are validated as correct.
 
 ## Requirements
 
@@ -19,9 +20,10 @@ This project provides a simple C++ header-only JSON library (`json.hpp`) that ca
 ## Project Structure
 
 - **json.hpp**: Header-only library for creating and parsing JSON.
-- **validate-json.cpp**: Program that validates JSON files, given a path argument.
-- **example-document.cpp**: Example program that demonstrates creating a JSON document using the library.
-- **test/**: Directory containing sample JSON files (`passXX.json`, `failXX.json`) for validation.
+- **validate-json.cpp**: Program that validates JSON files, given a path argument. In addition to validation, it benchmarks the runtime (in milliseconds) for processing each JSON file. This can help assess performance with files of varying sizes.
+- **create-json.cpp**: Example program that demonstrates creating a JSON document using the library.
+- **manipulate-json.cpp**: Demonstrates loading a JSON document, casting nodes to object references, modifying keys, and adding new elements.
+- **test/**: Directory containing sample JSON files (`passXX.json`, `failXX.json`, `benchxx.json`) for validation.
 
 ## Building the Project
 
@@ -31,9 +33,10 @@ Run the following command to build both example programs:
 make
 ```
 
-This will produce two executables in the `build/` directory:
+This will produce three executables in the `build/` directory:
 - `build/validate-json.out`
-- `build/example-document.out`
+- `build/create-json.out`
+- `build/manipulate-json.out`
 
 ## Running the JSON Validator
 
@@ -47,7 +50,7 @@ This will execute `validate-json.out` on the test files and print the results to
 
 ## Creating Sample JSON Documents
 
-The `example-document.cpp` demonstrates how to create JSON structures using the library.
+The `create-json.cpp` demonstrates how to create JSON structures using the library.
 
 ### Example Usage:
 ```cpp
@@ -88,6 +91,7 @@ The `helper` namespace provides functions to simplify the creation of JSON nodes
 - **`createNode`**: Creates a simple JSON node from a value.
 - **`createArray`**: Creates an array node containing other JSON nodes.
 - **`createObject`**: Creates an object node with key-value pairs.
+- **`pretty`**: Prettifies a JSON dump string by formatting it with appropriate indentation for better readability.
 
 ### Parser Class
 The `Parser` class handles the logic to parse JSON from strings and to dump JSON into strings.

@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <chrono>
 #include <exception>
 #include <format>
 #include <iostream>
@@ -44,21 +45,47 @@ int main(int argc, char* argv[]) {
 
         std::string input{argv[1]};
 
-        if (std::filesystem::is_regular_file(input)) {
-            std::cout << std::format("{:-<30}> {:<10}\n", input + ' ', validateFile(input)? "Valid": "Invalid");
-        }
-
+        // Store the files here
+        std::vector<std::string> files;
+        if (std::filesystem::is_regular_file(input))
+            files.push_back(input);
         else {
-            std::vector<std::string> files;
             for (const std::filesystem::directory_entry &entry: std::filesystem::directory_iterator(input))
-                if (entry.is_regular_file())
+                if (entry.is_regular_file() && entry.path().extension() == ".json")
                     files.push_back(entry.path().string());
-
-            std::ranges::sort(files);
-            for (const std::string &fpath: files)
-                std::cout << std::format("{:-<30}> {:<10}\n", fpath + ' ', validateFile(fpath)? "Valid": "Invalid");
         }
 
+        // Sort lexiographically
+        std::ranges::sort(files);
+
+        // For formatting
+        std::string lineSep = std::string(85, '-');
+
+        // Header line
+        std::cout << std::format(
+            "{}\n| {:<35} | {:>15} | {:>15} | {:^7} |\n{}\n", lineSep,
+            "File", "Size", "Time Taken", "Status", lineSep
+        );
+
+        for (const std::string &fpath: files) {
+            // Time the execution
+            std::chrono::time_point start {std::chrono::high_resolution_clock::now()};
+            bool isValid {validateFile(fpath)};
+            std::chrono::duration elapsed = std::chrono::high_resolution_clock::now() - start;
+
+            // For display
+            double fsize {(double) std::filesystem::file_size(fpath) / 1024};
+            double elapsedMS {(double) std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count() / 1000.0};
+            std::string status {isValid ? "✅": "❌"};
+
+            std::cout << std::format(
+                "| {:<35} | {:>12.2f} KB | {:>12.2f} ms | {:^8} |\n", 
+                fpath, fsize, elapsedMS, status
+            );
+        }
+
+        // Footer line
+        std::cout << lineSep << "\n";
     }
 
     return 0;

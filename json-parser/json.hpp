@@ -34,7 +34,7 @@ namespace JSON {
     class JSONNode;
 
     // Types of JSON Simple values
-    using JSON_SIMPLE_TYPE = std::variant<std::string, std::nullptr_t, int, double, bool>;
+    using JSON_SIMPLE_TYPE = std::variant<std::string, std::nullptr_t, long, double, bool>;
 
     // Abstracting shared_ptr + saving some typing effort
     using JSONNode_Ptr = std::shared_ptr<JSONNode>;
@@ -176,7 +176,7 @@ namespace JSON {
 
             // Access by keys (strings)
             // Much slower than traditional dict objects since we iterate sequentially - O(N)
-            JSONNode_Ptr &operator[] (std::string &k) {
+            JSONNode_Ptr &operator[] (std::string &&k) {
                 auto it = find(k);
                 if (it != values.end())
                     return *it;
@@ -206,6 +206,24 @@ namespace JSON {
         JSONNode_Ptr createObject(std::vector<JSONNode_Ptr> &&values) { return std::make_shared<JSONObjectNode>(values); }
         JSONNode_Ptr createObject(std::string &&key, std::vector<JSONNode_Ptr> &&values) { return std::make_shared<JSONObjectNode>(key, values); }
 
+        // Helper function to prettify a JSON dump string
+        inline std::string pretty(std::string &jsonDump) {
+            // Levels to keep track of how tabs to indent
+            std::size_t levels {0};
+            std::string result{""};
+            for (char ch: jsonDump) {
+                if (ch == '{' || ch == '[')
+                    result += std::string(1, ch) + "\n" + std::string(++levels, '\t');
+                else if (ch == ']' || ch == '}')
+                    result += "\n" + std::string(--levels, '\t') + std::string(1, ch);
+                else if (ch == ',')
+                    result += std::string(1, ch) + "\n" + std::string(levels, '\t');
+                else
+                    result += ch;
+            }
+            return result;
+        }
+
         // Helper function to format JSON_SIMPLE_TYPEs to String
         inline std::string simple_format (JSON_SIMPLE_TYPE &v) {
             // String
@@ -216,9 +234,9 @@ namespace JSON {
             else if (std::holds_alternative<std::nullptr_t>(v))
                 return "null";
             
-            // INT
-            else if (std::holds_alternative<int>(v))
-                return std::to_string(std::get<int>(v));
+            // LONG
+            else if (std::holds_alternative<long>(v))
+                return std::to_string(std::get<long>(v));
 
             // DOUBLE
             else if (std::holds_alternative<double>(v))
@@ -232,7 +250,7 @@ namespace JSON {
         // Helper function to parse string into JSON Simple Type objects
         inline JSON_SIMPLE_TYPE simple_parse(std::string &token) {
             // Compute the number of digits in the string to determine
-            // if it could be an integer or a double
+            // if it could be an long or a double
             std::vector<bool> isDigit;
             std::transform(token.begin(), token.end(), std::back_inserter(isDigit), [](char ch) { return std::isdigit(ch); });
             std::size_t digitCount = std::accumulate(isDigit.begin(), isDigit.end(), (std::size_t) 0, [](std::size_t sum, bool b) {
@@ -242,7 +260,7 @@ namespace JSON {
             // Error to throw if the input token is not correctly formatted
             std::invalid_argument error = std::invalid_argument("Invalid value: " + token);
 
-            // Check if leading zeros exist in a int or a double
+            // Check if leading zeros exist in a long or a double
             auto leadingZeros = [] (std::string &tok) -> bool {
                 std::size_t firstDigit = tok.find_first_of("0123456789");
                 return (tok[firstDigit] == '0' && firstDigit + 1 < tok.size() && std::isdigit(tok[firstDigit + 1]));
@@ -264,14 +282,14 @@ namespace JSON {
                 else throw error;
             }
 
-            // INT - Digit count should be same as token size or one less (for negative sign)
+            // LONG - Digit count should be same as token size or one less (for negative sign)
             // Ensure there aren't leading zeros - '001' or '-01'
             else if (digitCount == token.size() || (digitCount == token.size() - 1 && token[0] == '-')) {
-                if (!leadingZeros(token)) return std::stoi(token);
+                if (!leadingZeros(token)) return std::stol(token);
                 else throw error;
             }
 
-            // DOUBLE - Same as int but one less digit allowed for the decimal point
+            // DOUBLE - Same as LONG but one less digit allowed for the decimal point
             // Ensure there are no leading zeros
             else if (
                     (digitCount == token.size() - 1 && token.find('.') != std::string::npos) ||
@@ -346,7 +364,7 @@ namespace JSON {
                     } else if (!std::isspace(ch)) {
                         // Accumulate until we hit a special character
                         // Note that strings are already capture in the above if block
-                        // Here capture integers, bools, nulls, etc
+                        // Here capture long, bools, nulls, etc
                         if (!std::isspace(ch) && splChars.find(ch) == splChars.end())
                             acc += ch;
 
@@ -452,7 +470,12 @@ namespace JSON {
                         JSONArrayNode &v = static_cast<JSONArrayNode&>(*root);
                         for (JSONNode_Ptr nxt: v)
                             result += dumps(nxt, true) + ", ";
-                        result += v.size() > 0?"\b\b]": "]";
+
+                        if (v.size() > 0) {
+                            result.pop_back();
+                            result.pop_back();
+                        }
+                        result += "]";
                         return result;
                     }
 
@@ -461,7 +484,11 @@ namespace JSON {
                         JSONObjectNode &v = static_cast<JSONObjectNode&>(*root);
                         for (JSONNode_Ptr nxt: v)
                             result += dumps(nxt, false) + ", ";
-                        result += v.size() > 0?"\b\b}": "}";
+                        if (v.size() > 0) {
+                            result.pop_back();
+                            result.pop_back();
+                        }
+                        result += "}";
                         return result;
                     } 
                 }

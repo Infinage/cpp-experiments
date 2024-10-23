@@ -5,25 +5,32 @@ CXXFLAGS = -std=c++23 -O2 -Wall -Wextra
 # Source files 
 JSON_SRC = json.hpp
 VALIDATE_SRC = validate-json.cpp
-EXAMPLE_SRC = example-document.cpp
+CREATE_SRC = create-json.cpp
+MANIPULATE_SRC = manipulate-json.cpp
 
 # Build dir & executable paths
 BUILD_DIR = build
 VALIDATE_BIN = $(BUILD_DIR)/validate-json.out
-EXAMPLE_BIN = $(BUILD_DIR)/example-document.out
+CREATE_BIN = $(BUILD_DIR)/create-json.out
+MANIPULATE_BIN = $(BUILD_DIR)/manipulate-json.out
 
 # Target to build both binaries
-all: $(VALIDATE_BIN) $(EXAMPLE_BIN)
+all: $(VALIDATE_BIN) $(CREATE_BIN) $(MANIPULATE_BIN)
 
 # Target to build validate-json
 $(VALIDATE_BIN): $(VALIDATE_SRC) $(JSON_SRC)
 	mkdir -p $(BUILD_DIR)
 	$(CXX) $(CXXFLAGS) $(VALIDATE_SRC) -o $(VALIDATE_BIN)
 
-# Target to build example-document
-$(EXAMPLE_BIN): $(EXAMPLE_SRC) $(JSON_SRC)
+# Target to build create-json
+$(CREATE_BIN): $(CREATE_SRC) $(JSON_SRC)
 	mkdir -p $(BUILD_DIR)
-	$(CXX) $(CXXFLAGS) $(EXAMPLE_SRC) -o $(EXAMPLE_BIN)
+	$(CXX) $(CXXFLAGS) $(CREATE_SRC) -o $(CREATE_BIN)
+
+# Target to build manipulate-json
+$(MANIPULATE_BIN): $(MANIPULATE_SRC) $(JSON_SRC)
+	mkdir -p $(BUILD_DIR)
+	$(CXX) $(CXXFLAGS) $(MANIPULATE_SRC) -o $(MANIPULATE_BIN)
 
 # Target to run tests using validate-json
 test: $(VALIDATE_BIN)
