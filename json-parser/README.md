@@ -8,8 +8,8 @@ This project provides a simple C++ header-only JSON library (`json.hpp`) that ca
   
 ### Design Decisions
 1. Mimic (imperfectly) Python's JSON module with `loads` and `dumps` methods.
-2. Throw errors instead of using `cout` with `nullptr`.
-3. Use `std::vector` for both arrays and objects to maintain insertion order, following insights from the Stack Overflow thread.'
+2. Throw errors instead of using failing silently by returning a `nullptr`.
+3. Use `std::vector` for both arrays and objects to maintain insertion order, following insights from the Stack Overflow thread.
 
 ## Requirements
 
@@ -19,7 +19,7 @@ This project provides a simple C++ header-only JSON library (`json.hpp`) that ca
 ## Project Structure
 
 - **json.hpp**: Header-only library for creating and parsing JSON.
-- **validate-json.cpp**: Program that validates JSON files.
+- **validate-json.cpp**: Program that validates JSON files, given a path argument.
 - **example-document.cpp**: Example program that demonstrates creating a JSON document using the library.
 - **test/**: Directory containing sample JSON files (`passXX.json`, `failXX.json`) for validation.
 
@@ -67,6 +67,10 @@ JSON::JSONNode_Ptr root  = JSON::helper::createObject({arr, int_, str_});
 std::cout << JSON::Parser::dumps(root) << "\n";
 ```
 
+```json
+{"array": [1, 2], "number": 123, "string": "Hello World"}
+```
+
 ## Definitions
 
 ### Types of JSON Objects
@@ -74,8 +78,8 @@ The library defines several classes to represent different JSON structures:
 
 - **`JSONNode`**: Base class for all JSON nodes, handling keys and types.
 - **`JSONValueNode`**: Represents simple key-value pairs.
-- **`JSONArrayNode`**: Represents an array of JSON nodes, allowing for nested structures.
-- **`JSONObjectNode`**: Represents an object with key-value pairs, ensuring no duplicate keys.
+- **`JSONArrayNode`**: Represents an array of JSON nodes, equivalent to JSON arrays.
+- **`JSONObjectNode`**: Represents an object with key-value pairs, equivalent to JSON objects.
 
 ### Helper Functions
 The `helper` namespace provides functions to simplify the creation of JSON nodes and structures, making it easy to build complex JSON documents.
