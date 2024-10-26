@@ -10,7 +10,7 @@ RELEASE_FLAGS = -O2
 MINESWEEPER_CONFIGS = -L/home/kael/cpplib/lib -I/home/kael/cpplib/include -lftxui-component -lftxui-dom -lftxui-screen
 
 # Find source files
-SOURCES = fc.cpp minesweeper.cpp
+SOURCES = fc.cpp minesweeper.cpp cdiff.cpp
 
 # Output for both debug and release
 DEBUG_OUTPUTS = $(patsubst %.cpp, build/%.debug, $(SOURCES))
@@ -43,6 +43,13 @@ $(BUILD_DIR)/minesweeper.debug: minesweeper.cpp | $(BUILD_DIR)
 
 $(BUILD_DIR)/minesweeper.out: minesweeper.cpp | $(BUILD_DIR)
 	$(CXX) $< $(CXXFLAGS) $(RELEASE_FLAGS) $(MINESWEEPER_CONFIGS) -o $@
+
+# Compile cdiff.cpp
+$(BUILD_DIR)/cdiff.debug: cdiff.cpp | $(BUILD_DIR)
+	$(CXX) $< $(CXXFLAGS) $(DEBUG_FLAGS) -o $@
+
+$(BUILD_DIR)/cdiff.out: cdiff.cpp | $(BUILD_DIR)
+	$(CXX) $< $(CXXFLAGS) $(RELEASE_FLAGS) -o $@
 
 # Clean up the project
 clean:
