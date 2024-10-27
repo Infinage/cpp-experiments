@@ -104,6 +104,75 @@ class Diff {
             return result;
         }
 
+        /* We already have everything we need, we need to fold the outputs */
+        static std::string contextPatchText(
+            const std::deque<std::tuple<int, std::string>> &f1Patch,
+            const std::deque<std::tuple<int, std::string>> &f2Patch,
+            std::size_t context = 3
+        ) {
+
+            auto withinContextHelper = [] (const std::deque<std::tuple<int, std::string>> &patches, std::size_t context) {
+                std::size_t N {patches.size()}, changesWithinContext {0};
+                std::vector<bool> toDisplay(N, true);
+
+                // We do a sliding window approach, compute for the 1st window
+                std::for_each(
+                        patches.cbegin(), patches.cbegin() + (int) std::min(context, patches.size()),
+                        [&changesWithinContext] (const std::tuple<int, std::string> &tp) {
+                            if (std::get<1>(tp)[0] != ' ') changesWithinContext++;
+                        }
+                );
+
+                // If we have atleast one change inside window we would display it
+                for (std::size_t i = 0; i < patches.size(); i++) {
+                    if (i + context < N && std::get<1>(patches[i + context])[0] != ' ') changesWithinContext++;
+                    if (i > context && std::get<1>(patches[i - context - 1])[0] != ' ') changesWithinContext--;
+                    if (!changesWithinContext) toDisplay[i] = false;
+                }
+
+                return toDisplay;
+            };
+
+            std::size_t N1 {f1Patch.size()}, N2 {f2Patch.size()}, i {0},  j {0};
+            std::vector<bool> f1Display {withinContextHelper(f1Patch, context)};
+            std::vector<bool> f2Display {withinContextHelper(f2Patch, context)};
+
+            std::size_t startf1, startf2;
+            std::string result {""}, acc1 {""}, acc2 {""};
+            while (i < N1 || j < N2) {
+                while (i < N1 && !f1Display[i] && j < N2 && !f2Display[j]) {
+                    i++; j++;
+                }
+
+                startf1 = i, startf2 = j;
+                while ((i < N1 && f1Display[i]) || (j < N2 && f2Display[j])) {
+                    std::string curr1 {i < N1? std::get<1>(f1Patch[i]): " "}, curr2 {j < N2? std::get<1>(f2Patch[j]): " "};
+                    if (curr1[0] == '-') {
+                        if (f1Display[i])
+                            acc1 += curr1 + "\n"; 
+                        i++;
+                    } else if (curr2[0] == '+') {
+                        if (f2Display[j])
+                            acc2 += curr2 + "\n"; 
+                        j++;
+                    } else {
+                        if (f1Display[i])
+                            acc1 += curr1 + "\n"; 
+                        if (f2Display[j])
+                            acc2 += curr2 + "\n"; 
+                        i++; j++;
+                    }
+                }
+
+                result += std::format("***************\n*** {},{} ****\n{}--- {},{} ----\n{}", startf1 + 1, i, acc1, startf2 + 1, j, acc2);
+                acc1.clear();
+                acc2.clear();
+
+            }
+
+            return result;
+        }
+
     public:
         static std::string unifiedDiff(std::vector<std::string> &sentences1, std::vector<std::string> &sentences2) {
             // Length of both strings
@@ -131,6 +200,59 @@ class Diff {
 
             // Convert to string
             std::string result {unifiedPatchText(deltas)};
+
+            return result;
+        }
+
+        static std::string contextDiff(std::vector<std::string> &sentences1, std::vector<std::string> &sentences2) {
+            // Length of both strings
+            std::size_t N1 = sentences1.size(), N2 = sentences2.size();
+
+            // Compute DP Grid
+            std::vector<std::vector<int>> dp {computeLCSGrid(N1, N2, sentences1, sentences2)};
+
+            // Compute difference between two strings
+            std::size_t i = N1, j = N2;
+            std::deque<std::tuple<int, std::string>> f1Patches, f2Patches, f1Patch, f2Patch;
+
+            // Helper to eliminate some code redundancy
+            auto accumulatePatch = [] (std::deque<std::tuple<int, std::string>> &patch, std::deque<std::tuple<int, std::string>> &patches, bool otherPatchEmpty) -> void {
+                for (std::tuple<int, std::string> &tp: patch) {
+                    if (!otherPatchEmpty)
+                        std::get<1>(tp) = "!" + std::get<1>(tp).substr(1);
+                    patches.push_front(tp);
+                }
+            };
+
+            while (i > 0 || j > 0) {
+                if (i > 0 && j > 0 && sentences1[i - 1] == sentences2[j - 1]) {
+                    // Accumulate Patch created so far
+                    accumulatePatch(f1Patch, f1Patches, f2Patch.empty());
+                    accumulatePatch(f2Patch, f2Patches, f1Patch.empty());
+
+                    // Clear patches before moving forward
+                    f1Patch.clear();
+                    f2Patch.clear();
+
+                    i--; j--;
+                    f1Patches.push_front({i, "  " + sentences1[i]});
+                    f2Patches.push_front({j, "  " + sentences2[j]});
+                } else if (j <= 0 || (i > 0 && dp[i - 1][j] > dp[i][j - 1])) {
+                    i--;
+                    f1Patch.push_back({i, "- " + sentences1[i]});
+                }
+                else {
+                    j--;
+                    f2Patch.push_back({j, "+ " + sentences2[j]});
+                }
+            }
+
+            // Accumulate Patch created so far
+            accumulatePatch(f1Patch, f1Patches, f2Patch.empty());
+            accumulatePatch(f2Patch, f2Patches, f1Patch.empty());
+
+            // Convert to string
+            std::string result {contextPatchText(f1Patches, f2Patches)};
 
             return result;
         }
@@ -177,8 +299,8 @@ class Diff {
 };
 
 int main(int argc, char **argv) {
-    if (argc < 3 || (argc == 4 && std::strcmp(argv[1], "-u") != 0) || (argc > 4))
-        std::cout << "Usage: cdiff [-u] <file1> <file2>\n";
+    if (argc < 3 || (argc == 4 && std::strcmp(argv[1], "-u") != 0 && std::strcmp(argv[1], "-c") != 0) || (argc > 4))
+        std::cout << "Usage: cdiff [-u|-c] <file1> <file2>\n";
 
     else {
         auto readSentences = [] (std::string &&fname) -> std::vector<std::string> {
@@ -192,7 +314,14 @@ int main(int argc, char **argv) {
 
         std::vector<std::string> sentences1 {readSentences(argc == 3? argv[1]: argv[2])};
         std::vector<std::string> sentences2 {readSentences(argc == 3? argv[2]: argv[3])};
-        std::string deltas {argc == 4? Diff::unifiedDiff(sentences1, sentences2): Diff::defaultDiff(sentences1, sentences2)};
+
+        std::string deltas;
+        if (argc == 3)
+            deltas = Diff::defaultDiff(sentences1, sentences2);
+        else if (std::strcmp(argv[1], "-u") == 0)
+            deltas = Diff::unifiedDiff(sentences1, sentences2);
+        else
+            deltas = Diff::contextDiff(sentences1, sentences2);
 
         // Print out the deltas
         std::cout << deltas << "\n";
