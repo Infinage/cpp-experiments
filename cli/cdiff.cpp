@@ -14,6 +14,20 @@
 
 class Diff {
     private:
+        static std::vector<std::string> readSentences(std::string &fname) {
+            std::ifstream ifs {fname};
+            std::string buffer;
+            std::vector<std::string> sentences;
+            if (!ifs) {
+                std::cout << "cdiff: " << fname << ": No such file or directory\n"; 
+                std::exit(1);
+            } else {
+                while (std::getline(ifs, buffer))
+                    sentences.push_back(buffer);
+                return sentences;
+            }
+        }
+
         /* Compute the LCS DP Grid */
         static std::vector<std::vector<int>> computeLCSGrid(
                 std::size_t N1, std::size_t N2,
@@ -106,7 +120,8 @@ class Diff {
                 acc.clear();
             }
 
-            result.pop_back();
+            if (!result.empty())
+                result.pop_back();
             return result;
         }
 
@@ -200,7 +215,7 @@ class Diff {
         
     public:
         /* Helper function to be used when cdiff is being used in context and unified mode */
-        static std::string diffFileStat(std::string &fname1, std::string &fname2, char left, char right) {
+        static std::string diffFileHeader(std::string &fname1, std::string &fname2, char left, char right) {
             int fnameLength {std::max({(int)fname1.size(), (int)fname2.size(), 20})};
             std::filesystem::file_time_type mdate1 {std::filesystem::last_write_time(fname1)}, mdate2 {std::filesystem::last_write_time(fname2)};
             return std::format(
@@ -210,7 +225,10 @@ class Diff {
             );
         }
 
-        static std::string unifiedDiff(std::vector<std::string> &sentences1, std::vector<std::string> &sentences2) {
+        static std::string unifiedDiff(std::string &fpath1, std::string &fpath2) {
+            // Read file name into vector
+            std::vector<std::string> sentences1 {readSentences(fpath1)}, sentences2 {readSentences(fpath2)};
+
             // Length of both strings
             std::size_t N1 = sentences1.size(), N2 = sentences2.size();
 
@@ -235,12 +253,15 @@ class Diff {
             }
 
             // Convert to string
-            std::string result {unifiedPatchText(deltas)};
+            std::string result {diffFileHeader(fpath1, fpath2, '-', '+') + "\n" + unifiedPatchText(deltas)};
 
             return result;
         }
 
-        static std::string contextDiff(std::vector<std::string> &sentences1, std::vector<std::string> &sentences2) {
+        static std::string contextDiff(std::string &fpath1, std::string &fpath2) {
+            // Read file into vector
+            std::vector<std::string> sentences1 {readSentences(fpath1)}, sentences2 {readSentences(fpath2)};
+
             // Length of both strings
             std::size_t N1 = sentences1.size(), N2 = sentences2.size();
 
@@ -288,12 +309,15 @@ class Diff {
             accumulatePatch(f2Patch, f2Patches, f1Patch.empty());
 
             // Convert to string
-            std::string result {contextPatchText(f1Patches, f2Patches)};
+            std::string result {diffFileHeader(fpath1, fpath2, '*', '-') + "\n" + contextPatchText(f1Patches, f2Patches)};
 
             return result;
         }
 
-        static std::string defaultDiff(std::vector<std::string> &sentences1, std::vector<std::string> &sentences2) {
+        static std::string defaultDiff(std::string &fpath1, std::string &fpath2) {
+            // Read file into vector
+            std::vector<std::string> sentences1 {readSentences(fpath1)}, sentences2 {readSentences(fpath2)};
+
             // Length of both strings
             std::size_t N1 = sentences1.size(), N2 = sentences2.size();
 
@@ -328,7 +352,8 @@ class Diff {
 
             // Convert to string
             std::string result {std::ranges::fold_left(deltas, std::string{}, [](auto &&acc, auto &s) { return acc + s + "\n"; })};
-            result.pop_back();
+            if (!result.empty() && result.back() == '\n')
+                result.pop_back();
 
             return result;
         }
@@ -339,30 +364,16 @@ int main(int argc, char **argv) {
         std::cout << "Usage: cdiff [-u|-c] <file1> <file2>\n";
 
     else {
-        auto readSentences = [] (std::string &fname) -> std::vector<std::string> {
-            std::ifstream ifs {fname};
-            std::string buffer;
-            std::vector<std::string> sentences;
-            if (!ifs) {
-                std::cout << "cdiff: " << fname << ": No such file or directory\n"; 
-                std::exit(1);
-            } else {
-                while (std::getline(ifs, buffer))
-                    sentences.push_back(buffer);
-                return sentences;
-            }
-        };
 
-        std::string fname1 {argc == 3? argv[1]: argv[2]}, fname2 {argc == 3? argv[2]: argv[3]};
-        std::vector<std::string> sentences1 {readSentences(fname1)}, sentences2 {readSentences(fname2)};
+        std::string fpath1 {argc == 3? argv[1]: argv[2]}, fpath2 {argc == 3? argv[2]: argv[3]};
 
         std::string deltas;
         if (argc == 3)
-            deltas = Diff::defaultDiff(sentences1, sentences2);
+            deltas = Diff::defaultDiff(fpath1, fpath2);
         else if (std::strcmp(argv[1], "-u") == 0)
-            deltas = Diff::diffFileStat(fname1, fname2, '-', '+') + "\n" + Diff::unifiedDiff(sentences1, sentences2);
+            deltas = Diff::unifiedDiff(fpath1, fpath2);
         else
-            deltas = Diff::diffFileStat(fname1, fname2, '*', '-') + "\n" + Diff::contextDiff(sentences1, sentences2);
+            deltas = Diff::contextDiff(fpath1, fpath2);
 
         // Print out the deltas
         std::cout << deltas << "\n";
