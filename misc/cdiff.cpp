@@ -1,10 +1,14 @@
 #include <algorithm>
-#include <bits/ranges_algo.h>
+#include <chrono>
+#include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <deque>
+#include <filesystem>
 #include <format>
 #include <fstream>
 #include <iostream>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -173,7 +177,35 @@ class Diff {
             return result;
         }
 
+        static std::string format_file_time(const std::filesystem::file_time_type& ftime) {
+            // Cast to system clock
+            std::chrono::time_point sctp = std::chrono::clock_cast<std::chrono::system_clock>(ftime);
+
+            // Separate into whole seconds and subseconds
+            auto seconds = std::chrono::time_point_cast<std::chrono::seconds>(sctp);
+            auto subseconds = std::chrono::duration_cast<std::chrono::nanoseconds>(sctp - seconds).count();
+
+            std::stringstream buffer;
+            std::time_t time = std::chrono::system_clock::to_time_t(sctp);
+            std::tm *lt {std::localtime(&time)};
+            buffer << std::put_time(lt, "%F %T");
+            buffer << '.' << std::setfill('0') << std::setw(9) << subseconds;
+            buffer << std::put_time(lt, " %z");
+
+            return buffer.str();
+        }
+        
     public:
+        static std::string diffFileStat(std::string &fname1, std::string &fname2, char left, char right) {
+            int fnameLength {std::max({(int)fname1.size(), (int)fname2.size(), 20})};
+            std::filesystem::file_time_type mdate1 {std::filesystem::last_write_time(fname1)}, mdate2 {std::filesystem::last_write_time(fname2)};
+            return std::format(
+                    "{} {:<{}} {}\n{} {:<{}} {}", std::string(3, left), fname1, fnameLength,
+                    format_file_time(mdate1), std::string(3, right),
+                    fname2, fnameLength, format_file_time(mdate2)
+            );
+        }
+
         static std::string unifiedDiff(std::vector<std::string> &sentences1, std::vector<std::string> &sentences2) {
             // Length of both strings
             std::size_t N1 = sentences1.size(), N2 = sentences2.size();
@@ -303,25 +335,30 @@ int main(int argc, char **argv) {
         std::cout << "Usage: cdiff [-u|-c] <file1> <file2>\n";
 
     else {
-        auto readSentences = [] (std::string &&fname) -> std::vector<std::string> {
+        auto readSentences = [] (std::string &fname) -> std::vector<std::string> {
             std::ifstream ifs {fname};
             std::string buffer;
             std::vector<std::string> sentences;
-            while (std::getline(ifs, buffer))
-                sentences.push_back(buffer);
-            return sentences;
+            if (!ifs) {
+                std::cout << "cdiff: " << fname << ": No such file or directory\n"; 
+                std::exit(1);
+            } else {
+                while (std::getline(ifs, buffer))
+                    sentences.push_back(buffer);
+                return sentences;
+            }
         };
 
-        std::vector<std::string> sentences1 {readSentences(argc == 3? argv[1]: argv[2])};
-        std::vector<std::string> sentences2 {readSentences(argc == 3? argv[2]: argv[3])};
+        std::string fname1 {argc == 3? argv[1]: argv[2]}, fname2 {argc == 3? argv[2]: argv[3]};
+        std::vector<std::string> sentences1 {readSentences(fname1)}, sentences2 {readSentences(fname2)};
 
         std::string deltas;
         if (argc == 3)
             deltas = Diff::defaultDiff(sentences1, sentences2);
         else if (std::strcmp(argv[1], "-u") == 0)
-            deltas = Diff::unifiedDiff(sentences1, sentences2);
+            deltas = Diff::diffFileStat(fname1, fname2, '-', '+') + "\n" + Diff::unifiedDiff(sentences1, sentences2);
         else
-            deltas = Diff::contextDiff(sentences1, sentences2);
+            deltas = Diff::diffFileStat(fname1, fname2, '*', '-') + "\n" + Diff::contextDiff(sentences1, sentences2);
 
         // Print out the deltas
         std::cout << deltas << "\n";
