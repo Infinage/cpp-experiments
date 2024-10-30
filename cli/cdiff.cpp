@@ -14,7 +14,7 @@
 
 class Diff {
     private:
-        // Compute the LCS DP Grid
+        /* Compute the LCS DP Grid */
         static std::vector<std::vector<int>> computeLCSGrid(
                 std::size_t N1, std::size_t N2,
                 std::vector<std::string> &sentences1,
@@ -32,6 +32,8 @@ class Diff {
             return dp;
         }
 
+        /* Helper to generate the patch text to display for 'default' mode.
+         * Takes in the patches from two files seperately */
         static inline std::string defaultPatchText(
                 std::size_t i, std::size_t j,
                 std::deque<std::string> &f1Patch,
@@ -60,7 +62,7 @@ class Diff {
             return result;
         }
 
-        /* We already have everything we need, we need to fold the outputs */
+        /* We already have everything we need, we need to fold the outputs based on the context length. */
         static std::string unifiedPatchText(const std::deque<std::tuple<int, int, std::string>> &deltas, std::size_t context = 3) {
             std::size_t N {deltas.size()}, changesWithinContext {0};
             std::vector<bool> toDisplay(N, true);
@@ -137,7 +139,7 @@ class Diff {
                 return toDisplay;
             };
 
-            std::size_t N1 {f1Patch.size()}, N2 {f2Patch.size()}, i {0},  j {0};
+            std::size_t N1 {f1Patch.size()}, N2 {f2Patch.size()}, i {0}, j {0};
             std::vector<bool> f1Display {withinContextHelper(f1Patch, context)};
             std::vector<bool> f2Display {withinContextHelper(f2Patch, context)};
 
@@ -149,20 +151,20 @@ class Diff {
                 }
 
                 startf1 = i, startf2 = j;
-                while ((i < N1 && f1Display[i]) || (j < N2 && f2Display[j])) {
+                while ((i < N1 && f1Display[i]) || (j < N2 && f2Display[j]) || (i < N1 && j >= N2) || (i >= N1 && j < N2)) {
                     std::string curr1 {i < N1? std::get<1>(f1Patch[i]): " "}, curr2 {j < N2? std::get<1>(f2Patch[j]): " "};
                     if (curr1[0] == '-') {
-                        if (f1Display[i])
+                        if (i < N1 && f1Display[i])
                             acc1 += curr1 + "\n"; 
                         i++;
                     } else if (curr2[0] == '+') {
-                        if (f2Display[j])
+                        if (j < N2 && f2Display[j])
                             acc2 += curr2 + "\n"; 
                         j++;
                     } else {
-                        if (f1Display[i])
+                        if (i < N1 && f1Display[i])
                             acc1 += curr1 + "\n"; 
-                        if (f2Display[j])
+                        if (j < N2 && f2Display[j])
                             acc2 += curr2 + "\n"; 
                         i++; j++;
                     }
@@ -177,6 +179,7 @@ class Diff {
             return result;
         }
 
+        /* From std::fs::file_time_type to string format: 2024-10-09 21:45:57.930538238 +0530 */
         static std::string format_file_time(const std::filesystem::file_time_type& ftime) {
             // Cast to system clock
             std::chrono::time_point sctp = std::chrono::clock_cast<std::chrono::system_clock>(ftime);
@@ -196,6 +199,7 @@ class Diff {
         }
         
     public:
+        /* Helper function to be used when cdiff is being used in context and unified mode */
         static std::string diffFileStat(std::string &fname1, std::string &fname2, char left, char right) {
             int fnameLength {std::max({(int)fname1.size(), (int)fname2.size(), 20})};
             std::filesystem::file_time_type mdate1 {std::filesystem::last_write_time(fname1)}, mdate2 {std::filesystem::last_write_time(fname2)};

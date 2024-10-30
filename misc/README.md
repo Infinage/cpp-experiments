@@ -1,18 +1,6 @@
 # Project Overview
 
-This folder contains two projects:
-
-## fc
-
-A command-line utility similar to `wc`, designed to count files by their extensions given a directory path. It lists the counts of all varying extensions in a neat tabular format.
-
-### Usage
-
-Run the program with the directory path as an argument:
-
-```bash
-./build/fc.out <directory_path>
-```
+This `misc` folder contains various experimental C++ projects and snippets that are currently uncategorized within the main repository. Once enough projects follow a similar theme or pattern, they may be moved into their own organized folders.
 
 ## minesweeper
 
