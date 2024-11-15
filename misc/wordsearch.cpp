@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <array>
 #include <cctype>
 #include <cstdlib>
@@ -5,13 +6,29 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <limits>
 #include <memory>
+#include <queue>
+#include <random>
+#include <stack>
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
 class WordSearch {
     private:
+        // Datastructure to hold list of words and the puzzle grid
+        std::vector<std::vector<char>> grid;
+        std::vector<std::string> words;
+
+        // Overlaps, Rand int, word, row, col, dirx, diry
+        using GENERATE_CANDIDATE = std::tuple<int, int, std::string, int, int, int, int>;
+
+        // For random number generation
+        std::mt19937 random_gen;
+        std::uniform_int_distribution<int> randInt;
+
         class Trie {
             public:
                 bool end; 
@@ -24,22 +41,57 @@ class WordSearch {
 
                 static std::unique_ptr<Trie> init(std::vector<std::string> &words) {
                     std::unique_ptr<Trie> root = std::make_unique<Trie>();
-                    for (const std::string &word: words) {
-                        Trie *curr = root.get();
-                        for (const char ch: word) {
-                            if (curr->next[ord(ch)] == nullptr)
-                                curr->next[ord(ch)] = std::make_unique<Trie>();
-                            curr = curr->next[ord(ch)].get();
-                        }
-                        curr->end = true;
-                    }
+                    for (const std::string &word: words)
+                        insert(root, word);
                     return root;
+                }
+
+                static void insert(std::unique_ptr<Trie> &root, const std::string &word) {
+                    Trie *curr = root.get();
+                    for (const char ch: word) {
+                        if (curr->next[ord(ch)] == nullptr)
+                            curr->next[ord(ch)] = std::make_unique<Trie>();
+                        curr = curr->next[ord(ch)].get();
+                    }
+                    curr->end = true;
+                }
+
+                static bool erase(std::unique_ptr<Trie> &root, const std::string &word) {
+                    Trie *curr = root.get(); 
+                    std::stack<std::pair<Trie*, char>> stk;
+                    for (const char ch: word) {
+                        stk.push({curr, ch});
+                        curr = curr->next[ord(ch)].get();
+                        if (curr == nullptr)
+                            return false;
+                    }
+
+                    if (!curr->end)
+                        return false;
+                    else {
+                        // Mark end of node as false to 'del' the word
+                        curr->end = false;
+
+                        // Delete nodes if it has no child
+                        while (!stk.empty() && std::all_of(curr->next.begin(), curr->next.end(), [](std::unique_ptr<Trie> &node) { return node == nullptr; })) {
+                            stk.top().first->next[ord(stk.top().second)].reset();
+                            curr = stk.top().first;
+                            stk.pop();
+                        }
+                        return true;
+                    }
                 }
         };
 
         struct HashPair {
             inline std::size_t operator() (const std::pair<int, int> &p) const {
                 return (std::size_t) ((31 * p.first) + p.second);
+            }
+        };
+
+        struct OrderCandidate {
+            inline bool operator() (const GENERATE_CANDIDATE &c1, const GENERATE_CANDIDATE &c2) {
+                return std::get<0>(c1) < std::get<0>(c2) || (std::get<0>(c1) == std::get<0>(c2) && std::get<1>(c1) < std::get<1>(c2));
             }
         };
 
@@ -52,13 +104,111 @@ class WordSearch {
             return result;
         }
 
-    public:
-        std::vector<std::vector<char>> grid;
-        std::vector<std::string> words;
-        WordSearch(std::vector<std::vector<char>> &grid, std::vector<std::string> &words): grid(grid), words(words) {}
-
         bool isValid(int i, int j) {
             return 0 <= i && 0 <= j && i < (int)grid.size() && j < (int)grid[0].size();
+        }
+
+        std::priority_queue<GENERATE_CANDIDATE, std::vector<GENERATE_CANDIDATE>, OrderCandidate> generateCandidates(
+                std::unique_ptr<Trie> &root, std::unordered_set<std::string> &wordSet
+            ) {
+
+            std::priority_queue<GENERATE_CANDIDATE, std::vector<GENERATE_CANDIDATE>, OrderCandidate> result;
+            std::unordered_set<std::string> inserted;
+
+            for (std::size_t i{0}; i < grid.size(); i++) {
+                for (std::size_t j{0}; j < grid[0].size(); j++) {
+                    for (auto [dx, dy]: dirs()) {
+                        int x {(int)i}, y {(int)j};
+                        std::vector<std::tuple<Trie*, std::string, int>> candidates{{root.get(), "", 0}}, next;
+                        while (isValid(x, y) && !candidates.empty()) {
+                            next.clear();
+                            for (const auto [node, acc, overlaps]: candidates) {
+                                for (char ch = 'A'; ch <= 'Z'; ch++) {
+                                    char gridCh {grid[(std::size_t)x][(std::size_t)y]};
+                                    Trie *nextNode {node->next[Trie::ord(ch)].get()};
+                                    if ((gridCh == '*' || gridCh == ch) && nextNode != nullptr) {
+                                        next.push_back({nextNode, acc + ch, gridCh == '*'? overlaps: overlaps + 1}); 
+                                        if (nextNode->end) {
+                                            inserted.insert(acc + ch);
+                                            result.push({overlaps, randInt(random_gen), acc, i, j, dx, dy});
+                                        }
+                                    }
+                                }
+                            }
+                            candidates = next;
+                            x += dx; y += dy;
+                        }
+                    }
+                }
+            }
+
+            if (inserted.size() != wordSet.size()) return {};
+            else return result;
+        }
+
+        /*
+         * While we have words left to insert repeat
+         *      - Check suitable candidates for all remaining words 
+         *          - use trie, iterate through grid cells, iterate through all 8 directions while trie node is not null
+         *          - If trie.end is true, insert into a priority queue <characters overlap count, random int, word, insert row, insert col, direction>
+         *      - If at any point a word has no candidates, we backtrack
+         *      - Pick per priority, insert into grid and repeat loop, remove picked element
+         *      - If all of the candidates are exhausted backtrack (we can improve it further to check if all candidates of a word are exhausted backtrack)
+         */
+        bool backtrackGenerate(std::unique_ptr<Trie> &root, std::unordered_set<std::string> &wordSet) {
+            if (wordSet.empty()) return true;
+            else {
+                std::priority_queue<GENERATE_CANDIDATE, std::vector<GENERATE_CANDIDATE>, OrderCandidate> pq{generateCandidates(root, wordSet)};
+                while(!pq.empty()) {
+                    auto [overlapCount, randn, word, row, col, dx, dy] = pq.top();
+                    pq.pop();
+                    // Insert into grid, keep track of characters that were already inserted
+                    // These chars would be skipped during removal in case of backtracking
+                    std::unordered_set<int> overlaps;
+                    wordSet.erase(word);
+                    Trie::erase(root, word);
+                    for (int idx {0}; idx < (int)word.size(); idx++) {
+                        int x {row + (idx * dx)}, y {col + (idx * dy)};
+                        if (grid[(std::size_t)x][(std::size_t)y] == word[(std::size_t)idx])
+                            overlaps.insert(idx);
+                        grid[(std::size_t)x][(std::size_t)y] = word[(std::size_t)idx];
+                        row += dx; col += dy;
+                    }
+
+                    if (backtrackGenerate(root, wordSet))
+                        return true;
+
+                    // Reinsert the word and remove from grid
+                    Trie::insert(root, word);
+                    wordSet.insert(word);
+                    for (int idx {0}; idx < (int)word.size(); idx++) {
+                        if (overlaps.find(idx) != overlaps.end())
+                            grid[(std::size_t)row][(std::size_t)col] = '*';
+                        row += dx; col += dy;
+                    }
+                }
+                return false;
+            }
+        }
+
+    public:
+        // Constructor for solver
+        WordSearch(std::vector<std::vector<char>> &grid, std::vector<std::string> &words): grid(grid), words(words) {}
+
+        // Constructor for puzzle generator
+        WordSearch(std::vector<std::string> &words): words(words) {
+            // Find max length of words
+            std::size_t maxLength {0};
+            for (const std::string &word: words)
+                maxLength = std::max(maxLength, word.size());
+            maxLength += 5;
+
+            // Create empty grid
+            this->grid = std::vector<std::vector<char>>(maxLength, std::vector<char>(maxLength, '*'));
+
+            // For random shuffling during puzzle generation
+            random_gen = std::mt19937{std::random_device{}()};
+            randInt = std::uniform_int_distribution<int>(std::numeric_limits<int>::min(), std::numeric_limits<int>::max());
         }
 
         std::unordered_set<std::string> solve() {
@@ -98,6 +248,12 @@ class WordSearch {
                         grid[i][j] = '*';
 
             return found;
+        }
+
+        void generate() {
+            std::unique_ptr<Trie> root{Trie::init(words)}; 
+            std::unordered_set<std::string> pending {words.begin(), words.end()};
+            backtrackGenerate(root, pending);
         }
 
         void print() {
@@ -141,11 +297,14 @@ class WordSearch {
 
 int main(int argc, char **argv) {
     if (argc == 4 && (std::strcmp(argv[1], "generate") == 0 || std::strcmp(argv[1], "solve") == 0)) {
-        std::vector<std::vector<char>> grid {WordSearch::readGrid(std::string{argv[2]})};
-        std::vector<std::string> wordList {WordSearch::readWordList(std::string{argv[3]})};
         if (std::strcmp(argv[1],  "generate") == 0) {
-            std::cout << "Error: Not implemented yet!\n";
+            std::vector<std::string> wordList {WordSearch::readWordList(std::string{argv[3]})};
+            WordSearch ws{wordList};
+            ws.generate();
+            ws.print();
         } else {
+            std::vector<std::vector<char>> grid {WordSearch::readGrid(std::string{argv[2]})};
+            std::vector<std::string> wordList {WordSearch::readWordList(std::string{argv[3]})};
             WordSearch ws{grid, wordList};
             std::unordered_set<std::string> found{ws.solve()};
             std::cout << "Found: " << found.size() << " words.\nNot found: " << wordList.size() - found.size() << " words.\n\n";
