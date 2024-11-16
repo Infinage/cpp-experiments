@@ -1,6 +1,7 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
@@ -10,9 +11,9 @@
 #include <memory>
 #include <queue>
 #include <random>
+#include <sstream>
 #include <stack>
 #include <string>
-#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -28,6 +29,7 @@ class WordSearch {
         // For random number generation
         std::mt19937 random_gen;
         std::uniform_int_distribution<int> randInt;
+        std::uniform_int_distribution<char> randChar;
 
         class Trie {
             public:
@@ -130,7 +132,7 @@ class WordSearch {
                                         next.push_back({nextNode, acc + ch, gridCh == '*'? overlaps: overlaps + 1}); 
                                         if (nextNode->end) {
                                             inserted.insert(acc + ch);
-                                            result.push({overlaps, randInt(random_gen), acc, i, j, dx, dy});
+                                            result.push({overlaps, randInt(random_gen), acc + ch, i, j, dx, dy});
                                         }
                                     }
                                 }
@@ -172,7 +174,6 @@ class WordSearch {
                         if (grid[(std::size_t)x][(std::size_t)y] == word[(std::size_t)idx])
                             overlaps.insert(idx);
                         grid[(std::size_t)x][(std::size_t)y] = word[(std::size_t)idx];
-                        row += dx; col += dy;
                     }
 
                     if (backtrackGenerate(root, wordSet))
@@ -182,9 +183,9 @@ class WordSearch {
                     Trie::insert(root, word);
                     wordSet.insert(word);
                     for (int idx {0}; idx < (int)word.size(); idx++) {
-                        if (overlaps.find(idx) != overlaps.end())
-                            grid[(std::size_t)row][(std::size_t)col] = '*';
-                        row += dx; col += dy;
+                        int x {row + (idx * dx)}, y {col + (idx * dy)};
+                        if (overlaps.find(idx) == overlaps.end())
+                            grid[(std::size_t)x][(std::size_t)y] = '*';
                     }
                 }
                 return false;
@@ -201,14 +202,20 @@ class WordSearch {
             std::size_t maxLength {0};
             for (const std::string &word: words)
                 maxLength = std::max(maxLength, word.size());
-            maxLength += 5;
 
-            // Create empty grid
-            this->grid = std::vector<std::vector<char>>(maxLength, std::vector<char>(maxLength, '*'));
+            // Compute grid dimensions
+            std::uniform_int_distribution<int> randDims{std::uniform_int_distribution<int>(
+                    (int)std::ceil(std::sqrt((double) (words.size() * maxLength) * (1 + 0.10))),
+                    (int)std::ceil(std::sqrt((double) (words.size() * maxLength) * (1 + 0.25)))
+            )};
+
+            // Create empty grid with random dimensions
+            this->grid = std::vector<std::vector<char>>((std::size_t) randDims(random_gen), std::vector<char>((std::size_t) randDims(random_gen), '*'));
 
             // For random shuffling during puzzle generation
             random_gen = std::mt19937{std::random_device{}()};
             randInt = std::uniform_int_distribution<int>(std::numeric_limits<int>::min(), std::numeric_limits<int>::max());
+            randChar = std::uniform_int_distribution<char>('A', 'Z');
         }
 
         std::unordered_set<std::string> solve() {
@@ -254,14 +261,22 @@ class WordSearch {
             std::unique_ptr<Trie> root{Trie::init(words)}; 
             std::unordered_set<std::string> pending {words.begin(), words.end()};
             backtrackGenerate(root, pending);
+
+            // Fill missing positions with random chars
+            for (std::size_t i{0}; i < grid.size(); i++)
+                for (std::size_t j{0}; j < grid[0].size(); j++)
+                    if (grid[i][j] == '*')
+                        grid[i][j] = randChar(random_gen);
         }
 
         void print() {
+            std::ostringstream oss;
             for (std::size_t i{0}; i < grid.size(); i++) {
                 for (std::size_t j{0}; j < grid[0].size(); j++)
-                    std::cout << grid[i][j] << " ";
-                std::cout << "\n";
+                    oss << grid[i][j] << " ";
+                oss << "\n";
             }
+            std::cout << oss.str();
         }
 
         static std::vector<std::string> readWordList(std::string &&fname) {
@@ -296,26 +311,24 @@ class WordSearch {
 };
 
 int main(int argc, char **argv) {
-    if (argc == 4 && (std::strcmp(argv[1], "generate") == 0 || std::strcmp(argv[1], "solve") == 0)) {
-        if (std::strcmp(argv[1],  "generate") == 0) {
-            std::vector<std::string> wordList {WordSearch::readWordList(std::string{argv[3]})};
-            WordSearch ws{wordList};
-            ws.generate();
-            ws.print();
-        } else {
-            std::vector<std::vector<char>> grid {WordSearch::readGrid(std::string{argv[2]})};
-            std::vector<std::string> wordList {WordSearch::readWordList(std::string{argv[3]})};
-            WordSearch ws{grid, wordList};
-            std::unordered_set<std::string> found{ws.solve()};
-            std::cout << "Found: " << found.size() << " words.\nNot found: " << wordList.size() - found.size() << " words.\n\n";
-            ws.print();
-        } 
+    if (argc == 2) {
+        std::vector<std::string> wordList{WordSearch::readWordList(std::string{argv[1]})};
+        WordSearch ws{wordList};
+        ws.generate();
+        ws.print();
+    } else if (argc == 3) {
+        std::vector<std::string> wordList{WordSearch::readWordList(std::string{argv[1]})};
+        std::vector<std::vector<char>> grid{WordSearch::readGrid(std::string{argv[2]})};
+        WordSearch ws{grid, wordList};
+        std::unordered_set<std::string> found{ws.solve()};
+        std::cout << found.size() << "F, " << wordList.size() - found.size() << "NF\n\n";
+        ws.print();
     } else {
         std::cout << "Usage:\n"
                   << "  1. Generate word search puzzle:\n"
-                  << "     ./wordsearch generate <outfile> <wordlist>\n\n"
+                  << "     ./wordsearch <wordlist>\n\n"
                   << "  2. Solve word search puzzle:\n"
-                  << "     ./wordsearch solve <infile> <wordlist>\n";
+                  << "     ./wordsearch <wordlist> <grid>\n";
     }
     return 0;
 }
