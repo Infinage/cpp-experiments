@@ -112,7 +112,7 @@ class WordSearch {
         };
 
         struct OrderCandidate {
-            inline bool operator() (const GENERATE_CANDIDATE &c1, const GENERATE_CANDIDATE &c2) {
+            inline bool operator() (const GENERATE_CANDIDATE &c1, const GENERATE_CANDIDATE &c2) const {
                 return std::get<0>(c1) < std::get<0>(c2)
                         || (std::get<0>(c1) == std::get<0>(c2) && std::get<1>(c1) > std::get<1>(c2))
                         || (std::get<0>(c1) == std::get<0>(c2) && std::get<1>(c1) == std::get<1>(c2) && std::get<2>(c1) < std::get<2>(c2));
@@ -154,7 +154,7 @@ class WordSearch {
                         while (isValid(x, y) && !candidates.empty()) {
                             next.clear();
                             char gridCh {grid[(std::size_t)x][(std::size_t)y]};
-                            for (const auto [node, acc, overlaps]: candidates) {
+                            for (auto [node, acc, overlaps]: candidates) {
                                 for (char ch = 'A'; ch <= 'Z'; ch++) {
                                     Trie *nextNode {node->next[Trie::ord(ch)].get()};
                                     if ((gridCh == '*' || gridCh == ch) && nextNode != nullptr && node->minDist <= maxDist(x, y, dx, dy)) {
@@ -218,7 +218,7 @@ class WordSearch {
          *      - Pick per priority, insert into grid and repeat loop, remove picked element
          *      - If all of the candidates are exhausted backtrack (we can improve it further to check if all candidates of a word are exhausted backtrack)
          */
-        bool backtrackGenerate(std::unique_ptr<Trie> &root, std::unordered_set<std::string> &wordSet) {
+        bool backtrackGenerate(std::unique_ptr<Trie> &root, std::unordered_set<std::string> &wordSet, int &backtrackThresh) {
             if (wordSet.empty()) return true;
             else {
                 std::unordered_map<std::string, int> counts;
@@ -239,7 +239,7 @@ class WordSearch {
                         grid[(std::size_t)x][(std::size_t)y] = word[(std::size_t)idx];
                     }
 
-                    if (backtrackGenerate(root, wordSet))
+                    if (backtrackGenerate(root, wordSet, backtrackThresh))
                         return true;
 
                     // Reinsert the word and remove from grid
@@ -254,6 +254,11 @@ class WordSearch {
                     // Update possibilties of particular word for early stopping
                     if (--counts[word] <= 0)
                         return false;
+
+                    // One less backtrack allowed
+                    if (--backtrackThresh <= 0)
+                        return false;
+
 
                 }
                 return false;
@@ -273,8 +278,8 @@ class WordSearch {
 
             // Compute grid dimensions
             std::uniform_int_distribution<int> randDims{std::uniform_int_distribution<int>(
-                (int)(std::max(words.size() * .5, maxLength * 1.) * 1.55),
-                (int)(std::max(words.size() * .5, maxLength * 1.) * 1.85)
+                (int)(std::max(words.size() * .5, maxLength * 1.) * 1.15),
+                (int)(std::max(words.size() * .5, maxLength * 1.) * 1.35)
             )};
 
             // For random shuffling during puzzle generation
@@ -332,7 +337,13 @@ class WordSearch {
         void generate() {
             std::unique_ptr<Trie> root{Trie::init(words)}; 
             std::unordered_set<std::string> pending {words.begin(), words.end()};
-            backtrackGenerate(root, pending);
+
+            // Restart after threshold num of steps
+            bool status = false;
+            while (!status) {
+                int cumulativeThresh {10};
+                status = backtrackGenerate(root, pending, cumulativeThresh);
+            }
 
             // Fill missing positions with random chars
             for (std::size_t i{0}; i < grid.size(); i++)
