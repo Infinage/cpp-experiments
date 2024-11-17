@@ -278,8 +278,8 @@ class WordSearch {
 
             // Compute grid dimensions
             std::uniform_int_distribution<int> randDims{std::uniform_int_distribution<int>(
-                (int)(std::max(words.size() * .5, maxLength * 1.) * 1.15),
-                (int)(std::max(words.size() * .5, maxLength * 1.) * 1.35)
+                (int)(std::max(words.size() * .5, maxLength * 1.) * 1.45),
+                (int)(std::max(words.size() * .5, maxLength * 1.) * 1.85)
             )};
 
             // For random shuffling during puzzle generation

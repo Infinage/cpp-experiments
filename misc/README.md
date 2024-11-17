@@ -37,6 +37,28 @@ If a second argument (filename) is provided, the program reads the puzzle from t
 
 The file should contain digits `1-9` and `.` characters to represent blank spaces. All other characters are ignored.
 
+## WordSearch
+
+A CLI Wordsearch puzzle generator and solver. The program can generate a word search grid from a provided list of words or solve an existing word search grid by searching for the words.
+
+### Usage
+
+1. Generate a word search puzzle: Provide a list of words as the argument to generate a word search puzzle.
+2. Solve a word search puzzle: Provide a word list and a grid to search for the words in the grid.
+
+```
+# Generate a wordsearch puzzle with a given word list
+./build/wordsearch.out <wordlist>
+
+# Solve an existing wordsearch puzzle with a word list and grid
+./build/wordsearch.out <wordlist> <grid>
+```
+
+### Input File Format
+
+- Word list: A newline-separated list of words to include in the puzzle.
+- Grid: A grid where the word search puzzle is represented as a string of characters (optionally space seperated), with each row on a new line.
+
 ## Build Instructions
 
 To build the project, use the provided `Makefile`. It will create both debug and release versions of the executables.
