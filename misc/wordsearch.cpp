@@ -6,6 +6,8 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <functional>
+#include <future>
 #include <iostream>
 #include <limits>
 #include <memory>
@@ -18,16 +20,14 @@
 #include <unordered_set>
 #include <vector>
 
-// TODO: Debug why 2 words are not found - error with solve fun to generate function
-
 class WordSearch {
     private:
         // Datastructure to hold list of words and the puzzle grid
         std::vector<std::vector<char>> grid;
         std::vector<std::string> words;
 
-        // Overlaps, Rand int, word, row, col, dirx, diry
-        using GENERATE_CANDIDATE = std::tuple<int, int, std::string, int, int, int, int>;
+        // Overlaps, solutionCount, Rand int, word, row, col, dirx, diry
+        using GENERATE_CANDIDATE = std::tuple<int, int, int, std::string, int, int, int, int>;
 
         // For random number generation
         std::mt19937 random_gen;
@@ -113,7 +113,9 @@ class WordSearch {
 
         struct OrderCandidate {
             inline bool operator() (const GENERATE_CANDIDATE &c1, const GENERATE_CANDIDATE &c2) {
-                return std::get<0>(c1) < std::get<0>(c2) || (std::get<0>(c1) == std::get<0>(c2) && std::get<1>(c1) < std::get<1>(c2));
+                return std::get<0>(c1) < std::get<0>(c2)
+                        || (std::get<0>(c1) == std::get<0>(c2) && std::get<1>(c1) > std::get<1>(c2))
+                        || (std::get<0>(c1) == std::get<0>(c2) && std::get<1>(c1) == std::get<1>(c2) && std::get<2>(c1) < std::get<2>(c2));
             }
         };
 
@@ -128,19 +130,24 @@ class WordSearch {
         }
 
         int maxDist(int x, int y, int dx, int dy) {
-            int bx {dx == 0? x: dx < 0? 0: (int)grid.size()};
-            int by {dy == 0? y: dy < 0? 0: (int)grid[0].size()};
+            int bx {dx == 0? std::numeric_limits<int>::max(): dx < 0? 0: (int)grid.size()};
+            int by {dy == 0? std::numeric_limits<int>::max(): dy < 0? 0: (int)grid[0].size()};
             return std::min(std::abs(x - bx), std::abs(y - by)) + 1;
         }
 
-        std::priority_queue<GENERATE_CANDIDATE, std::vector<GENERATE_CANDIDATE>, OrderCandidate> generateCandidates(
+        using CANDIDATE_PQ = std::priority_queue<GENERATE_CANDIDATE, std::vector<GENERATE_CANDIDATE>, OrderCandidate>;
+        using CANDIDATE_VEC = std::vector<GENERATE_CANDIDATE>;
+
+        CANDIDATE_PQ generateCandidates(
                 std::unique_ptr<Trie> &root, std::unordered_set<std::string> &wordSet,
                 std::unordered_map<std::string, int>& counts
             ) {
 
-            std::priority_queue<GENERATE_CANDIDATE, std::vector<GENERATE_CANDIDATE>, OrderCandidate> result;
-            for (std::size_t i{0}; i < grid.size(); i++) {
-                for (std::size_t j{0}; j < grid[0].size(); j++) {
+            // Wrap the cell processing logic into a function for parallelization
+            std::function<CANDIDATE_VEC(std::size_t, std::size_t)> processCell{
+                [this, &root](std::size_t i, std::size_t j) {
+                    // Store the viable candidates
+                    CANDIDATE_VEC localResult;
                     for (auto [dx, dy]: dirs) {
                         int x {(int)i}, y {(int)j};
                         std::vector<std::tuple<Trie*, std::string, int>> candidates{{root.get(), "", 0}}, next;
@@ -152,10 +159,8 @@ class WordSearch {
                                     Trie *nextNode {node->next[Trie::ord(ch)].get()};
                                     if ((gridCh == '*' || gridCh == ch) && nextNode != nullptr && node->minDist <= maxDist(x, y, dx, dy)) {
                                         next.push_back({nextNode, acc + ch, gridCh == '*'? overlaps: overlaps + 1}); 
-                                        if (nextNode->end) {
-                                            counts[acc + ch]++;
-                                            result.push({overlaps, randInt(random_gen), acc + ch, i, j, dx, dy});
-                                        }
+                                        if (nextNode->end)
+                                            localResult.push_back({overlaps, 0, randInt(random_gen), acc + ch, i, j, dx, dy});
                                     }
                                 }
                             }
@@ -163,11 +168,45 @@ class WordSearch {
                             x += dx; y += dy;
                         }
                     }
+                    return localResult;
+                }
+            };
+
+            // Create slots to ensure we don't create too many threads
+            std::counting_semaphore task_slots(std::thread::hardware_concurrency());
+
+            // Iterate through all cells and in all directions
+            std::vector<std::future<CANDIDATE_VEC>> futures;
+            for (std::size_t i{0}; i < grid.size(); i++) {
+                for (std::size_t j{0}; j < grid[0].size(); j++) {
+                    task_slots.acquire();  // Acquire a slot from the semaphore before launching a task
+                    futures.push_back(std::async(std::launch::async, [i, j, &processCell, &task_slots]() {
+                        CANDIDATE_VEC localResult = processCell(i, j);
+                        task_slots.release();
+                        return localResult;
+                    }));
                 }
             }
 
+            // Wait for threads to finish execution and store the results
+            CANDIDATE_VEC result;
+            for (std::future<CANDIDATE_VEC>& ft: futures) {
+                CANDIDATE_VEC vec = ft.get();
+                while (!vec.empty()) {
+                    GENERATE_CANDIDATE candidate{vec.back()};
+                    vec.pop_back();
+                    result.push_back(candidate);
+                    counts[std::get<3>(candidate)]++;
+                }
+            }
+
+            // Assign solution count for each candidate
+            for (GENERATE_CANDIDATE &c: result)
+                std::get<1>(c) = counts[std::get<3>(c)];
+
+            // Check that we have non overlapping candidates for all words
             if (counts.size() != wordSet.size()) return {};
-            else return result;
+            else return CANDIDATE_PQ{result.begin(), result.end()};
         }
 
         /*
@@ -183,10 +222,11 @@ class WordSearch {
             if (wordSet.empty()) return true;
             else {
                 std::unordered_map<std::string, int> counts;
-                std::priority_queue<GENERATE_CANDIDATE, std::vector<GENERATE_CANDIDATE>, OrderCandidate> pq{generateCandidates(root, wordSet, counts)};
+                CANDIDATE_PQ pq{generateCandidates(root, wordSet, counts)};
                 while(!pq.empty()) {
-                    auto [overlapCount, randn, word, row, col, dx, dy] = pq.top();
+                    auto [overlapCount, solCount, randn, word, row, col, dx, dy] = pq.top();
                     pq.pop();
+
                     // Insert into grid, keep track of characters that were already inserted
                     // These chars would be skipped during removal in case of backtracking
                     std::unordered_set<int> overlaps;
@@ -202,18 +242,19 @@ class WordSearch {
                     if (backtrackGenerate(root, wordSet))
                         return true;
 
-                    // Update possibilties of particular word for early stopping
-                    if (--counts[word] <= 0)
-                        return false;
-
                     // Reinsert the word and remove from grid
                     Trie::insert(root, word);
                     wordSet.insert(word);
-                    for (int idx {0}; idx < (int)word.size(); idx++) {
+                    for (int idx {0}; idx < (int) word.size(); idx++) {
                         int x {row + (idx * dx)}, y {col + (idx * dy)};
                         if (overlaps.find(idx) == overlaps.end())
                             grid[(std::size_t)x][(std::size_t)y] = '*';
                     }
+
+                    // Update possibilties of particular word for early stopping
+                    if (--counts[word] <= 0)
+                        return false;
+
                 }
                 return false;
             }
@@ -232,8 +273,8 @@ class WordSearch {
 
             // Compute grid dimensions
             std::uniform_int_distribution<int> randDims{std::uniform_int_distribution<int>(
-                (int)(std::max(words.size() * .5, maxLength * 1.) * 1.15),
-                (int)(std::max(words.size() * .5, maxLength * 1.) * 1.35)
+                (int)(std::max(words.size() * .5, maxLength * 1.) * 1.55),
+                (int)(std::max(words.size() * .5, maxLength * 1.) * 1.85)
             )};
 
             // For random shuffling during puzzle generation
@@ -259,6 +300,10 @@ class WordSearch {
                         Trie* curr = root.get();
                         std::vector<std::pair<int, int>> path;
                         while (isValid(x, y) && curr->next[Trie::ord(grid[(std::size_t) x][(std::size_t) y])] != nullptr) {
+                            // Stop early by checking if the available words would fit in the direction
+                            if (curr->next[Trie::ord(grid[(std::size_t) x][(std::size_t) y])]->minDist > maxDist(x, y, dx, dy))
+                                break;
+
                             curr = curr->next[Trie::ord(grid[(std::size_t) x][(std::size_t) y])].get();
                             path.push_back({x, y}); 
                             x += dx; y += dy;
