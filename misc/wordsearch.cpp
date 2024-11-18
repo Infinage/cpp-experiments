@@ -11,7 +11,6 @@
 #include <iostream>
 #include <limits>
 #include <memory>
-#include <queue>
 #include <random>
 #include <sstream>
 #include <stack>
@@ -135,19 +134,16 @@ class WordSearch {
             return std::min(std::abs(x - bx), std::abs(y - by)) + 1;
         }
 
-        using CANDIDATE_PQ = std::priority_queue<GENERATE_CANDIDATE, std::vector<GENERATE_CANDIDATE>, OrderCandidate>;
-        using CANDIDATE_VEC = std::vector<GENERATE_CANDIDATE>;
-
-        CANDIDATE_PQ generateCandidates(
+        std::vector<GENERATE_CANDIDATE> generateCandidates(
                 std::unique_ptr<Trie> &root, std::unordered_set<std::string> &wordSet,
                 std::unordered_map<std::string, int>& counts
             ) {
 
             // Wrap the cell processing logic into a function for parallelization
-            std::function<CANDIDATE_VEC(std::size_t, std::size_t)> processCell{
+            std::function<std::vector<GENERATE_CANDIDATE>(std::size_t, std::size_t)> processCell{
                 [this, &root](std::size_t i, std::size_t j) {
                     // Store the viable candidates
-                    CANDIDATE_VEC localResult;
+                    std::vector<GENERATE_CANDIDATE> localResult;
                     for (auto [dx, dy]: dirs) {
                         int x {(int)i}, y {(int)j};
                         std::vector<std::tuple<Trie*, std::string, int>> candidates{{root.get(), "", 0}}, next;
@@ -176,12 +172,12 @@ class WordSearch {
             std::counting_semaphore task_slots(std::thread::hardware_concurrency());
 
             // Iterate through all cells and in all directions
-            std::vector<std::future<CANDIDATE_VEC>> futures;
+            std::vector<std::future<std::vector<GENERATE_CANDIDATE>>> futures;
             for (std::size_t i{0}; i < grid.size(); i++) {
                 for (std::size_t j{0}; j < grid[0].size(); j++) {
                     task_slots.acquire();  // Acquire a slot from the semaphore before launching a task
                     futures.push_back(std::async(std::launch::async, [i, j, &processCell, &task_slots]() {
-                        CANDIDATE_VEC localResult = processCell(i, j);
+                        std::vector<GENERATE_CANDIDATE> localResult = processCell(i, j);
                         task_slots.release();
                         return localResult;
                     }));
@@ -189,9 +185,9 @@ class WordSearch {
             }
 
             // Wait for threads to finish execution and store the results
-            CANDIDATE_VEC result;
-            for (std::future<CANDIDATE_VEC>& ft: futures) {
-                CANDIDATE_VEC vec = ft.get();
+            std::vector<GENERATE_CANDIDATE> result;
+            for (std::future<std::vector<GENERATE_CANDIDATE>>& ft: futures) {
+                std::vector<GENERATE_CANDIDATE> vec = ft.get();
                 while (!vec.empty()) {
                     GENERATE_CANDIDATE candidate{vec.back()};
                     vec.pop_back();
@@ -206,8 +202,32 @@ class WordSearch {
 
             // Check that we have non overlapping candidates for all words
             if (counts.size() != wordSet.size()) return {};
-            else return CANDIDATE_PQ{result.begin(), result.end()};
+            else {
+                std::sort(result.begin(), result.end(), OrderCandidate());
+                return result;
+            }
         }
+
+        static bool checkConflict(GENERATE_CANDIDATE &c1, GENERATE_CANDIDATE &c2) {
+            // Extract variables
+            int x1 {std::get<4>(c1)}, y1 {std::get<5>(c1)}, dx1 {std::get<6>(c1)}, dy1 {std::get<7>(c1)};
+            int x2 {std::get<4>(c2)}, y2 {std::get<5>(c2)}, dx2 {std::get<6>(c2)}, dy2 {std::get<7>(c2)};
+            std::string &word1 {std::get<3>(c1)}, &word2 {std::get<3>(c2)};
+
+            // Store the characters
+            std::unordered_map<std::pair<int, int>, char, HashPair> mp;
+            for (std::size_t idx {0}; idx < std::get<3>(c1).size(); idx++)
+                mp[{x1 + ((int) idx * dx1), y1 + ((int) idx * dy1)}] = word1[idx];
+
+            // Check conflicts
+            for (std::size_t idx {0}; idx < std::get<3>(c2).size(); idx++) {
+                std::pair<int, int> key {x2 + ((int) idx * dx2), y2 + ((int) idx * dy2)};
+                if (mp.find(key) != mp.end() && mp[key] != word2[idx])
+                    return false;
+            }
+
+            return true;
+        };
 
         /*
          * While we have words left to insert repeat
@@ -218,20 +238,39 @@ class WordSearch {
          *      - Pick per priority, insert into grid and repeat loop, remove picked element
          *      - If all of the candidates are exhausted backtrack (we can improve it further to check if all candidates of a word are exhausted backtrack)
          */
-        bool backtrackGenerate(std::unique_ptr<Trie> &root, std::unordered_set<std::string> &wordSet, int &backtrackThresh) {
+        bool backtrackGenerate(
+                std::unordered_set<std::string> &wordSet, std::vector<GENERATE_CANDIDATE> &candidates,
+                std::unordered_map<std::string, int> &counts, int &backtrackThresh
+            ) {
             if (wordSet.empty()) return true;
+            else if (counts.size() != wordSet.size()) return false;
             else {
-                std::unordered_map<std::string, int> counts;
-                CANDIDATE_PQ pq{generateCandidates(root, wordSet, counts)};
-                while(!pq.empty()) {
-                    auto [overlapCount, solCount, randn, word, row, col, dx, dy] = pq.top();
-                    pq.pop();
+                std::vector<GENERATE_CANDIDATE> removed;
+                while(!candidates.empty()) {
+                    // Pop out the one with highest priority
+                    GENERATE_CANDIDATE candidate {candidates.back()};
+                    candidates.pop_back();
+                    removed.push_back(candidate);
+                    counts[std::get<3>(candidate)]--;
+
+                    // Extract fields
+                    std::string word {std::get<3>(candidate)};
+                    int row {std::get<4>(candidate)}, col {std::get<5>(candidate)};
+                    int dx {std::get<6>(candidate)}, dy {std::get<7>(candidate)};
 
                     // Insert into grid, keep track of characters that were already inserted
                     // These chars would be skipped during removal in case of backtracking
-                    std::unordered_set<int> overlaps;
+                    std::vector<GENERATE_CANDIDATE> next, pruned;
+                    for (GENERATE_CANDIDATE &c: candidates) {
+                        if (std::get<3>(c) == word || checkConflict(c, candidate)) {
+                            pruned.push_back(c);
+                            if (--counts[std::get<3>(c)] <= 0)
+                                counts.erase(word);
+                        } else next.push_back(c);
+                    }
+                    candidates = next;
                     wordSet.erase(word);
-                    Trie::erase(root, word);
+                    std::unordered_set<int> overlaps;
                     for (int idx {0}; idx < (int)word.size(); idx++) {
                         int x {row + (idx * dx)}, y {col + (idx * dy)};
                         if (grid[(std::size_t)x][(std::size_t)y] == word[(std::size_t)idx])
@@ -239,28 +278,32 @@ class WordSearch {
                         grid[(std::size_t)x][(std::size_t)y] = word[(std::size_t)idx];
                     }
 
-                    if (backtrackGenerate(root, wordSet, backtrackThresh))
+                    if (backtrackGenerate(wordSet, candidates, counts, backtrackThresh))
                         return true;
 
                     // Reinsert the word and remove from grid
-                    Trie::insert(root, word);
+                    for (GENERATE_CANDIDATE &c: pruned) {
+                        candidates.push_back(c);
+                        counts[std::get<3>(c)]++;
+                    }
                     wordSet.insert(word);
+                    std::sort(candidates.begin(), candidates.end(), OrderCandidate());
                     for (int idx {0}; idx < (int) word.size(); idx++) {
                         int x {row + (idx * dx)}, y {col + (idx * dy)};
                         if (overlaps.find(idx) == overlaps.end())
                             grid[(std::size_t)x][(std::size_t)y] = '*';
                     }
 
-                    // Update possibilties of particular word for early stopping
-                    if (--counts[word] <= 0)
-                        return false;
-
                     // One less backtrack allowed
                     if (--backtrackThresh <= 0)
-                        return false;
-
-
+                        break;
                 }
+
+                for (GENERATE_CANDIDATE &c: removed) {
+                    candidates.push_back(c);
+                    counts[std::get<3>(c)]++;
+                }
+
                 return false;
             }
         }
@@ -342,7 +385,9 @@ class WordSearch {
             bool status = false;
             while (!status) {
                 int cumulativeThresh {10};
-                status = backtrackGenerate(root, pending, cumulativeThresh);
+                std::unordered_map<std::string, int> counts;
+                std::vector<GENERATE_CANDIDATE> candidates{generateCandidates(root, pending, counts)};
+                status = backtrackGenerate(pending, candidates, counts, cumulativeThresh);
             }
 
             // Fill missing positions with random chars
