@@ -162,8 +162,23 @@ class BloomFilter {
                 // Read the file
                 std::string buffer;
                 std::vector<std::string> words;
-                while (ifs >> buffer)
-                    words.push_back(buffer);
+                while (std::getline(ifs, buffer)) {
+                    buffer.pop_back();
+                    std::string word {""};
+                    bool isValid {true};
+                    for (const char ch: buffer) {
+                        if (std::isspace(ch)) {
+                            isValid = false;
+                            break;
+                        }
+                        else if (std::isupper(ch)) 
+                            word += (char) std::tolower(ch);
+                        else
+                            word += ch;
+                    }
+                    if (!buffer.empty() && isValid)
+                        words.push_back(buffer);
+                }
                 ifs.close();
 
                 // Insert into bloom filter and dump binary
@@ -171,9 +186,10 @@ class BloomFilter {
                 BloomFilter::dump(bf, ofpath);
 
                 // Printing out the stats
-                std::cout << "Words processed: " << words.size() << "\n";
-                std::cout << "Optimal Bit count: " << bf.M << "\n";
-                std::cout << "Optimal Hash func count: " << bf.K << "\n";
+                std::cout << "Built Filter            : " << ofpath << "\n";
+                std::cout << "Words processed         : " << words.size() << "\n";
+                std::cout << "Optimal Bit count       : " << bf.M << "\n";
+                std::cout << "Optimal Hash func count : " << bf.K << "\n";
 
                 // Close the f pointer
                 ifs.close();
@@ -184,7 +200,10 @@ class BloomFilter {
 int main(int argc, char **argv) {
     std::string dumpPath {"words-en.bf"};
     if (argc == 1)
-        std::cout << "Usage:\n1. Building Bloom filter: `spellcheck build <dictionary>`\n2. Running spell check: spellcheck <file>\n";
+        std::cout << "Spell Check using Bloom Filter. Needs to be built before it can be used.\n" 
+                  << "For a suitable wordlist check: 'https://github.com/dwyl/english-words'\n\nUsage:\n" 
+                  << "1. Building spellchecker: `spellcheck build <dictionary>`\n" 
+                  << "2. Running spell check:   `spellcheck <file>`\n";
     else if (argc == 2) {
         if (!std::filesystem::exists(dumpPath)) {
             std::cout << "Filter not built, please build filter before using it.\n";
@@ -196,11 +215,16 @@ int main(int argc, char **argv) {
             std::string buffer;
             BloomFilter bf {BloomFilter::load(dumpPath)};
             std::ifstream ifs{argv[1]};
-            std::cout << "Misspelt words ------>\n";
+            std::cout << "Misspelt words:\n";
             while (ifs >> buffer) {
-                std::transform(buffer.begin(), buffer.end(), buffer.begin(), [](const char ch) {return std::tolower(ch); });
-                if (!bf.check(buffer))
-                    std::cout << buffer << "\n";
+
+                std::string word {""};
+                for (const char ch: buffer)
+                    if (!std::ispunct(ch))
+                        word += (char) std::tolower(ch);
+
+                if (!bf.check(word))
+                    std::cout << "- " << buffer << "\n";
             }
             ifs.close();
         }
