@@ -1,5 +1,8 @@
+#include <bitset>
 #include <cstring>
+#include <deque>
 #include <fstream>
+#include <functional>
 #include <iomanip>
 #include <ios>
 #include <iostream>
@@ -7,7 +10,18 @@
 #include <string>
 #include <unordered_map>
 
-// TODO: Test out for -c values larger than 16
+/*
+ * TODO:
+ * Revert operation
+    - Ensure that dump is hexadecimal and big endian
+    - XXD Auto infers the groups, columns based on the provided input dump
+    - Whats more, it only writes to the binary file at the specified offsets in the
+      dump if the binary file writing to already exists
+    - Ensure that if the patch is larger than original, it is handled without errors
+
+* Disallow groups of non powers of 2 in little-endian mode
+* Add color styling
+*/
 
 int main(int argc, char **argv) {
     if (argc == 1) {
@@ -21,6 +35,11 @@ int main(int argc, char **argv) {
                 params["little-endian"] = 1;
             else if (std::strcmp(argv[i], "-r") == 0)
                 params["reverse"] = 1;
+            else if (std::strcmp(argv[i], "-b") == 0)
+                params["binary"] = 1;
+            else if (std::strcmp(argv[i], "-p") == 0)
+                params["plain"] = 1;
+
             // Params with values
             else if (std::strcmp(argv[i], "-g") == 0)
                 params["group"] = std::stoi(argv[++i]);
@@ -38,13 +57,26 @@ int main(int argc, char **argv) {
         if (!ifs) std::cout << "cxxd: " << argv[argc - 1] << ": No such file or directory";
         else {
             // Extract the parameters
+            bool binaryMode {params.find("binary") != params.end()};
+            bool littleEndian {params.find("little-endian") != params.end()};
+            bool plainMode {params.find("plain") != params.end()};
             int offset {params.find("offset") == params.end()? 0: params["offset"]};
-            int columns {params.find("columns") == params.end()? 16: params["columns"]};
-            int group {params.find("group") == params.end()? 2: params["group"]};
             int length {params.find("length") == params.end()? -1: offset + params["length"]};
-            //bool littleEndian {params.find("little-endian") == params.end()};
+            int group {params.find("group") == params.end()? binaryMode? 1: (littleEndian? 4: 2): params["group"]};
+            int columns {params.find("columns") == params.end()? binaryMode? 6: 16: params["columns"]};
 
-            // TODO: Disallow groups of non powers of 2 in little-endian mode
+            // Override columns and group if plain mode is selected
+            if (plainMode) { group = 30; columns = 30; }
+
+            // Helper to convert char to hex or binary
+            std::function<std::string(unsigned char)> repr{[&binaryMode](unsigned char ch) {
+                if (binaryMode) return (std::bitset<8>{static_cast<unsigned long>(ch)}).to_string();
+                else {
+                    std::ostringstream oss;
+                    oss << std::setw(2) << std::setfill('0') << std::hex << static_cast<int>(ch);
+                    return oss.str();
+                }
+            }};
 
             // Storing the intermediates and processed results
             char ch;
@@ -54,25 +86,50 @@ int main(int argc, char **argv) {
             ifs.seekg(offset);
 
             while (ifs.peek() != std::char_traits<char>::eof()) {
-                oss << std::hex << std::setw(8) << std::setfill('0') << offset << ": ";
-
                 // Accumulate the dump simulataneously filling the text content
                 std::ostringstream dump, text;
                 int count {0};
-                while (count++ < columns) {
-                    if ((length == -1 || offset + count <= length) && ifs.get(ch)) {
-                        dump << std::setw(2) << std::setfill('0') << std::hex
-                             << static_cast<int>(ch)
-                             << (count % group == 0 || count == columns? " ": "");
-                        text << (std::isprint(static_cast<unsigned char>(ch))? ch: '.');
-                    } else {
-                        dump << "  " << (count % group == 0 || count == columns? " ": "");
-                        text << ' ';
+                while (count < columns) {
+                    // Read one 'group'
+                    std::deque<std::string> acc;
+                    while (static_cast<int>(acc.size()) < group && count < columns && offset + count < length) {
+                        // Read in as char, but convert to unsigned char
+                        ifs.get(ch);
+                        count++;
+                        if (binaryMode || !littleEndian)
+                            acc.push_back(repr(static_cast<unsigned char>(ch)));
+                        else
+                            acc.push_front(repr(static_cast<unsigned char>(ch)));
+
+                        // Only write the text portion if not in plain mode
+                        if (!plainMode) text << (std::isprint(ch)? ch: '.');
                     }
+
+                    // If we had stopped prematurely, fill until whichever
+                    // of the group length or the column width is reached first
+                    while (static_cast<int>(acc.size()) < group && count < columns) {
+                        if (binaryMode || !littleEndian)
+                            acc.push_back(std::string(binaryMode? 8: 2, ' '));
+                        else
+                            acc.push_front(std::string(binaryMode? 8: 2, ' '));
+                        count++;
+                    }
+
+                    while (!acc.empty()) {
+                        dump << acc.front();
+                        acc.pop_front();
+                    }
+
+                    dump << " ";
+                }
+
+                if (plainMode) oss << dump.str() << "\n";
+                else {
+                    oss << std::hex << std::setw(8) << std::setfill('0') << offset << ": " << dump.str()
+                    << (littleEndian? std::string(2, ' '): std::string(1, ' ')) << text.str() << "\n";
                 }
 
                 offset += columns;
-                oss << dump.str() << " " << text.str() << "\n";
                 if (length != -1 && offset >= length)
                     break;
             }
