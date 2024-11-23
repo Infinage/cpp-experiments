@@ -1,28 +1,10 @@
-#include <algorithm>
 #include <bitset>
-#include <cctype>
 #include <cstring>
 #include <deque>
 #include <fstream>
 #include <functional>
 #include <iomanip>
-#include <ios>
 #include <iostream>
-#include <sstream>
-#include <string>
-#include <unordered_map>
-
-/*
- * TODO:
- * Revert operation
-    - Ensure that dump is hexadecimal and big endian
-    - XXD Auto infers the groups, columns based on the provided input dump
-    - Whats more, it only writes to the binary file at the specified offsets in the
-      dump if the binary file writing to already exists
-    - Ensure that if the patch is larger than original, it is handled without errors
-
- * Double check invalid inputs: "-l 0.5 -g 9.1"
- */
 
 class XXD {
     public:
@@ -39,21 +21,36 @@ class XXD {
             // Only plain mode and big endian hex is supported
             bool plain {std::all_of(buffer.begin(), buffer.end(), [](const char ch) { return std::isspace(ch) || std::isalnum(ch); })};
             ifs.seekg(0);
+
+            // Helper to convert hex to char
+            std::function<char(char[2])> repr{[](char hexChar[2]) {
+                unsigned int ch;
+                std::istringstream iss {hexChar};
+                iss >> std::hex >> ch;
+                return static_cast<char>(ch);
+            }};
+
+            // Placeholder to temp hold the hex char
+            char hexChar[2]; bool idx{false};
+
             if (!plain) {
-                std::cerr << "cxxd: non plain mode is not supported at the moment.\n";
-                std::exit(1);
+                // Figure out the column length
+                std::size_t hexEnd {buffer.find("  ")};
+                while (std::getline(ifs, buffer) && buffer.size() >= 10) {
+                    for (const char ch: buffer.substr(10, hexEnd - 10)) {
+                        if (!std::isspace(ch)) {
+                            hexChar[idx] = ch;
+                            idx = !idx;
+                            if (!idx) oss.put(repr(hexChar));
+                        }
+                    }
+                }
+
             } else {
-                char hexChar[2];
-                bool idx{false};
                 while (ifs.get(hexChar[idx])) {
                     if (!std::isspace(hexChar[idx])) {
                         idx = !idx;
-                        if (!idx) {
-                            unsigned int ch;
-                            std::istringstream iss{std::string{hexChar}};
-                            iss >> std::hex >> ch;
-                            oss.put(static_cast<char>(ch));
-                        }
+                        if (!idx) oss.put(repr(hexChar));
                     }
                 }
             }
@@ -143,8 +140,20 @@ class XXD {
 
 int main(int argc, char **argv) {
     if (argc == 1) {
-        std::cout << "An imperfect clone of CLI utilitu XXD.\nUsage: xxd [infile]\n";
+        std::cout << "An imperfect clone of CLI utility XXD.\n"
+                  << "Usage:\n\tcxxd [options] [infile]\n"
+                  << "Options:\n\t"
+                  << "-b      binary digit dump.\n\t"
+                  << "-e      little-endian dump (incompatible with -p, -r).\n\t"
+                  << "-p      output in plain hexdump style, overrides binary, little-endian & resets formatting.\n\t"
+                  << "-c      format octets per line. Default 16 (-b:6, -p:30).\n\t"
+                  << "-g      number of octets per group in normal output. Default 2 (-b:1, -e:4, -p:30).\n\t"
+                  << "-l      stop after specified octets.\n\t"
+                  << "-s      start at specified bytes (abs).\n\t"
+                  << "-r      reverse: convert (or patch) hexdump into binary. Ignores all params except -s, -l, -op.\n\t"
+                  << "-op     specify output file, writes to console if not specified.\n";
     } else {
+
         // Parse the parameters
         std::string outputFile {""};
         std::unordered_map<std::string, int> params;
@@ -187,17 +196,21 @@ int main(int argc, char **argv) {
 
         // Placeholder to hold the output string
         std::string dump{""};
+        std::ifstream ifs{argv[argc - 1], reverseDump? std::ios::in: std::ios::binary};
 
-        // Read the file as binary
-        std::ifstream ifs{argv[argc - 1], (reverseDump? std::ios::in: std::ios::binary)};        
-        if (!ifs) {
-            std::cerr << "cxxd: " << argv[argc - 1] << ": No such file or directory";
+        // ********************* Convert the Binary to Hex *********************
+
+        if (offset < 0 || group < 0 || columns < 0) {
+            std::cerr << "cxxd: negative parameters are not supported: (-s=" << offset << ", -g=" << group << ", -c=" << columns << ").\n";
             std::exit(1);
         }
 
-        else if (reverseDump) {
-            dump = XXD::hex2Binary(ifs);
+        else if (!ifs) {
+            std::cerr << "cxxd: " << argv[argc - 1] << ": No such file or directory.\n";
+            std::exit(1);
         }
+
+        else if (reverseDump) { dump = XXD::hex2Binary(ifs); }
 
         else {
             // In plain all parameters except offset and length are reset
@@ -213,15 +226,33 @@ int main(int argc, char **argv) {
             dump = XXD::binary2Hex(ifs, binaryMode, littleEndian, plainMode, offset, length, group, columns);
         }
 
-        // Read and write the XXD dump per parameters passed
+        // ********************* Write the dump to console or the output file *********************
+
         if (outputFile.empty())
             std::cout << dump;
 
         else  {
-            std::ofstream ofs {outputFile};
-            if (ofs)
-                ofs << dump;
 
+            // Decide mode based on parameters
+            std::ios::openmode mode {std::ios::out};
+            if (reverseDump) {
+                mode |= std::ios::binary;
+                if (offset > 0 || length != -1) mode |= std::ios::in;
+            }
+
+            // Open the file and dump contents
+            std::fstream fs {outputFile, mode};
+            if (fs) {
+                if (reverseDump && length != -1 && static_cast<std::size_t>(length - offset) != dump.size()) {
+                    std::cerr << "cxxd: byte length specified doesn't match output size: " << dump.size() << ".\n";
+                    std::exit(1);
+                }
+
+                fs.seekg(reverseDump? offset: 0);
+                fs << dump;
+            }
+
+            // If unable to open, throw error
             else {
                 std::cerr << "cxxd: " << outputFile << ": error writing output file.\n";
                 std::exit(1);
