@@ -10,7 +10,7 @@ RELEASE_FLAGS = -O2
 MINESWEEPER_CONFIGS = -L/home/kael/cpplib/lib -I/home/kael/cpplib/include -lftxui-component -lftxui-dom -lftxui-screen
 
 # Find source files
-SOURCES = minesweeper.cpp sudoku.cpp
+SOURCES = minesweeper.cpp sudoku.cpp barcode.cpp
 
 # Output for both debug and release
 DEBUG_OUTPUTS = $(patsubst %.cpp, build/%.debug, $(SOURCES))

@@ -2,13 +2,21 @@
  * Code 128 Implementation in CPP
  */
 
+#include <algorithm>
+#include <cctype>
+#include <cstddef>
 #include <fstream>
+#include <functional>
+#include <iostream>
+#include <limits>
 #include <string>
 #include <unordered_map>
 #include <vector>
 
 class Barcode {
     private:
+        std::size_t INF {std::numeric_limits<int>::max()};
+
         const std::vector<std::string> patterns {{
             "11011001100", "11001101100", "11001100110", "10010011000", "10010001100",
             "10001001100", "10011001000", "10011000100", "10001100100", "11001001000",
@@ -30,14 +38,17 @@ class Barcode {
             "10011110010", "11110100100", "11110010100", "11110010010", "11011011110",
             "11011110110", "11110110110", "10101111000", "10100011110", "10001011110",
             "10111101000", "10111100010", "11110101000", "11110100010", "10111011110",
-            "10111101110", "11101011110", "11110101110"
+            "10111101110", "11101011110", "11110101110",
+
+            // START_Xs, STOP
+            "11010000100", "11010010000", "11010011100", "1100011101011",
         }};
 
         const std::vector<std::string> Code128AChars {{
-            "space", "!", "\"", "#", "$", "%", "&", "\'", "(", ")", "*", "+", ",", "-", ".", "/",
+            " ", "!", "\"", "#", "$", "%", "&", "\'", "(", ")", "*", "+", ",", "-", ".", "/",
             "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", ":", ";", "<", "=", ">", "?", "@",
             "A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q",
-            "R", "S", "T", "U", "V", "W", "X", "Y", "Z", "[", "\\", "]", "^", "_", "NUL", "SOH",
+            "R", "S", "T", "U", "V", "W", "X", "Y", "Z", "[", "\\", "]", "^", "_", "\0", "SOH",
             "STX", "ETX", "EOT", "ENQ", "ACK", "BEL", "BS", "HT", "LF", "VT", "FF", "CR", "SO",
             "SI", "DLE", "DC1", "DC2", "DC3", "DC4", "NAK", "SYN", "ETB", "CAN", "EM", "SUB",
             "ESC", "FS", "GS", "RS", "US", "FNC 3", "FNC 2", "Shift B", "Code C", "Code B",
@@ -45,7 +56,7 @@ class Barcode {
         }};
 
         const std::vector<std::string> Code128BChars {{
-            "space", "!", "\"", "#", "$", "%", "&", "\'", "(", ")", "*", "+", ",", "-", ".", "/",
+            " ", "!", "\"", "#", "$", "%", "&", "\'", "(", ")", "*", "+", ",", "-", ".", "/",
             "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", ":", ";", "<", "=", ">", "?", "@",
             "A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q",
             "R", "S", "T", "U", "V", "W", "X", "Y", "Z", "[", "\\", "]", "^", "_", "`", "a", "b",
@@ -55,50 +66,189 @@ class Barcode {
         }};
 
         const std::vector<std::string> Code128CChars {{
-            "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12",
-            "13", "14", "15", "16", "17", "18", "19", "20", "21", "22", "23",
-            "24", "25", "26", "27", "28", "29", "30", "31", "32", "33", "34",
-            "35", "36", "37", "38", "39", "40", "41", "42", "43", "44", "45",
-            "46", "47", "48", "49", "50", "51", "52", "53", "54", "55", "56",
-            "57", "58", "59", "60", "61", "62", "63", "64", "65", "66", "67",
-            "68", "69", "70", "71", "72", "73", "74", "75", "76", "77", "78",
-            "79", "80", "81", "82", "83", "84", "85", "86", "87", "88", "89",
-            "90", "91", "92", "93", "94", "95", "96", "97", "98", "99",
-            "Code B", "Code A", "FNC 1"
+            "00", "01", "02", "03", "04", "05", "06", "07", "08", "09", "10", "11", "12",
+            "13", "14", "15", "16", "17", "18", "19", "20", "21", "22", "23", "24", "25",
+            "26", "27", "28", "29", "30", "31", "32", "33", "34", "35", "36", "37", "38",
+            "39", "40", "41", "42", "43", "44", "45", "46", "47", "48", "49", "50", "51",
+            "52", "53", "54", "55", "56", "57", "58", "59", "60", "61", "62", "63", "64",
+            "65", "66", "67", "68", "69", "70", "71", "72", "73", "74", "75", "76", "77",
+            "78", "79", "80", "81", "82", "83", "84", "85", "86", "87", "88", "89", "90",
+            "91", "92", "93", "94", "95", "96", "97", "98", "99", "Code B", "Code A", "FNC 1"
         }};
 
-        std::string START_A, START_B, START_C, STOP;
-        std::unordered_map<std::string, std::string> CODE128A, CODE128B, CODE128C;
+        std::size_t START_A, START_B, START_C, STOP;
+        std::unordered_map<std::string, std::size_t> CODE128A, CODE128B, CODE128C;
 
     public:
 
         Barcode() {
-            START_A = "11010000100";
-            START_B = "11010010000";
-            START_C = "11010011100";
-            STOP    = "1100011101011";
+            START_A = 103;
+            START_B = 104;
+            START_C = 105;
+            STOP    = 106;
             for (std::size_t i{0}; i < Code128AChars.size(); i++) {
-                CODE128A[Code128AChars[i]] = patterns[i];
-                CODE128B[Code128BChars[i]] = patterns[i];
-                CODE128C[Code128CChars[i]] = patterns[i];
+                CODE128A[Code128AChars[i]] = i;
+                CODE128B[Code128BChars[i]] = i;
+                CODE128C[Code128CChars[i]] = i;
             }
         }
 
-        void print(std::vector<bool> &codes, std::string &fname, std::size_t width = 10, std::size_t height = 80) {
+        // Encode a message into a vector of bits
+        std::vector<bool> encode(std::string &message) {
+
+            // Compute DP grid for the message
+            std::vector<std::vector<std::size_t>> dp(message.size(), std::vector<std::size_t>(5, INF));
+            dp.push_back({0, 0, 0, 0, 0});
+            for (std::size_t idx {message.size()}; idx-- > 0;) {
+                std::string chStr{message[idx]};
+
+                // If chStr is found in Code A set
+                if (CODE128A.find(chStr) != CODE128A.end()) {
+                    // Temporarily shift encoding for curr char only
+                    dp[idx][4] = std::min(dp[idx][4], 2 + dp[idx + 1][1]);
+
+                    // Change encoding - except when it is already 'A'
+                    dp[idx][0] = std::min(dp[idx][0], 1 + dp[idx + 1][0]);
+                    dp[idx][1] = std::min({dp[idx][1], 2 + dp[idx + 1][0], 2 + dp[idx + 1][4]});
+                    dp[idx][2] = std::min(dp[idx][2], 2 + dp[idx + 1][0]);
+                }
+
+                // If chStr is found in Code B set
+                if (CODE128B.find(chStr) != CODE128B.end()) {
+                    // Temporarily shift encoding for curr char only
+                    dp[idx][3] = std::min(dp[idx][3], 2 + dp[idx + 1][0]);
+
+                    // Change encoding - except when it is already 'B'
+                    dp[idx][0] = std::min({dp[idx][0], 2 + dp[idx + 1][1], 2 + dp[idx + 1][3]});
+                    dp[idx][1] = std::min(dp[idx][1], 1 + dp[idx + 1][1]);
+                    dp[idx][2] = std::min(dp[idx][2], 2 + dp[idx + 1][1]);
+                }
+
+                // Curr char is digit, next char is also digit (Code C)
+                if (std::isdigit(chStr[0]) && idx < message.size() - 1 && std::isdigit(message[idx + 1])) {
+                    // Change encoding - except when it is already 'C'
+                    dp[idx][0] = std::min(dp[idx][0], 2 + dp[idx + 2][2]);
+                    dp[idx][1] = std::min(dp[idx][1], 2 + dp[idx + 2][2]);
+                    dp[idx][2] = std::min(dp[idx][2], 1 + dp[idx + 2][2]);
+                }
+            }
+
+            // Helper: Given a bit string, insert the bits into a boolean vector
+            std::function<void(const std::string&, std::vector<bool>&)> insertBits {[](const std::string &bits, std::vector<bool> &result) {
+                for (const char ch: bits)
+                    result.push_back(ch == '1');
+            }};
+
+            // ******************* Build the boolean vector from DP grid ******************* //
+
+            // Initially a value outside of range
+            std::ptrdiff_t enc {3}; 
+            std::size_t idx {0}, checkSum {0}, checkPos {1}; 
+            std::vector<bool> result;
+            while (idx < message.size()) {
+                std::string chStr{message[idx]};
+                std::vector<std::size_t>::iterator it{std::min_element(dp[idx].begin(), dp[idx].end())};
+
+                // If multiple min exists, can we pick the current encoding?
+                std::ptrdiff_t pos {idx > 0 && *it == dp[idx][static_cast<std::size_t>(enc)]? enc: it - dp[idx].begin()};
+
+                if (*it == INF)
+                    throw "Failed to reconstruct string";
+
+                else {
+                    // Shift or Change character
+                    std::size_t changeOrShiftOrd;
+
+                    // We dont need to shift or change encoding if it already matches
+                    if(enc != pos) {
+                        // START_X chars
+                        if (idx == 0)
+                            changeOrShiftOrd = pos == 0? START_A: pos == 1? START_B: START_C;
+
+                        // Temporary shifts
+                        else if (pos == 3 || pos == 4)
+                            changeOrShiftOrd = pos == 3? CODE128A["Shift B"]: CODE128B["Shift A"];
+
+                        // Code A encoding
+                        else if (enc == 0)
+                            changeOrShiftOrd = pos == 1? CODE128A["Code B"]: CODE128A["Code C"];
+
+                        // Code B encoding
+                        else if (enc == 1)
+                            changeOrShiftOrd = pos == 0? CODE128B["Code A"]: CODE128B["Code C"];
+
+                        // Code C encoding
+                        else
+                            changeOrShiftOrd = pos == 0? CODE128C["Code A"]: CODE128B["Code B"];
+
+                        // Start_X is always 1, rest of the chars can work with incrementally updated weights
+                        checkSum += idx == 0? changeOrShiftOrd: checkPos++ * changeOrShiftOrd;
+                        insertBits(patterns[changeOrShiftOrd], result);
+                    }
+
+                    // Insert actual token
+                    std::size_t tokenOrd{pos == 0 || pos == 3? CODE128A[chStr]: pos == 1 || pos == 4? CODE128B[chStr]: CODE128C[chStr + message[idx + 1]]};
+                    checkSum += checkPos++ * tokenOrd;
+                    insertBits(patterns[tokenOrd], result);
+                }
+
+                // Change encoding if they are not shift ones
+                if (pos != 3 && pos != 4) enc = pos;
+
+                // Skip a char if Code C
+                if (pos == 2) idx++;
+
+                idx++;
+            }
+
+            // ******************* Checksum, STOP ******************* //
+
+            insertBits(patterns[checkSum % 103], result);
+            insertBits(patterns[STOP], result);
+
+            return result;
+        }
+
+        // Write the boolean vector into a PBM file
+        void print(std::vector<bool> &codes, std::string &fname, std::size_t width = 5, std::size_t height = 150, std::size_t quiet = 10) {
             // Write as binary
             std::ofstream ofs {fname, std::ios::binary};
 
             // Specify format and structure
-            ofs << "P4\n" << (codes.size() * width) << " " << height << "\n";
+            ofs << "P4\n" << ((quiet + codes.size() + quiet) * width) << " " << height << "\n";
 
             // Read the vector of bools and write to file
             for (std::size_t i {0}; i < height; i++) {
                 // Repeat line 'height' no of times
                 unsigned int byte {0};
                 int bitCount {0};
+
+                // Add quiet at start
+                for (std::size_t q{0}; q < quiet; q++) {
+                    for (std::size_t itr {0}; itr < width; itr++) {
+                        if (++bitCount == 8) {
+                            ofs.put(static_cast<char>(0));
+                            bitCount = 0;
+                        }
+                    }
+                }
+                
+                // Add actual codes
                 for (bool code: codes) {
                     for (std::size_t itr {0}; itr < width; itr++) {
                         byte = (byte << 1) | (code? 1: 0);
+                        if (++bitCount == 8) {
+                            ofs.put(static_cast<char>(byte));
+                            bitCount = 0;
+                            byte = 0;
+                        }
+                    }
+                }
+
+                // Add quiet at end
+                for (std::size_t q{0}; q < quiet; q++) {
+                    for (std::size_t itr {0}; itr < width; itr++) {
+                        byte = (byte << 1) | 0;
                         if (++bitCount == 8) {
                             ofs.put(static_cast<char>(byte));
                             bitCount = 0;
@@ -115,17 +265,15 @@ class Barcode {
             }
         }
 
-        static void addQuietZone(std::vector<bool> &codes, std::size_t size = 10) {
-            std::vector<bool> quiet(size, false);
-            codes.insert(codes.begin(), quiet.begin(), quiet.end());
-            codes.insert(codes.end(), quiet.begin(), quiet.end());
-        }
 };
 
+// ********************* SAMPLE FUNCTION RUN ********************* //
+
 int main() {
-    std::vector<bool> codes {{1,0,0,1,1,1,0,1,1,0,0,1,1,1,0,0,1,1,1,1,1,0,0,1,0,1,0,0,1,1,0,0,0,0,1,1,1,0}};
-    std::string fname {"sample.pbm"};
+    std::string fname {"sample.pbm"}; 
+    std::string message {"Naresh Jagadeesan"};
+
     Barcode bg;
-    bg.addQuietZone(codes);
+    std::vector<bool> codes {bg.encode(message)};
     bg.print(codes, fname);
 }
