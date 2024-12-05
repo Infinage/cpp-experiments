@@ -59,6 +59,28 @@ A CLI Wordsearch puzzle generator and solver. The program can generate a word se
 - Word list: A newline-separated list of words to include in the puzzle.
 - Grid: A grid where the word search puzzle is represented as a string of characters (optionally space seperated), with each row on a new line.
 
+## Barcode Generator
+
+A CLI-based Code 128 Barcode Generator that encodes messages into Code 128 barcodes and saves the output as a PBM file.
+
+### Usage
+
+Encode a message from a text file into a barcode:
+
+- Provide an input file containing the message.
+- Specify the output file name for the generated barcode.
+
+```
+# Generate a barcode from a text file containing a message
+./barcode <inputFile> <outputFile>
+
+# Sample Usage
+./barcode message.txt output.pbm
+
+# Optionally convert to png if imagemagik is available
+./convert output.pbm output.png
+```
+
 ## Build Instructions
 
 To build the project, use the provided `Makefile`. It will create both debug and release versions of the executables.

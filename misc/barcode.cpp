@@ -1,10 +1,14 @@
 /*
  * Code 128 Implementation in CPP
+ *
+ * For a list of nonprintable ascii chars, refer: https://en.cppreference.com/w/cpp/language/ascii
  */
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cstddef>
+#include <cstdlib>
 #include <fstream>
 #include <functional>
 #include <iostream>
@@ -15,9 +19,9 @@
 
 class Barcode {
     private:
-        std::size_t INF {std::numeric_limits<int>::max()};
+        constexpr static std::size_t INF {std::numeric_limits<int>::max()};
 
-        const std::vector<std::string> patterns {{
+        const std::array<std::string, 107> patterns {{
             "11011001100", "11001101100", "11001100110", "10010011000", "10010001100",
             "10001001100", "10011001000", "10011000100", "10001100100", "11001001000",
             "11001000100", "11000100100", "10110011100", "10011011100", "10011001110",
@@ -44,28 +48,28 @@ class Barcode {
             "11010000100", "11010010000", "11010011100", "1100011101011",
         }};
 
-        const std::vector<std::string> Code128AChars {{
+        const std::array<std::string, 103> Code128AChars {{
             " ", "!", "\"", "#", "$", "%", "&", "\'", "(", ")", "*", "+", ",", "-", ".", "/",
             "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", ":", ";", "<", "=", ">", "?", "@",
             "A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q",
-            "R", "S", "T", "U", "V", "W", "X", "Y", "Z", "[", "\\", "]", "^", "_", "\0", "SOH",
-            "STX", "ETX", "EOT", "ENQ", "ACK", "BEL", "BS", "HT", "LF", "VT", "FF", "CR", "SO",
-            "SI", "DLE", "DC1", "DC2", "DC3", "DC4", "NAK", "SYN", "ETB", "CAN", "EM", "SUB",
-            "ESC", "FS", "GS", "RS", "US", "FNC 3", "FNC 2", "Shift B", "Code C", "Code B",
+            "R", "S", "T", "U", "V", "W", "X", "Y", "Z", "[", "\\", "]", "^", "_", "\x00", "\x01",
+            "\x02", "\x03", "\x04", "\x05", "\x06", "\x07", "\x08", "\x09", "\x0A", "\x0B", "\x0C", "\x0D", "\x0E",
+            "\x0F", "\x10", "\x11", "\x12", "\x13", "\x14", "\x15", "\x16", "\x17", "\x18", "\x19", "\x1A",
+            "\x1B", "\x1C", "\x1D", "\x1E", "\x1F", "FNC 3", "FNC 2", "Shift B", "Code C", "Code B",
             "FNC 4", "FNC 1"
         }};
 
-        const std::vector<std::string> Code128BChars {{
+        const std::array<std::string, 103> Code128BChars {{
             " ", "!", "\"", "#", "$", "%", "&", "\'", "(", ")", "*", "+", ",", "-", ".", "/",
             "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", ":", ";", "<", "=", ">", "?", "@",
             "A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q",
             "R", "S", "T", "U", "V", "W", "X", "Y", "Z", "[", "\\", "]", "^", "_", "`", "a", "b",
             "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n", "o", "p", "q", "r", "s",
-            "t", "u", "v", "w", "x", "y", "z", "{", "|", "}", "~", "DEL", "FNC 3", "FNC 2", "Shift A",
+            "t", "u", "v", "w", "x", "y", "z", "{", "|", "}", "~", "\x7F", "FNC 3", "FNC 2", "Shift A",
             "Code C", "FNC 4", "Code A", "FNC 1"
         }};
 
-        const std::vector<std::string> Code128CChars {{
+        const std::array<std::string, 103> Code128CChars {{
             "00", "01", "02", "03", "04", "05", "06", "07", "08", "09", "10", "11", "12",
             "13", "14", "15", "16", "17", "18", "19", "20", "21", "22", "23", "24", "25",
             "26", "27", "28", "29", "30", "31", "32", "33", "34", "35", "36", "37", "38",
@@ -76,16 +80,18 @@ class Barcode {
             "91", "92", "93", "94", "95", "96", "97", "98", "99", "Code B", "Code A", "FNC 1"
         }};
 
-        std::size_t START_A, START_B, START_C, STOP;
+        // Indices containing to positions on 'patterns'
+        const std::size_t START_A {103};
+        const std::size_t START_B {104};
+        const std::size_t START_C {105};
+        const std::size_t STOP    {106};
+
+        // For neatness, these would be initialized via a loop in the constructor
         std::unordered_map<std::string, std::size_t> CODE128A, CODE128B, CODE128C;
 
     public:
 
         Barcode() {
-            START_A = 103;
-            START_B = 104;
-            START_C = 105;
-            STOP    = 106;
             for (std::size_t i{0}; i < Code128AChars.size(); i++) {
                 CODE128A[Code128AChars[i]] = i;
                 CODE128B[Code128BChars[i]] = i;
@@ -97,6 +103,7 @@ class Barcode {
         std::vector<bool> encode(std::string &message) {
 
             // Compute DP grid for the message
+            // DP[idx] denotes min 'keys' required to construct message[idx:]
             std::vector<std::vector<std::size_t>> dp(message.size(), std::vector<std::size_t>(5, INF));
             dp.push_back({0, 0, 0, 0, 0});
             for (std::size_t idx {message.size()}; idx-- > 0;) {
@@ -152,8 +159,10 @@ class Barcode {
                 // If multiple min exists, can we pick the current encoding?
                 std::ptrdiff_t pos {idx > 0 && *it == dp[idx][static_cast<std::size_t>(enc)]? enc: it - dp[idx].begin()};
 
-                if (*it == INF)
-                    throw "Failed to reconstruct string";
+                if (*it == INF) {
+                    std::cerr << "Error: Unsupported character encountered in the message.\n";
+                    std::exit(1);
+                }
 
                 else {
                     // Shift or Change character
@@ -217,45 +226,30 @@ class Barcode {
             // Specify format and structure
             ofs << "P4\n" << ((quiet + codes.size() + quiet) * width) << " " << height << "\n";
 
+            // Helper to add 'zones' into the output image
+            std::function<void(bool, unsigned int&, int&)> addZone {[&quiet, &codes, &width, &ofs](bool isQuiet, unsigned int &byte, int &bitCount){
+                std::size_t N {isQuiet? quiet: codes.size()};
+                for (std::size_t i{0}; i < N; i++) {
+                    for (std::size_t itr {0}; itr < width; itr++) {
+                        byte = (byte << 1) | (!isQuiet && codes[i] ? 1: 0);
+                        if (++bitCount == 8) {
+                            ofs.put(static_cast<char>(byte));
+                            bitCount = 0;
+                            byte = 0;
+                        }
+                    }
+                }
+            }};
+
             // Read the vector of bools and write to file
             for (std::size_t i {0}; i < height; i++) {
                 // Repeat line 'height' no of times
                 unsigned int byte {0};
                 int bitCount {0};
 
-                // Add quiet at start
-                for (std::size_t q{0}; q < quiet; q++) {
-                    for (std::size_t itr {0}; itr < width; itr++) {
-                        if (++bitCount == 8) {
-                            ofs.put(static_cast<char>(0));
-                            bitCount = 0;
-                        }
-                    }
-                }
-                
-                // Add actual codes
-                for (bool code: codes) {
-                    for (std::size_t itr {0}; itr < width; itr++) {
-                        byte = (byte << 1) | (code? 1: 0);
-                        if (++bitCount == 8) {
-                            ofs.put(static_cast<char>(byte));
-                            bitCount = 0;
-                            byte = 0;
-                        }
-                    }
-                }
-
-                // Add quiet at end
-                for (std::size_t q{0}; q < quiet; q++) {
-                    for (std::size_t itr {0}; itr < width; itr++) {
-                        byte = (byte << 1) | 0;
-                        if (++bitCount == 8) {
-                            ofs.put(static_cast<char>(byte));
-                            bitCount = 0;
-                            byte = 0;
-                        }
-                    }
-                }
+                addZone(true,  byte, bitCount);  // Quiet Zone at start
+                addZone(false, byte, bitCount);  // Actual Code at middle
+                addZone(true,  byte, bitCount);  // Quiet Zone at end
 
                 // Any pending bits?
                 if (bitCount > 0) {
@@ -269,11 +263,36 @@ class Barcode {
 
 // ********************* SAMPLE FUNCTION RUN ********************* //
 
-int main() {
-    std::string fname {"sample.pbm"}; 
-    std::string message {"Naresh Jagadeesan"};
+int main(int argc, char **argv) {
+    if (argc != 3)
+        std::cout << "Code 128 Barcode Generator.\nUsage: ./barcode <inputFile> <outputFile>\n";
 
-    Barcode bg;
-    std::vector<bool> codes {bg.encode(message)};
-    bg.print(codes, fname);
+    else {
+        // Extract params
+        std::ifstream ifs {argv[1]};
+        std::string ofname {argv[2]};
+
+        if (!ifs) {
+            std::cerr << "Error: Invalid input file provided.\n";
+            std::exit(1);
+        }
+
+        // Read the message
+        std::string message {""}, buffer;
+        while (std::getline(ifs, buffer)) {
+            if (!message.empty())
+                message += "\n";
+            message += buffer;
+        }
+
+        if (message.size() > 128) {
+            std::cerr << "Error: Input message is too long.\n";
+            std::exit(1);
+        }
+
+        // Generate the barcode
+        Barcode bg;
+        std::vector<bool> codes {bg.encode(message)};
+        bg.print(codes, ofname);
+    }
 }
