@@ -39,21 +39,21 @@ class VehicleFactory {
         // Easily extensible, simply add to the types above and
         // add a method to the function below
         std::unique_ptr<Vehicle> create(VehicleType typeID) {
-            if (typeID == VehicleType::BIKE) return std::make_unique<Bike>(); 
-            else if (typeID == VehicleType::CAR) return std::make_unique<Car>();
+            if      (typeID == VehicleType::BIKE)  return std::make_unique<Bike> (); 
+            else if (typeID == VehicleType::CAR)   return std::make_unique<Car>  ();
             else if (typeID == VehicleType::TRUCK) return std::make_unique<Truck>();
-            else return nullptr;
+            else                                   return nullptr;
         }
 };
 
 int main() {
 
     VehicleFactory factory;    
-    std::unique_ptr<Vehicle> bike {factory.create(VehicleFactory::BIKE)};
-    std::unique_ptr<Vehicle> car {factory.create(VehicleFactory::CAR)};
+    std::unique_ptr<Vehicle> bike  {factory.create(VehicleFactory::BIKE)};
+    std::unique_ptr<Vehicle> car   {factory.create(VehicleFactory::CAR)};
     std::unique_ptr<Vehicle> truck {factory.create(VehicleFactory::TRUCK)};
 
-    std::cout << "This is a " << bike->getType() << "\n";
-    std::cout << "This is a " << car->getType() << "\n";
+    std::cout << "This is a " << bike->getType()  << "\n";
+    std::cout << "This is a " << car->getType()   << "\n";
     std::cout << "This is a " << truck->getType() << "\n";
 }
