@@ -1,6 +1,8 @@
 #include <algorithm>
 #include <iostream>
 
+// ------------------- Shape Objects ------------------- //
+
 class Square {
     private:
         const double sideLength;
@@ -31,6 +33,8 @@ class Rectangle {
         double getMaxSideLength() const { return std::max(side1, side2); }
 };
 
+// ------------------- Hole Object ------------------- //
+
 class SquareHole {
     private:
         const double sideLength;
@@ -40,8 +44,9 @@ class SquareHole {
         bool canFit(const Square &sq) const { return sq.getSideLength() <= sideLength; }
 };
 
-// ---------------- ADAPTER CLASSES ---------------- //
+// ---------------- Adapter Classes ---------------- //
 
+// Fitting Circle inside the Sq hole
 class CircleToSquareAdapter: public Square {
     private:
         Circle circle;
@@ -52,6 +57,7 @@ class CircleToSquareAdapter: public Square {
         double getSideLength() const override { return 2 * circle.getRadius(); }
 };
 
+// Fitting Rectangle inside the Sq hole
 class RectangleToSquareAdapter: public Square {
     private:
         Rectangle rectangle;

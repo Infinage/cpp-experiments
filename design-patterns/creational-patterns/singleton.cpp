@@ -5,7 +5,7 @@
 // A sample singleton class
 class Database {
     private:
-        // Ensure that the lambda func is called only once
+        // Ensure that lambda func is called only once - THREAD SAFE
         static std::once_flag flag;                                   
 
         // Globally only one variable exists
@@ -16,7 +16,7 @@ class Database {
 
     public:
         static std::shared_ptr<Database> getInstance() {
-            std::call_once(flag, []() { db = std::shared_ptr<Database>(new Database()); }); 
+            std::call_once(flag, [](){ db = std::shared_ptr<Database>(new Database()); }); 
             return db;
         }
 };
@@ -25,7 +25,8 @@ class Database {
 std::shared_ptr<Database> Database::db = nullptr;
 std::once_flag Database::flag;
 
-// Lets test things out
+// ----------------------- SAMPLE PROGRAM ----------------------- //
+
 int main() {
     // Try creating multiple instances
     std::shared_ptr<Database> conn1 {Database::getInstance()};

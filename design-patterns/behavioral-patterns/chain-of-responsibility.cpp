@@ -4,6 +4,8 @@
 #include <memory>
 #include <string>
 
+// ------------------------- Base Handler & its implementations ------------------------- //
+
 class Handler {
     protected:
         std::shared_ptr<Handler> next;
@@ -11,7 +13,7 @@ class Handler {
     public:
         Handler(std::shared_ptr<Handler> next = nullptr): next(next) {}
         virtual ~Handler() = default;
-        void setNext(std::shared_ptr<Handler> &next) { this->next = next; }
+        void setNext(const std::shared_ptr<Handler> &next) { this->next = next; }
         virtual bool check(const std::string &password) const = 0;
         bool handle(bool status, std::string &&messageOnFail, const std::string &password) const {
             if (!status) {
@@ -25,6 +27,7 @@ class Handler {
         }
 };
 
+// Ensure Password length is between [MIN_LENGTH, MAX_LENGTH]
 class LengthChecker: public Handler {
     private:
         const std::size_t MIN_LENGTH, MAX_LENGTH;
@@ -39,6 +42,7 @@ class LengthChecker: public Handler {
         }
 };
 
+// Ensure Password has atleast MIN_NUMS count of Digits
 class NumberChecker: public Handler {
     private:
         const int MIN_NUMS;
@@ -52,6 +56,7 @@ class NumberChecker: public Handler {
         }
 };
 
+// Ensure Password has atleast MIN_SPLCHARS count of Special Chars
 class SpecialCharChecker: public Handler {
     private:
         const int MIN_SPLCHARS;
@@ -65,6 +70,7 @@ class SpecialCharChecker: public Handler {
         }
 };
 
+// Ensure Password has atleast MIN_LCASE count of lower case & MIN_UCASE count of upper case chars
 class AlphaChecker: public Handler {
     private:
         const int MIN_LCASE, MIN_UCASE;
@@ -83,6 +89,8 @@ class AlphaChecker: public Handler {
             return handle(status, "Password must atleast contain " + std::to_string(MIN_UCASE) + " upper & " + std::to_string(MIN_LCASE) + " lower chars.\n", password); 
         }
 };
+
+// ------------------------- Client Code ------------------------- //
 
 int main() {
 

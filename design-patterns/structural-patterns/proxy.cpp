@@ -3,12 +3,14 @@
 #include <string>
 #include <unordered_map>
 
+// Common interface for our 3rd Party & Proxy
 class ThirdPartyYouTubeLib {
     public:
         virtual std::string downloadVideo(long id) = 0; 
         virtual ~ThirdPartyYouTubeLib() = default;
 };
 
+// 3rd Party Service that is too expensive to use
 class ThirdPartyYouTubeOriginal: public ThirdPartyYouTubeLib {
     private:
         std::mt19937 gen {std::random_device {}()};
@@ -24,6 +26,7 @@ class ThirdPartyYouTubeOriginal: public ThirdPartyYouTubeLib {
         }
 };
 
+// Proxy example here sits between Client & the actual 3rd party lib caching results
 class ThirdPartyYouTubeProxy: public ThirdPartyYouTubeLib {
     private:
         mutable std::unordered_map<long, std::string> cache;
@@ -41,6 +44,7 @@ class ThirdPartyYouTubeProxy: public ThirdPartyYouTubeLib {
         }
 };
 
+// Sample Client Code
 int main() {
     ThirdPartyYouTubeOriginal originalService {ThirdPartyYouTubeOriginal{}};
     ThirdPartyYouTubeProxy proxyService {ThirdPartyYouTubeProxy{originalService}};

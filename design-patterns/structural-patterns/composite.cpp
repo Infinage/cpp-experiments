@@ -83,6 +83,8 @@ std::vector<std::unique_ptr<T>> make_vector(Ptrs&& ... ptrs) {
     return result;
 }
 
+// ------------------------ SAMPLE PROGRAM ------------------------ //
+
 int main() {
     std::unique_ptr<Container> books {std::make_unique<Products>(1L, make_vector<Container>(
         std::make_unique<Book>(1L, "Book1", 200.), 

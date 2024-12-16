@@ -47,13 +47,14 @@ class VehicleFactory {
 };
 
 int main() {
-
     VehicleFactory factory;    
-    std::unique_ptr<Vehicle> bike  {factory.create(VehicleFactory::BIKE)};
-    std::unique_ptr<Vehicle> car   {factory.create(VehicleFactory::CAR)};
-    std::unique_ptr<Vehicle> truck {factory.create(VehicleFactory::TRUCK)};
 
+    std::unique_ptr<Vehicle> bike  {factory.create(VehicleFactory::BIKE)};
     std::cout << "This is a " << bike->getType()  << "\n";
+
+    std::unique_ptr<Vehicle> car   {factory.create(VehicleFactory::CAR)};
     std::cout << "This is a " << car->getType()   << "\n";
+
+    std::unique_ptr<Vehicle> truck {factory.create(VehicleFactory::TRUCK)};
     std::cout << "This is a " << truck->getType() << "\n";
 }

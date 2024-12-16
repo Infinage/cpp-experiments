@@ -9,32 +9,17 @@ class BinaryTreeNode {
         T data;
         BinaryTreeNode *left;
         BinaryTreeNode *right;
-        BinaryTreeNode(int data): data(data), left(nullptr), right(nullptr) {}
+        BinaryTreeNode(T data): data(data), left(nullptr), right(nullptr) {}
         ~BinaryTreeNode() {
             if (left  != nullptr) delete left;
             if (right != nullptr) delete right;
         }
 
-        static BinaryTreeNode<T> *fromVector(std::vector<T> &&vec, T null) {
-            std::size_t parent{0};
-            std::vector<BinaryTreeNode<T>*> nodes;
-
-            for (std::size_t i{0}; i < vec.size(); i++) {
-                BinaryTreeNode<T> *curr {
-                    vec[i] != null? new BinaryTreeNode{vec[i]}: nullptr
-                };
-
-                if (vec[i] != null)
-                    nodes.push_back(curr);
-
-                if (i == 0) continue;
-                else if (i % 2) nodes[parent]->left = curr;
-                else nodes[parent++]->right = curr;
-            }
-
-            return nodes.empty()? nullptr: nodes[0];
-        }
+        // Declare helper to create a B-Tree from level order input
+        static BinaryTreeNode<T> *fromVector(std::vector<T> &&vec, T null); 
 };
+
+// ------------------------- Define & implement Iterators ------------------------- //
 
 template <typename Node>
 class Iterator {
@@ -83,22 +68,47 @@ class BFSIterator: public Iterator<Node> {
         }
 };
 
+// ------------------------------ Helper Functions ------------------------------ //
+
 template <typename T>
-void printTraversal(Iterator<T> *it) {
+BinaryTreeNode<T> *BinaryTreeNode<T>::fromVector(std::vector<T> &&vec, T null) {
+    std::size_t parent{0};
+    std::vector<BinaryTreeNode<T>*> nodes;
+
+    for (std::size_t i{0}; i < vec.size(); i++) {
+        BinaryTreeNode<T> *curr {
+            vec[i] != null? new BinaryTreeNode{vec[i]}: nullptr
+        };
+
+        if (curr != nullptr)
+            nodes.push_back(curr);
+
+        if (i == 0) continue;
+        else if (i % 2) nodes[parent]->left = curr;
+        else nodes[parent++]->right = curr;
+    }
+
+    return nodes.empty()? nullptr: nodes[0];
+}
+
+template <typename T>
+void printTraversal(Iterator<BinaryTreeNode<T>> *it) {
     while (it->hasNext())
         std::cout << it->getNext()->data << " ";
     std::cout << "\n";
 }
+
+// ------------------------------ Client Code ------------------------------ //
 
 int main() {
     using BTI = BinaryTreeNode<int>;
     BTI *root = BTI::fromVector({5, 12, 7, 18, -1, -1, 69, 4, 13}, -1);
 
     Iterator<BTI> *it_dfs {new DFSIterator{root}};
-    printTraversal<BTI>(it_dfs);
+    printTraversal(it_dfs);
 
     Iterator<BTI> *it_bfs {new BFSIterator{root}};
-    printTraversal<BTI>(it_bfs);
+    printTraversal(it_bfs);
 
     delete it_dfs; delete it_bfs; delete root;
 }

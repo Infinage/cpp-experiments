@@ -16,6 +16,7 @@ class TextDocument: public DocumentPrototype {
     public:
         TextDocument(std::string content): content(content) {}
 
+        // Implement a clone method inside class to copy all fields including private ones
         std::shared_ptr<DocumentPrototype> clone() const override {
             return std::make_shared<TextDocument>(content);
         }
@@ -36,6 +37,7 @@ class ImageDocument: public DocumentPrototype {
         ImageDocument(int rows, int cols, const std::vector<std::vector<int>> &matrix):
             rows(rows), cols(cols), dataMatrix(matrix) {}
 
+        // Implement a clone method inside class to copy all fields including private ones
         std::shared_ptr<DocumentPrototype> clone() const override {
             std::size_t rows_ {static_cast<std::size_t>(rows)}, cols_ {static_cast<std::size_t>(cols)};
             std::vector<std::vector<int>> dataMatrixCopy(rows_, std::vector<int>(cols_));
@@ -61,19 +63,19 @@ class ImageDocument: public DocumentPrototype {
 };
 
 int main() {
-    // Simple text document
+    // A simple text document -----------------
     std::shared_ptr<TextDocument> doc1 {std::make_shared<TextDocument>("Some dummy text here")};
-    doc1->display();
     std::shared_ptr<TextDocument> doc1Copy{std::static_pointer_cast<TextDocument>(doc1->clone())};
+    doc1->display();
     doc1Copy->display();
 
     std::cout << "\n";
 
-    // More complex image document
+    // A more complex image document -----------------
     std::vector<std::vector<int>> matrix {{{1, 0, 2, 2, 1, 0, 1, 2}, {0, 1, 3, 2, 1, 0, 0, 0}}};
     std::shared_ptr<ImageDocument> doc2 {std::make_shared<ImageDocument>(2, 8, matrix)};
-    doc2->display();
     std::shared_ptr<ImageDocument> doc2Copy{std::static_pointer_cast<ImageDocument>(doc2->clone())};
+    doc2->display();
     doc2Copy->display();
 
     return 0;

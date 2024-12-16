@@ -1,5 +1,4 @@
 #include <algorithm>
-#include <functional>
 #include <iostream>
 #include <memory>
 #include <numeric>
@@ -105,6 +104,8 @@ class Forest {
 // Init TreeFactory
 std::unordered_map<std::pair<char, TreeType::COLORS>, std::shared_ptr<TreeType>, TreeType::HashTreeType> 
     TreeFactory::treeTypes;
+
+// ------------------------- SAMPLE CLIENT CODE ------------------------- //
 
 int main() {
     // Config variables
