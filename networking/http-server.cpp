@@ -4,20 +4,21 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <iostream>
 #include <mutex>
 #include <netinet/in.h>
 #include <string>
 #include <sys/socket.h>
-#include <thread>
 #include <unistd.h>
 #include <unordered_set>
-#include <vector>
+
+#include "../misc/ThreadPool.cpp"
 
 // HTTP Server Thread running?
 std::atomic<bool> httpServerRunning {true};
 
-// Limit concurrent threads
+// Limit concurrent threads & active socket connections
 constexpr int N_THREADS {10};
 std::counting_semaphore<N_THREADS> semaphore(N_THREADS);
 
@@ -53,7 +54,7 @@ void handleInterrupt(int signal) {
 }
 
 // Accept connection from a client and respond back
-void processClient(int clientSocket, const std::string &clientIp, const std::filesystem::path &serveDirectory) {
+void handleClient(int clientSocket, const std::string clientIp, const std::filesystem::path &serveDirectory) {
     {
         // Add into list of active clients - RAII
         std::lock_guard<std::mutex> lock(clientSocketMutex);
@@ -85,7 +86,7 @@ void processClient(int clientSocket, const std::string &clientIp, const std::fil
     std::string responseCode;
     if (validFile) responseCode = "200 OK";
     else if (reqType == "GET") responseCode = "404 Not Found";
-    else responseCode = "400 Bad Request";
+    else responseCode = "405 Method Not Allowed";
 
     // Log the request
     if (!buffer.empty())
@@ -169,7 +170,7 @@ int main(int argc, char **argv) {
               << "/) \nDirectory: " << serveDirectory << "\n\n";
 
     // Accept connections
-    std::vector<std::thread> clientThreads;
+    ThreadPool<std::function<void()>> pool(N_THREADS);
     std::signal(SIGINT, handleInterrupt);
     while (httpServerRunning) {
         // Accept a connection, store the client addr
@@ -184,15 +185,11 @@ int main(int argc, char **argv) {
 
         if (httpServerRunning && clientSocket != -1) {
             semaphore.acquire();
-            clientThreads.push_back(std::thread([clientSocket, clientIp, &serveDirectory]() {
-                processClient(clientSocket, std::string{clientIp}, serveDirectory); 
-            }));
+            pool.enqueue([clientSocket, clientIp, &serveDirectory]() {
+                handleClient(clientSocket, std::string{clientIp}, serveDirectory); 
+            });
         }
     }
-
-    // Wait for threads to complete
-    for (std::thread &t: clientThreads)
-        t.join();
 
     // Cleanup
     close(serverSocket);
