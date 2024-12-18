@@ -1,7 +1,3 @@
-/*
- * 3. Disallow relative paths even if valid - hackers can figure out entire serve path
- */
-
 #include <arpa/inet.h>
 #include <atomic>
 #include <csignal>
@@ -9,15 +5,25 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <mutex>
 #include <netinet/in.h>
 #include <string>
 #include <sys/socket.h>
 #include <thread>
 #include <unistd.h>
+#include <unordered_set>
 #include <vector>
 
-// Web Server Thread running?
-std::atomic<bool> webserverRunning {true};
+// HTTP Server Thread running?
+std::atomic<bool> httpServerRunning {true};
+
+// Limit concurrent threads
+constexpr int N_THREADS {10};
+std::counting_semaphore<N_THREADS> semaphore(N_THREADS);
+
+// Mark the client sockets for closure
+std::unordered_set<int> activeClientSockets;
+std::mutex clientSocketMutex;
 
 // Global variable to access via signal handler
 int serverSocket = -1;
@@ -30,8 +36,30 @@ void exitWithError (int socket_, const std::string &message) {
     std::exit(1);
 }
 
+// Helper to handle interupts
+void handleInterrupt(int signal) {
+    std::cout << "Keyboard interrupt received, exiting.\n";
+    httpServerRunning = false; close(serverSocket); 
+
+    {
+        // Shutdown all client sockets
+        std::lock_guard<std::mutex> lock(clientSocketMutex);
+        for (int clientSock: activeClientSockets) {
+            shutdown(clientSock, SHUT_RDWR);
+            close(clientSock);
+        }
+        activeClientSockets.clear();
+    }
+}
+
 // Accept connection from a client and respond back
 void processClient(int clientSocket, const std::string &clientIp, const std::filesystem::path &serveDirectory) {
+    {
+        // Add into list of active clients - RAII
+        std::lock_guard<std::mutex> lock(clientSocketMutex);
+        activeClientSockets.insert(clientSocket);
+    }
+
     // Read the request from client
     char raw_buffer[512] = {0};
     recv(clientSocket, raw_buffer, sizeof(raw_buffer), 0);
@@ -60,7 +88,8 @@ void processClient(int clientSocket, const std::string &clientIp, const std::fil
     else responseCode = "400 Bad Request";
 
     // Log the request
-    std::cout << clientIp << ": " << reqType << " /" << reqPathRaw << " [" << responseCode << "]\n";
+    if (!buffer.empty())
+        std::cout << clientIp << ": " << reqType << " /" << reqPathRaw << " [" << responseCode << "]\n";
 
     // Read the file requested - if exists and req is valid
     std::string fileContents{""};
@@ -81,26 +110,37 @@ void processClient(int clientSocket, const std::string &clientIp, const std::fil
     // Send response to connected client
     send(clientSocket, response.c_str(), response.size(), 0);
 
-    // Cleanup
+    // Cleanup - remove client socket from activeSockets set
     close(clientSocket);
+    {
+        std::lock_guard<std::mutex> lock(clientSocketMutex);
+        activeClientSockets.erase(clientSocket);
+    }
+    semaphore.release();
 }
 
 int main(int argc, char **argv) {
 
     if (argc != 3) {
-        std::cout << "Usage: ./web-server <port> <path>\n";
+        std::cout << "Usage: ./http-server <port> <path>\n";
         return 0;
     }
 
-    constexpr int CONNECTIONS {10}; 
+    constexpr int SOCKET_BACKLOG {10}; 
     constexpr const char *serverIp {"0.0.0.0"};
-    const int PORT {std::stoi(argv[1])};
+    const std::uint16_t PORT {static_cast<std::uint16_t>(std::stoi(argv[1]))};
 
     // Get the path to serve from
     const std::filesystem::path serveDirectory {strcmp(argv[2], ".") == 0? 
         std::filesystem::current_path(): 
         std::filesystem::path(argv[2])
     };
+
+    // Fail if serve dir doesn't exist
+    if (!std::filesystem::exists(serveDirectory)) {
+        std::cerr << serveDirectory << " doesn't exist, server failed to start.\n";
+        std::exit(1);
+    }
 
     // Init socket - Global Variable
     serverSocket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
@@ -121,7 +161,7 @@ int main(int argc, char **argv) {
         exitWithError(serverSocket, "Failed to bind to specified port.\n");
 
     // Listen for connections
-    if (listen(serverSocket, CONNECTIONS) == -1)
+    if (listen(serverSocket, SOCKET_BACKLOG) == -1)
         exitWithError(serverSocket, "Unsuccessful in starting a listener.\n");
 
     // Feedback on server startup
@@ -130,12 +170,8 @@ int main(int argc, char **argv) {
 
     // Accept connections
     std::vector<std::thread> clientThreads;
-    std::signal(SIGINT, [](int signal_) { 
-        std::cout << "Keyboard interrupt received, exiting.\n";
-        webserverRunning = false; close(serverSocket); 
-    });
-    while (webserverRunning) {
-
+    std::signal(SIGINT, handleInterrupt);
+    while (httpServerRunning) {
         // Accept a connection, store the client addr
         struct sockaddr_in clientAddr;
         socklen_t addr_size {sizeof (clientAddr)};
@@ -146,13 +182,12 @@ int main(int argc, char **argv) {
         char clientIp[INET_ADDRSTRLEN];
         inet_ntop(AF_INET, &ipAddr, clientIp, INET_ADDRSTRLEN);
 
-        if (!webserverRunning) { close(clientSocket); break; }
-        else if (clientSocket == -1)
-            exitWithError(serverSocket, "Failed to establish connection with client.\n");
-        else
-            clientThreads.push_back(std::thread([clientSocket, clientIp, &serveDirectory]() { 
+        if (httpServerRunning && clientSocket != -1) {
+            semaphore.acquire();
+            clientThreads.push_back(std::thread([clientSocket, clientIp, &serveDirectory]() {
                 processClient(clientSocket, std::string{clientIp}, serveDirectory); 
             }));
+        }
     }
 
     // Wait for threads to complete
