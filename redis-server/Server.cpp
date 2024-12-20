@@ -23,21 +23,22 @@ void handleInterupt(int signal_) {
     std::exit(1);
 }
 
-// Read & parse a request from the client
-std::shared_ptr<Redis::RedisNode> handleRequest(int client_fd) {
+// Recv request from client until complete
+std::string readRequest(int client_fd) {
     // Variables to store & process request 
     std::string request {};
     std::size_t currPos {0};
     bool reqData {true};
-    std::stack<std::tuple<char, std::size_t, std::shared_ptr<Redis::RedisNode>>> stk;
+    std::stack<std::tuple<char, std::size_t>> stk;
+
+    // Dummy message to return on error
+    std::string errorMessage = "-Error receiving data\r\n";
 
     // Recv until all of request is read
     while (reqData || currPos < request.size()) {
         char buffer[1024] = {0};
         bool recvOk {!reqData || recv(client_fd, buffer, sizeof(buffer), 0) != -1};
-        if (!recvOk)  {
-            return std::make_shared<Redis::PlainRedisNode>("Error receiving data", false);
-        }
+        if (!recvOk) return errorMessage;
 
         // Append received data into request string
         request += buffer;
@@ -48,25 +49,13 @@ std::shared_ptr<Redis::RedisNode> handleRequest(int client_fd) {
             std::size_t tokEnd {request.find("\r\n", currPos)};
             if (tokEnd == std::string::npos) { reqData = true; } 
             else {
-                std::string token {request.substr(currPos, tokEnd - currPos)};
-
-                if (token.at(0) == '$' || token.at(0) == '*') {
-                    std::size_t aggLength {std::stoull(token.substr(1))};
-                    std::shared_ptr<Redis::RedisNode> aggNode;
-                    if (token.at(0) == '$')
-                        aggNode = std::make_shared<Redis::VariantRedisNode>("");
-                    else 
-                        aggNode = std::make_shared<Redis::AggregateRedisNode>();
-                    stk.push({token.at(0), aggLength, aggNode});
-                } 
-
-                else if (token.at(0) == '+' || token.at(0) == '-') {
-                    stk.push({token.at(0), 0, std::make_shared<Redis::PlainRedisNode>(token.substr(1), token.at(0) == '+')}); 
-                }
-
-                else { 
-                    stk.push({':', 0, std::make_shared<Redis::VariantRedisNode>(std::stol(token.substr(1)))}); 
-                }
+                if (request.at(currPos) == '$' || request.at(currPos) == '*') {
+                    std::size_t aggLength {
+                        request.at(currPos + 1) == '-'? 0: 
+                        std::stoull(request.substr(currPos + 1, tokEnd - currPos - 1))
+                    };
+                    stk.push({request.at(currPos), aggLength});
+                } else { stk.push({request.at(currPos), 0}); }
 
                 reqData = false;
                 currPos = tokEnd + 2;
@@ -75,42 +64,32 @@ std::shared_ptr<Redis::RedisNode> handleRequest(int client_fd) {
 
         // We are currently parsing a bulk string
         else {
-             std::tuple<char, std::size_t, std::shared_ptr<Redis::RedisNode>> &top{stk.top()};
-             std::shared_ptr<Redis::VariantRedisNode> vnode {std::static_pointer_cast<Redis::VariantRedisNode>(std::get<2>(top))};
-             std::size_t bulkStrAddLength {std::min(std::get<1>(top), request.size() - currPos)};
-             vnode->setValue(std::get<std::string>(vnode->getValue()) + request.substr(currPos, bulkStrAddLength));
-             stk.top() = {'$', std::get<1>(top) - bulkStrAddLength, vnode};
+             std::size_t bulkStrAddLength {std::min(std::get<1>(stk.top()), request.size() - currPos)};
+             stk.top() = {'$', std::get<1>(stk.top()) - bulkStrAddLength};
              currPos += bulkStrAddLength;
 
-             // If we have parsed the bulk string
+             // If we have parsed the bulk string, update currPos to include '\r\n'
+             // Else request more data
              if (std::get<1>(stk.top()) == 0) currPos += 2;
-
-             // Else we need to read some more data
              else reqData = true;
         }
 
         // Pop the top most if we can and add to prev guy
         while (!stk.empty() && std::get<1>(stk.top()) == 0) {
-             std::tuple<char, std::size_t, std::shared_ptr<Redis::RedisNode>> curr{stk.top()};
              stk.pop();
-
-             if (stk.empty()) 
-                 return std::get<2>(curr);
-             else {
-                 std::shared_ptr<Redis::AggregateRedisNode> parent{std::static_pointer_cast<Redis::AggregateRedisNode>(std::get<2>(stk.top()))};
-                 parent->push_back(std::get<2>(curr));
-                 stk.top() = {'*', std::get<1>(stk.top()) - 1, parent};
-             }
+             if (stk.empty()) return request;
+             else stk.top() = {'*', std::get<1>(stk.top()) - 1};
         }
     }
     
-    return nullptr;
+    return errorMessage;
 }
 
 void handleClient(int client_fd, const std::string clientIP) {
     // Read request from client
-    std::shared_ptr<Redis::RedisNode> requestNode {handleRequest(client_fd)};
-    std::string respMsg {requestNode->serialize()};
+    std::string serializedRequest {readRequest(client_fd)};
+    std::cout << Redis::RedisNode::deserialize(serializedRequest)->serialize() << "\n";
+    std::string respMsg {Redis::PlainRedisNode("OK").serialize()};
     send(client_fd, respMsg.c_str(), respMsg.size(), 0);
     close(client_fd);
 }
