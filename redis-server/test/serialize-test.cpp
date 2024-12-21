@@ -1,6 +1,6 @@
 #include <iostream>
 #include <vector>
-#include "../Node.hpp"
+#include "../include/Node.hpp"
 
 int main() {
     // Sample Tests for Serialization

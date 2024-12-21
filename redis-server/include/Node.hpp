@@ -4,6 +4,7 @@
 #include <memory>
 #include <string>
 #include <variant>
+#include <vector>
 
 namespace Redis {
 
@@ -43,6 +44,7 @@ namespace Redis {
             VariantRedisNode(const VARIANT_NODE_TYPE &value);
             VARIANT_NODE_TYPE getValue() const;
             void setValue(VARIANT_NODE_TYPE value);
+            std::string str() const;
             std::string serialize() const override;
     };
 
@@ -56,7 +58,7 @@ namespace Redis {
             void push_back(std::shared_ptr<RedisNode> node);
             void push_front(std::shared_ptr<RedisNode> node);
 
-            std::size_t size();
+            std::size_t size() const;
 
             void pop_back();
             void pop_front();
@@ -66,6 +68,7 @@ namespace Redis {
 
             std::shared_ptr<RedisNode> operator[](long idx_) const;
 
+            std::vector<std::string> vector() const;
             std::string serialize() const override;
     };
 

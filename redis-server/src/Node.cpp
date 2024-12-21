@@ -1,4 +1,6 @@
+#include <deque>
 #include <stack>
+#include <vector>
 #include "../include/Node.hpp"
 
 namespace Redis {
@@ -117,6 +119,20 @@ namespace Redis {
         else throw PlainRedisNode("Setting a different value type.", false);
     }
 
+    std::string VariantRedisNode::str() const {
+        if (std::holds_alternative<bool>(value)) {
+            return std::get<bool>(value)? "true": "false";
+        } else if (std::holds_alternative<double>(value)) {
+            return std::to_string(std::get<double>(value));
+        } else if (std::holds_alternative<long>(value)) {
+            return std::to_string(std::get<long>(value));
+        } else if (std::holds_alternative<std::string>(value)) {
+            return std::get<std::string>(value);
+        } else {
+            return "nil";
+        }
+    }
+
     std::string VariantRedisNode::serialize() const {
         if (std::holds_alternative<bool>(value)) {
             return std::string("+", 1) + (std::get<bool>(value)? "true": "false") + SEP;
@@ -145,7 +161,7 @@ namespace Redis {
         values.push_front(node); 
     }
 
-    std::size_t AggregateRedisNode::size() { 
+    std::size_t AggregateRedisNode::size() const { 
         return values.size(); 
     }
 
@@ -166,11 +182,26 @@ namespace Redis {
     }
 
     std::shared_ptr<RedisNode> AggregateRedisNode::operator[](long idx_) const {
-        std::size_t idx {idx_ >= 0? static_cast<std::size_t>(idx_): static_cast<std::size_t>(-idx_) - 1};
-        if (idx >= values.size()) 
+        long N {static_cast<long>(values.size())};
+        long idx {idx_ >= 0? idx_: N + idx_};
+        if (idx < 0 || idx >= N)
             throw PlainRedisNode("Index out of bounds", false);
-        else 
-            return values[idx];
+        else {
+            return values[static_cast<std::size_t>(idx)];
+        }
+    }
+
+    std::vector<std::string> AggregateRedisNode::vector() const {
+        std::vector<std::string> result;
+        for (std::size_t i{0}; i < size(); i++) {
+            if (values[i]->getType() == NODE_TYPE::PLAIN)
+                result.push_back(values[i]->cast<PlainRedisNode>()->getMessage());
+            else if (values[i]->getType() == NODE_TYPE::VARIANT)
+                result.push_back(values[i]->cast<VariantRedisNode>()->str());
+            else
+                throw PlainRedisNode("Node cannot contain aggregate nodes inside", false);
+        }
+        return result;
     }
 
     std::string AggregateRedisNode::serialize() const {

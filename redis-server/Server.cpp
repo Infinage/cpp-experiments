@@ -4,18 +4,20 @@
 #include <csignal>
 #include <cstdint>
 #include <iostream>
+#include <iterator>
 #include <memory>
 #include <netinet/in.h>
 #include <stack>
 #include <string>
 #include <sys/socket.h>
 #include <unistd.h>
-#include <utility>
 #include <fcntl.h>
 #include <poll.h>
 #include <vector>
 
 #include "include/Node.hpp"
+
+// TODO: rename to Node Cache & create a new Socket Cache?
 #include "include/Cache.hpp"
 
 bool serverRunning {true};
@@ -29,6 +31,22 @@ void closeSockets(int signal_) {
         close(p.first);
 }
 
+void lower(std::string &inpStr) {
+    std::transform(inpStr.begin(), inpStr.end(), inpStr.begin(), [](const char ch) { 
+        return std::tolower(ch); 
+    });
+}
+
+bool allDigitsUnsigned(const std::string::const_iterator& begin, const std::string::const_iterator& end) {
+    return std::all_of(begin, end, [](const char ch){
+        return std::isdigit(ch);
+    });
+}
+
+bool allDigitsSigned(const std::string::const_iterator& begin, const std::string::const_iterator& end) {
+    return begin != end && allDigitsUnsigned(begin + 1, end) && (*begin == '-' || std::isdigit(*begin));
+}
+
 // Recv request from client return true / false based on status
 bool readRequest(int client_fd, std::string &request, std::size_t &currPos, std::stack<std::tuple<char, std::size_t>> &stk) {
     // Dummy message to return on error
@@ -36,7 +54,7 @@ bool readRequest(int client_fd, std::string &request, std::size_t &currPos, std:
 
     // Read one portion at a time
     char buffer[1024] = {0};
-    if (recv(client_fd, buffer, sizeof(buffer), 0) == -1) {
+    if (recv(client_fd, buffer, sizeof(buffer), 0) <= 0) {
         request = errorMessage;
         return true;
     }
@@ -119,22 +137,175 @@ std::string handleCommandEcho(std::shared_ptr<Redis::AggregateRedisNode> &args) 
 }
 
 std::string handleCommandSet(std::shared_ptr<Redis::AggregateRedisNode> &args, Redis::Cache &cache) {
-    if (args->size() == 2) {
-        std::string key {std::get<std::string>((*args)[0]->cast<Redis::VariantRedisNode>()->getValue())};
-        std::string value {std::get<std::string>((*args)[1]->cast<Redis::VariantRedisNode>()->getValue())};
-        cache[key] = std::make_shared<Redis::PlainRedisNode>(value);
+    if (args->size() >= 2) {
+        // Store the value at specified key
+        std::string key {(*args)[0]->cast<Redis::VariantRedisNode>()->str()};
+        std::string value {(*args)[1]->cast<Redis::VariantRedisNode>()->str()};
+        cache.setValue(key, std::make_shared<Redis::VariantRedisNode>(value));
+
+        // Set the expiry
+        if (args->size() >= 4) {
+            for (std::size_t i {2}; i < args->size() - 1; i++) {
+                // Extract this and the next
+                std::string expiryCode {(*args)[static_cast<long>(i)]->cast<Redis::VariantRedisNode>()->str()};
+                std::string expiry {(*args)[static_cast<long>(i + 1)]->cast<Redis::VariantRedisNode>()->str()};
+
+                // To lower case
+                lower(expiryCode);
+
+                // Check if code is valid and expiry code
+                bool isValidCode {expiryCode == "ex" || expiryCode == "exat" || expiryCode == "px" || expiryCode == "pxat"}, 
+                     isValidExpiry {isValidCode && allDigitsUnsigned(expiry.cbegin(), expiry.cend())};
+
+                if (!isValidCode)        { continue; }
+                else if (!isValidExpiry) { return Redis::PlainRedisNode("Invalid syntax", false).serialize(); }
+                else if (expiryCode ==   "ex") {    cache.setTTLS(key, std::stoul(expiry)); break; }
+                else if (expiryCode ==   "px") {   cache.setTTLMS(key, std::stoul(expiry)); break; }
+                else if (expiryCode == "exat") {  cache.setTTLSAt(key, std::stoul(expiry)); break; }
+                else if (expiryCode == "pxat") { cache.setTTLMSAt(key, std::stoul(expiry)); break; }
+            }
+        }
+
+        // Send response
         return Redis::PlainRedisNode("OK").serialize();
+
     } else {
+
         return Redis::PlainRedisNode("Wrong number of arguments for 'set' command", false).serialize();
     }
 }
 
 std::string handleCommandGet(std::shared_ptr<Redis::AggregateRedisNode> &args, Redis::Cache &cache) {
     if (args->size() == 1) {
-        std::string key {std::get<std::string>((*args)[0]->cast<Redis::VariantRedisNode>()->getValue())};
-        return cache.exists(key)? cache[key]->serialize(): Redis::VariantRedisNode(nullptr).serialize();
+        std::string key {(*args)[0]->cast<Redis::VariantRedisNode>()->str()};
+        return cache.getValue(key)->serialize();
     } else {
         return Redis::PlainRedisNode("Wrong number of arguments for 'get' command", false).serialize();
+    }
+}
+
+std::string handleCommandExists(std::shared_ptr<Redis::AggregateRedisNode> &args, Redis::Cache &cache) {
+    std::vector<std::string> strArgs {args->vector()};
+    long result {0};
+    for (std::string &arg: strArgs) {
+        if (cache.exists(arg)) {
+            result++;
+        }
+    }
+    return Redis::VariantRedisNode(result).serialize();
+}
+
+std::string handleCommandDel(std::shared_ptr<Redis::AggregateRedisNode> &args, Redis::Cache &cache) {
+    std::vector<std::string> strArgs {args->vector()};
+    long result {0};
+    for (std::string &arg: strArgs) {
+        if (cache.exists(arg)) {
+            result += !cache.expired(arg);
+            cache.erase(arg); 
+        }
+    }
+    return Redis::VariantRedisNode(result).serialize();
+}
+
+std::string handleCommandLAdd(std::shared_ptr<Redis::AggregateRedisNode> &args, Redis::Cache &cache, long by) {
+    if (args->size() == 1) {
+        std::string key {(*args)[0]->cast<Redis::VariantRedisNode>()->str()};
+        if (!cache.exists(key) || cache.expired(key)) {
+            cache.setValue(key, std::make_shared<Redis::VariantRedisNode>(std::to_string(by)));
+            return cache.getValue(key)->serialize();
+        } else {
+            std::string value {cache.getValue(key)->cast<Redis::VariantRedisNode>()->str()};
+            if (allDigitsSigned(value.cbegin(), value.cend())) {
+                cache.setValue(key, std::make_shared<Redis::VariantRedisNode>(std::to_string(std::stol(value) + by)));
+                return cache.getValue(key)->serialize();
+            } else {
+                return Redis::PlainRedisNode("value is not an integer or out of range", false).serialize();
+            }
+        }
+    } else {
+        return Redis::PlainRedisNode("Wrong number of arguments for 'incr' command", false).serialize();
+    }
+}
+
+std::string handleCommandTTL(std::shared_ptr<Redis::AggregateRedisNode> &args, Redis::Cache &cache) {
+   if (args->size() == 1) {
+        std::string key {(*args)[0]->cast<Redis::VariantRedisNode>()->str()};
+        long ttlVal {cache.getTTL(key)};
+        return Redis::VariantRedisNode(ttlVal > 0? ttlVal / 1000: ttlVal).serialize();
+   } else {
+        return Redis::PlainRedisNode("Wrong number of arguments for 'ttl' command", false).serialize();
+   }
+}
+
+std::string handleCommandLRange(std::shared_ptr<Redis::AggregateRedisNode> &args, Redis::Cache &cache) {
+    std::vector<std::string> strArgs {args->vector()};
+    if (strArgs.size() == 3) {
+        std::string key {strArgs[0]};
+        if (!allDigitsSigned(strArgs[1].begin(), strArgs[1].end()) || !allDigitsSigned(strArgs[2].begin(), strArgs[2].end())) {
+            return Redis::PlainRedisNode("Value is not an integer or out of range", false).serialize();
+        } else if (!cache.exists(key) || cache.expired(key)) {
+            return Redis::AggregateRedisNode().serialize();
+        } else if (cache.getValue(key)->getType() != Redis::NODE_TYPE::AGGREGATE) {
+            return Redis::PlainRedisNode("WRONGTYPE Operation against a key holding the wrong kind of value", false).serialize();
+        } else {
+            std::shared_ptr<Redis::AggregateRedisNode> value {cache.getValue(key)->cast<Redis::AggregateRedisNode>()};
+            Redis::AggregateRedisNode result;
+            long N{static_cast<long>(value->size())}, left {std::stol(strArgs[1])}, right {std::stol(strArgs[2])};
+            if (left < 0) left = N + left;
+            if (right < 0) right = N + right;
+            left = std::max(left, 0L); right = std::min(right, N - 1);
+            for (long curr {left}; curr <= right; curr++)
+                result.push_back((*value)[curr]);
+            return result.serialize();
+        }
+    } else {
+        return Redis::PlainRedisNode("ERR wrong number of arguments for command", false).serialize();
+    }
+}
+
+std::string handleCommandPush(std::shared_ptr<Redis::AggregateRedisNode> &args, Redis::Cache &cache, bool pushBack) {
+    std::vector<std::string> strArgs {args->vector()};
+    if (strArgs.size() >= 2) {
+        std::string key {strArgs[0]};
+        bool exists {cache.exists(key) && !cache.expired(key)}, 
+             isAggNode {exists && cache.getValue(key)->getType() == Redis::NODE_TYPE::AGGREGATE};
+
+        // Exists but of wrong data type
+        if (exists && !isAggNode)
+            return Redis::PlainRedisNode("WRONGTYPE Operation against a key holding the wrong kind of value", false).serialize();
+
+        // If it doesn't exist, create new
+        if (!exists)
+            cache.setValue(key, std::make_shared<Redis::AggregateRedisNode>());
+
+        // Start inserting into the aggNode
+        long result {0};
+        std::shared_ptr<Redis::AggregateRedisNode> aggNode {cache.getValue(key)->cast<Redis::AggregateRedisNode>()};
+        for (std::size_t i{1}; i < strArgs.size(); i++) {
+            if (pushBack) aggNode->push_back(std::make_shared<Redis::VariantRedisNode>(strArgs[i])); 
+            else aggNode->push_front(std::make_shared<Redis::VariantRedisNode>(strArgs[i])); 
+            result++;
+        }
+        return Redis::VariantRedisNode(result).serialize();
+
+    } else {
+        return Redis::PlainRedisNode("ERR wrong number of arguments for command", false).serialize();
+    }
+}
+
+std::string handleCommandLLen(std::shared_ptr<Redis::AggregateRedisNode> &args, Redis::Cache &cache) {
+    if (args->size() == 1) {
+        std::string key {(*args)[0]->cast<Redis::VariantRedisNode>()->str()};
+        if (!cache.exists(key) || cache.expired(key)) {
+            return Redis::VariantRedisNode(0).serialize();
+        } else if (cache.getValue(key)->getType() != Redis::NODE_TYPE::AGGREGATE) {
+            return Redis::PlainRedisNode("WRONGTYPE Operation against a key holding the wrong kind of value", false).serialize();
+        } else {
+            std::size_t N {cache.getValue(key)->cast<Redis::AggregateRedisNode>()->size()};
+            return Redis::VariantRedisNode(static_cast<long>(N)).serialize();
+        }
+    } else {
+        return Redis::PlainRedisNode("ERR wrong number of arguments for command", false).serialize();
     }
 }
 
@@ -160,9 +331,7 @@ std::string handleRequest(std::string &request, Redis::Cache &cache) {
     }
 
     // Convert to lower case
-    std::transform(command.begin(), command.end(), command.begin(), [](const char ch) { 
-        return std::tolower(ch); 
-    });
+    lower(command);
 
     // Prepare a suitable response
     std::string serializedResponse;
@@ -174,6 +343,24 @@ std::string handleRequest(std::string &request, Redis::Cache &cache) {
         serializedResponse = handleCommandSet(args, cache);
     else if (command == "get")
         serializedResponse = handleCommandGet(args, cache);
+    else if (command == "exists")
+        serializedResponse = handleCommandExists(args, cache);
+    else if (command == "del")
+        serializedResponse = handleCommandDel(args, cache);
+    else if (command == "incr")
+        serializedResponse = handleCommandLAdd(args, cache, 1);
+    else if (command == "decr")
+        serializedResponse = handleCommandLAdd(args, cache, -1);
+    else if (command == "ttl")
+        serializedResponse = handleCommandTTL(args, cache);
+    else if (command == "lrange")
+        serializedResponse = handleCommandLRange(args, cache);
+    else if (command == "lpush")
+        serializedResponse = handleCommandPush(args, cache, false);
+    else if (command == "rpush")
+        serializedResponse = handleCommandPush(args, cache, true);
+    else if (command == "llen")
+        serializedResponse = handleCommandLLen(args, cache);
     else
         serializedResponse = Redis::PlainRedisNode("Not supported", false).serialize();
 
@@ -281,9 +468,14 @@ int main() {
                     // Read pending data
                     socketInfo[client_fd] = {POLLIN, request, currPos, stk};
                 } else {
-                    // Process the request and prepare to send data to client
-                    std::string serializedResponse {handleRequest(request, cache)};
-                    socketInfo[client_fd] = {POLLOUT, serializedResponse, serializedResponse.size(), {}};
+                    if (request == "-Error receiving data\r\n") {
+                        // Close and erase the socket
+                        close(client_fd); socketInfo.erase(client_fd); 
+                    } else {
+                        // Process the request and prepare to send data to client
+                        std::string serializedResponse {handleRequest(request, cache)};
+                        socketInfo[client_fd] = {POLLOUT, serializedResponse, serializedResponse.size(), {}};
+                    }
                 }
             }
 
