@@ -3,8 +3,8 @@
 #include <cctype>
 #include <csignal>
 #include <cstdint>
+#include <filesystem>
 #include <iostream>
-#include <iterator>
 #include <memory>
 #include <netinet/in.h>
 #include <stack>
@@ -309,6 +309,24 @@ std::string handleCommandLLen(std::shared_ptr<Redis::AggregateRedisNode> &args, 
     }
 }
 
+std::string handleCommandSave(std::shared_ptr<Redis::AggregateRedisNode> &args, Redis::Cache &cache, bool background = false) {
+    if (args->size() != 0) {
+        return Redis::PlainRedisNode("ERR wrong number of arguments for command", false).serialize();
+    } else if (background) {
+        int pid {fork()};
+        if (pid == -1) {
+            return Redis::PlainRedisNode("Save failed", false).serialize();
+        } else if (pid == 0) {
+            bool status {cache.save("dump.rdb")}; std::exit(!status);
+        } else {
+            return Redis::PlainRedisNode("OK").serialize();
+        }
+    } else {
+        if (cache.save("dump.rdb")) return Redis::PlainRedisNode("OK").serialize();
+        else return Redis::PlainRedisNode("Save failed", false).serialize();
+    }
+}
+
 std::string handleRequest(std::string &request, Redis::Cache &cache) {
     // Process the request
     std::shared_ptr<Redis::RedisNode> reqNode {Redis::RedisNode::deserialize(request)};
@@ -361,6 +379,10 @@ std::string handleRequest(std::string &request, Redis::Cache &cache) {
         serializedResponse = handleCommandPush(args, cache, true);
     else if (command == "llen")
         serializedResponse = handleCommandLLen(args, cache);
+    else if (command == "save")
+        serializedResponse = handleCommandSave(args, cache);
+    else if (command == "bgsave")
+        serializedResponse = handleCommandSave(args, cache, true);
     else
         serializedResponse = Redis::PlainRedisNode("Not supported", false).serialize();
 
@@ -383,6 +405,14 @@ int main() {
 
     // Create an instance of Redis Cache
     Redis::Cache cache;
+
+    std::string dumpName {"dump.rdb"};
+    if (!std::filesystem::exists(dumpName))
+        std::cout << "No existing save found. Creating a new instance.\n";
+    else if (cache.load(dumpName))
+        std::cout << "Load successful.\n";
+    else
+        std::cout << "Restore failed. Creating a new instance.\n";
 
     // Create sockaddr struct for port + IP binding
     sockaddr_in serverAddr;
@@ -432,9 +462,12 @@ int main() {
         std::vector<pollfd> pollInput {createPollInput()};
         int pollResult {poll(pollInput.data(), pollInput.size(), -1)};
         if (pollResult == -1) {
-            std::cerr << "Poll failed.\n";
-            closeSockets(0); break;
+            if (serverRunning) {
+                std::cerr << "Poll failed.\n"; 
+                closeSockets(0);
+            } break;
         }
+
         for (std::size_t i{0}; i < pollInput.size(); i++) {
             // Accept incomming connection
             if ((pollInput[i].revents & POLLIN) && (pollInput[i].fd == server_fd)) {

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <fstream>
 #include <memory>
 #include <unordered_map>
 
@@ -10,6 +11,8 @@ namespace Redis {
         private:
             std::unordered_map<std::string, std::shared_ptr<RedisNode>> cache;
             std::unordered_map<std::string, unsigned long> ttl;
+            void writeEncodedString(std::ofstream &ofs, const std::string &str);
+            void readEncodedString(std::ifstream &ifs, std::string &placeholder);
 
         public:
             static unsigned long timeSinceEpoch();
@@ -24,5 +27,7 @@ namespace Redis {
             void  setTTLSAt(const std::string &key, const unsigned long secondsAt);
             void setTTLMSAt(const std::string &key, const unsigned long  millisAt);
             std::size_t size();
+            bool save(const std::string &fname);
+            bool load(const std::string &fname);
     };
 }
