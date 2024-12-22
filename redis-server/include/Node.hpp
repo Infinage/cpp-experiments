@@ -8,7 +8,7 @@
 
 namespace Redis {
 
-    using VARIANT_NODE_TYPE = std::variant<bool, double, long, std::string, std::nullptr_t>;
+    using VARIANT_NODE_TYPE = std::variant<long, std::string, std::nullptr_t>;
     enum NODE_TYPE: short {PLAIN, VARIANT, AGGREGATE};
     extern const std::string SEP;
 
@@ -43,30 +43,30 @@ namespace Redis {
         public:
             VariantRedisNode(const VARIANT_NODE_TYPE &value);
             VARIANT_NODE_TYPE getValue() const;
-            void setValue(VARIANT_NODE_TYPE value);
+            void setValue(const VARIANT_NODE_TYPE &value);
             std::string str() const;
             std::string serialize() const override;
     };
 
     class AggregateRedisNode: public RedisNode {
         private:
-            std::deque<std::shared_ptr<RedisNode>> values;
+            std::deque<std::shared_ptr<VariantRedisNode>> values;
 
         public:
-            AggregateRedisNode(const std::deque<std::shared_ptr<RedisNode>> &values = {});
+            AggregateRedisNode(const std::deque<std::shared_ptr<VariantRedisNode>> &values = {});
 
-            void push_back(std::shared_ptr<RedisNode> node);
-            void push_front(std::shared_ptr<RedisNode> node);
+            void push_back(const std::shared_ptr<VariantRedisNode> &node);
+            void push_front(const std::shared_ptr<VariantRedisNode> &node);
 
             std::size_t size() const;
 
             void pop_back();
             void pop_front();
 
-            std::shared_ptr<RedisNode> front();
-            std::shared_ptr<RedisNode> back();
+            std::shared_ptr<VariantRedisNode> front();
+            std::shared_ptr<VariantRedisNode> back();
 
-            std::shared_ptr<RedisNode> operator[](long idx_) const;
+            std::shared_ptr<VariantRedisNode> operator[](long idx_) const;
 
             std::vector<std::string> vector() const;
             std::string serialize() const override;

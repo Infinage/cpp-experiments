@@ -1,6 +1,8 @@
 #include <deque>
+#include <sstream>
 #include <stack>
 #include <vector>
+
 #include "../include/Node.hpp"
 
 namespace Redis {
@@ -44,15 +46,15 @@ namespace Redis {
                             aggNode = std::make_shared<Redis::VariantRedisNode>("");
                         else 
                             aggNode = std::make_shared<Redis::AggregateRedisNode>();
-                        stk.push({token.at(0), aggLength, aggNode});
+                        stk.emplace(token.at(0), aggLength, aggNode);
                     } 
 
                     else if (token.at(0) == '+' || token.at(0) == '-') {
-                        stk.push({token.at(0), 0, std::make_shared<Redis::PlainRedisNode>(token.substr(1), token.at(0) == '+')}); 
+                        stk.emplace(token.at(0), 0, std::make_shared<Redis::PlainRedisNode>(token.substr(1), token.at(0) == '+')); 
                     }
 
                     else { 
-                        stk.push({':', 0, std::make_shared<Redis::VariantRedisNode>(std::stol(token.substr(1)))}); 
+                        stk.emplace(':', 0, std::make_shared<Redis::VariantRedisNode>(std::stol(token.substr(1)))); 
                     }
 
                     currPos = tokEnd + 2;
@@ -84,7 +86,7 @@ namespace Redis {
                      return std::get<2>(curr);
                  else {
                      std::shared_ptr<Redis::AggregateRedisNode> parent{std::get<2>(stk.top())->cast<Redis::AggregateRedisNode>()};
-                     parent->push_back(std::get<2>(curr));
+                     parent->push_back(std::get<2>(curr)->cast<Redis::VariantRedisNode>());
                      stk.top() = {'*', std::get<1>(stk.top()) - 1, parent};
                  }
             }
@@ -113,18 +115,14 @@ namespace Redis {
 
     VARIANT_NODE_TYPE VariantRedisNode::getValue() const { return value; }
 
-    void VariantRedisNode::setValue(VARIANT_NODE_TYPE value) { 
+    void VariantRedisNode::setValue(const VARIANT_NODE_TYPE &value) { 
         if (value.index() == this->value.index())
             this->value = value;
         else throw PlainRedisNode("Setting a different value type.", false);
     }
 
     std::string VariantRedisNode::str() const {
-        if (std::holds_alternative<bool>(value)) {
-            return std::get<bool>(value)? "true": "false";
-        } else if (std::holds_alternative<double>(value)) {
-            return std::to_string(std::get<double>(value));
-        } else if (std::holds_alternative<long>(value)) {
+        if (std::holds_alternative<long>(value)) {
             return std::to_string(std::get<long>(value));
         } else if (std::holds_alternative<std::string>(value)) {
             return std::get<std::string>(value);
@@ -134,31 +132,31 @@ namespace Redis {
     }
 
     std::string VariantRedisNode::serialize() const {
-        if (std::holds_alternative<bool>(value)) {
-            return std::string("+", 1) + (std::get<bool>(value)? "true": "false") + SEP;
-        } else if (std::holds_alternative<double>(value)) {
-            return std::string("+", 1) + std::to_string(std::get<double>(value)) + SEP;
-        } else if (std::holds_alternative<long>(value)) {
-            return std::string(":", 1) + std::to_string(std::get<long>(value)) + SEP;
+        std::ostringstream oss;
+        if (std::holds_alternative<long>(value)) {
+            oss << ":" << std::get<long>(value);
         } else if (std::holds_alternative<std::string>(value)) {
-            std::string val {std::get<std::string>(value)};
-            return std::string("$", 1) + std::to_string(val.size()) + SEP + val + SEP;
+            const std::string &val {std::get<std::string>(value)};
+            oss << "$" << val.size() << SEP << val;
         } else {
-            return "$-1" + SEP;
+            oss << "$-1";
         }
+
+        oss << SEP;
+        return oss.str();
     }
 
     /* --------------- AGGREGATE REDIS NODE --------------- */
 
-    AggregateRedisNode::AggregateRedisNode(const std::deque<std::shared_ptr<RedisNode>> &values): 
+    AggregateRedisNode::AggregateRedisNode(const std::deque<std::shared_ptr<VariantRedisNode>> &values): 
         RedisNode(NODE_TYPE::AGGREGATE), values(values) {}
 
-    void AggregateRedisNode::push_back(std::shared_ptr<RedisNode> node) { 
-        values.push_back(node); 
+    void AggregateRedisNode::push_back(const std::shared_ptr<VariantRedisNode> &node) { 
+        values.emplace_back(node); 
     }
 
-    void AggregateRedisNode::push_front(std::shared_ptr<RedisNode> node) { 
-        values.push_front(node); 
+    void AggregateRedisNode::push_front(const std::shared_ptr<VariantRedisNode> &node) { 
+        values.emplace_front(node); 
     }
 
     std::size_t AggregateRedisNode::size() const { 
@@ -173,15 +171,15 @@ namespace Redis {
         values.pop_front(); 
     }
 
-    std::shared_ptr<RedisNode> AggregateRedisNode::front() { 
+    std::shared_ptr<VariantRedisNode> AggregateRedisNode::front() { 
         return values.front(); 
     }
     
-    std::shared_ptr<RedisNode> AggregateRedisNode::back() { 
+    std::shared_ptr<VariantRedisNode> AggregateRedisNode::back() { 
         return values.back(); 
     }
 
-    std::shared_ptr<RedisNode> AggregateRedisNode::operator[](long idx_) const {
+    std::shared_ptr<VariantRedisNode> AggregateRedisNode::operator[](long idx_) const {
         long N {static_cast<long>(values.size())};
         long idx {idx_ >= 0? idx_: N + idx_};
         if (idx < 0 || idx >= N)
@@ -195,9 +193,9 @@ namespace Redis {
         std::vector<std::string> result;
         for (std::size_t i{0}; i < size(); i++) {
             if (values[i]->getType() == NODE_TYPE::PLAIN)
-                result.push_back(values[i]->cast<PlainRedisNode>()->getMessage());
+                result.emplace_back(values[i]->cast<PlainRedisNode>()->getMessage());
             else if (values[i]->getType() == NODE_TYPE::VARIANT)
-                result.push_back(values[i]->cast<VariantRedisNode>()->str());
+                result.emplace_back(values[i]->cast<VariantRedisNode>()->str());
             else
                 throw PlainRedisNode("Node cannot contain aggregate nodes inside", false);
         }
@@ -206,7 +204,7 @@ namespace Redis {
 
     std::string AggregateRedisNode::serialize() const {
         std::string serialized {"*" + std::to_string(values.size()) + "\r\n"};
-        for (const std::shared_ptr<RedisNode> &value: values)
+        for (const std::shared_ptr<VariantRedisNode> &value: values)
             serialized += value->serialize();
         return serialized;
     }
