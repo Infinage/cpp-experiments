@@ -7,6 +7,8 @@
 #include "Node.hpp"
 
 namespace Redis {
+
+    // Cache functions
     class Cache {
         private:
             std::unordered_map<std::string, std::shared_ptr<RedisNode>> cache;

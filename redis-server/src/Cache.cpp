@@ -6,10 +6,12 @@
 #include <ios>
 #include <iostream>
 #include <memory>
-#include <unordered_set>
 #include <utility>
 
 namespace Redis {
+
+    /* --------------- CACHE CLASS METHODS --------------- */
+
     unsigned long Cache::timeSinceEpoch() {
         std::chrono::duration tse {std::chrono::system_clock::now().time_since_epoch()};
         long tseMs {std::chrono::duration_cast<std::chrono::milliseconds>(tse).count()};
@@ -84,8 +86,14 @@ namespace Redis {
     }
 
     bool Cache::save(const std::string &fname) {
-        // Store the keys and mark them for erasure
-        std::unordered_set<std::string> erased;
+        // Remove the expired keys - SNAPSHOT TIME
+        unsigned long TS {timeSinceEpoch()};
+        for (std::unordered_map<const std::string, std::shared_ptr<RedisNode>>::iterator it {cache.begin()}; it != cache.end();) {
+            if (ttl.find(it->first) != ttl.end() && ttl[it->first] < TS) {
+                ttl.erase(it->first);
+                it = cache.erase(it);
+            } else it = std::next(it);
+        }
 
         // Open output file stream as binary
         std::ofstream ofs {fname, std::ios::binary};
@@ -97,7 +105,7 @@ namespace Redis {
             // Auxilary field(s) - str, str
             ofs.put(0xFA);
             writeEncodedString(ofs, "Timestamp(ms)");
-            writeEncodedString(ofs, std::to_string(Cache::timeSinceEpoch()));
+            writeEncodedString(ofs, std::to_string(TS));
 
             // Database selector - byte, byte
             ofs.put(0xFE);
@@ -110,35 +118,25 @@ namespace Redis {
             ofs.write(reinterpret_cast<char *>(&ttlSize), sizeof (std::size_t));
 
             // Write key-value pairs
-            unsigned long TS {timeSinceEpoch()};
             for (const std::pair<const std::string, std::shared_ptr<RedisNode>> &kv: cache) {
                 bool ttlExists {ttl.find(kv.first) != ttl.end()};
-                if (ttlExists && ttl[kv.first] < TS)
-                    erased.insert(kv.first);
-
-                else {
-                    // Add TTL
-                    if (ttlExists) {
-                        ofs.put(0xFC);
-                        ofs.write(reinterpret_cast<char *>(&ttl[kv.first]), sizeof (unsigned long));
-                    }
-
-                    // Value-Type, Key, Value
-                    std::shared_ptr<Redis::RedisNode> node {kv.second};
-                    ofs.put(node->getType() == Redis::NODE_TYPE::PLAIN? 'P': node->getType() == Redis::NODE_TYPE::VARIANT? 'V': 'A');
-                    writeEncodedString(ofs, kv.first);
-                    writeEncodedString(ofs, node->serialize());
+                // Add TTL
+                if (ttlExists) {
+                    ofs.put(0xFC);
+                    ofs.write(reinterpret_cast<char *>(&ttl[kv.first]), sizeof (unsigned long));
                 }
+
+                // Value-Type, Key, Value
+                const std::shared_ptr<Redis::RedisNode> &node {kv.second};
+                ofs.put(node->getType() == Redis::NODE_TYPE::PLAIN? 'P': node->getType() == Redis::NODE_TYPE::VARIANT? 'V': 'A');
+                writeEncodedString(ofs, kv.first);
+                writeEncodedString(ofs, node->serialize());
             }
 
             // End of file
             ofs.put(0xFF);
-
-            // Erase the marked keys
-            for (const std::string &key: erased)
-                cache.erase(key);
-
-            return true;
+            ofs.flush();
+            return ofs.good();
         }
     }
 

@@ -12,6 +12,9 @@ namespace Redis {
     enum NODE_TYPE: short {PLAIN, VARIANT, AGGREGATE};
     extern const std::string SEP;
 
+    // Forward decl
+    class VariantRedisNode;
+
     class RedisNode: public std::enable_shared_from_this<RedisNode> {
         protected:
             const NODE_TYPE type;
@@ -22,6 +25,7 @@ namespace Redis {
             RedisNode(const NODE_TYPE &t);
             NODE_TYPE getType() const;
             static std::shared_ptr<RedisNode> deserialize(const std::string &request);
+            static std::shared_ptr<VariantRedisNode> deserializeBulkStr(const std::string& serialized, std::size_t &currPos);
             template<typename T> std::shared_ptr<T> cast();
     };
 

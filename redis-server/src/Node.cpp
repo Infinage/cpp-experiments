@@ -1,8 +1,10 @@
 #include <deque>
+#include <iostream>
+#include <memory>
 #include <sstream>
-#include <stack>
 #include <vector>
 
+#include "../include/Server.hpp"
 #include "../include/Node.hpp"
 
 namespace Redis {
@@ -20,79 +22,71 @@ namespace Redis {
         return type; 
     }
 
+    std::shared_ptr<VariantRedisNode> RedisNode::deserializeBulkStr(const std::string& serialized, std::size_t &currPos) {
+        // Assert that it is indeed a bulk string
+        if (serialized[currPos] != '$')
+            throw std::make_shared<PlainRedisNode>("Invalid input", false);
+
+        // Figure out the length of bulk str and check if valid
+        std::size_t lenTokEnd {serialized.find("\r\n", currPos)};
+        bool isValidInt {lenTokEnd != std::string::npos};
+        isValidInt &= Redis::allDigitsSigned(serialized.begin() + static_cast<long long>(currPos) + 1, serialized.begin() + static_cast<long long>(lenTokEnd));
+        if (!isValidInt) 
+            throw std::make_shared<PlainRedisNode>("Invalid input", false);
+
+        // If neg length (only -1 is possible)
+        if (serialized[currPos + 1] == '-') 
+            return std::make_shared<VariantRedisNode>(nullptr);
+
+        // Read strLen number of characeters & update currPos
+        std::size_t strLength {std::stoull(serialized.substr(currPos + 1, lenTokEnd))};
+        currPos = lenTokEnd + 2 + strLength + 2;
+        return std::make_shared<VariantRedisNode>(serialized.substr(lenTokEnd + 2, strLength));
+    };
+
     std::shared_ptr<RedisNode> RedisNode::deserialize(const std::string &serialized) {
-        // Variables to process request 
-        std::size_t currPos {0};
-        std::stack<std::tuple<char, std::size_t, std::shared_ptr<Redis::RedisNode>>> stk;
+        // Dummy error node to return in case of error
+        std::shared_ptr<RedisNode> errNode {std::make_shared<PlainRedisNode>("Invalid input", false)};
 
-        // Dummy Node to return on error, deleted when func goes out of scope
-        std::shared_ptr<RedisNode> errorNode {std::make_shared<PlainRedisNode>("Invalid input", false)};
-
-        while (currPos < serialized.size()) {
-            // We check for curr token end usually by counting '\r\n' except
-            // when we are parsing a bulk string, in which case we count chars
-            if (stk.empty() || std::get<0>(stk.top()) != '$') {
-                std::size_t tokEnd {serialized.find("\r\n", currPos)};
-                if (tokEnd == std::string::npos) { return errorNode; } 
-                else {
-                    std::string token {serialized.substr(currPos, tokEnd - currPos)};
-
-                    if (token.at(0) == '$' || token.at(0) == '*') {
-                        std::size_t aggLength {token.at(1) == '-'? 0: std::stoull(token.substr(1))};
-                        std::shared_ptr<Redis::RedisNode> aggNode;
-                        if (token.at(1) == '-')
-                            aggNode = std::make_shared<VariantRedisNode>(nullptr);
-                        else if (token.at(0) == '$')
-                            aggNode = std::make_shared<Redis::VariantRedisNode>("");
-                        else 
-                            aggNode = std::make_shared<Redis::AggregateRedisNode>();
-                        stk.emplace(token.at(0), aggLength, aggNode);
-                    } 
-
-                    else if (token.at(0) == '+' || token.at(0) == '-') {
-                        stk.emplace(token.at(0), 0, std::make_shared<Redis::PlainRedisNode>(token.substr(1), token.at(0) == '+')); 
-                    }
-
-                    else { 
-                        stk.emplace(':', 0, std::make_shared<Redis::VariantRedisNode>(std::stol(token.substr(1)))); 
-                    }
-
-                    currPos = tokEnd + 2;
-                }
-            } 
-
-            // We are currently parsing a bulk string
+        // Simple data type parsing
+        char ch {serialized[0]};
+        if (ch == '+' || ch == '-' || ch == ':') {
+            std::size_t tokEnd {serialized.find("\r\n")};
+            if (tokEnd == std::string::npos) return errNode;
             else {
-                 std::tuple<char, std::size_t, std::shared_ptr<Redis::RedisNode>> &top{stk.top()};
-                 std::shared_ptr<Redis::VariantRedisNode> vnode {std::get<2>(top)->cast<VariantRedisNode>()};
-                 std::size_t bulkStrAddLength {std::min(std::get<1>(top), serialized.size() - currPos)};
-                 vnode->setValue(std::get<std::string>(vnode->getValue()) + serialized.substr(currPos, bulkStrAddLength));
-                 stk.top() = {'$', std::get<1>(top) - bulkStrAddLength, vnode};
-                 currPos += bulkStrAddLength;
-
-                 // If we have parsed the bulk string
-                 if (std::get<1>(stk.top()) == 0) currPos += 2;
-
-                 // Else we need to read some more data
-                 else return errorNode;
+                std::string token {serialized.substr(1, tokEnd - 1)};
+                switch (ch) {
+                    case '+':
+                        return std::make_shared<PlainRedisNode>(token);
+                    case '-':
+                        return std::make_shared<PlainRedisNode>(token, false);
+                    default:
+                        bool validInt {Redis::allDigitsSigned(token.begin(), token.end())};
+                        return validInt? std::make_shared<VariantRedisNode>(std::stol(token)): errNode;
+                }
             }
+        } else if (serialized[0] == '$') {
+            std::size_t currPos {0};
+            std::shared_ptr<VariantRedisNode> varNode {deserializeBulkStr(serialized, currPos)};
+            return currPos == serialized.size()? varNode: errNode;
+        } else if (serialized[0] == '*') {
+            std::size_t lenTokEnd {serialized.find("\r\n")};
+            if (lenTokEnd == std::string::npos || !Redis::allDigitsSigned(serialized.begin() + 1, serialized.begin() + static_cast<long long>(lenTokEnd))) 
+                return std::make_shared<PlainRedisNode>("Invalid input", false);
 
-            // Pop the top most if we can and add to prev guy
-            while (!stk.empty() && std::get<1>(stk.top()) == 0) {
-                 std::tuple<char, std::size_t, std::shared_ptr<Redis::RedisNode>> curr{stk.top()};
-                 stk.pop();
+            // If neg length (only -1 is possible)
+            if (serialized[1] == '-') 
+                return std::make_shared<VariantRedisNode>(nullptr);
 
-                 if (stk.empty())
-                     return std::get<2>(curr);
-                 else {
-                     std::shared_ptr<Redis::AggregateRedisNode> parent{std::get<2>(stk.top())->cast<Redis::AggregateRedisNode>()};
-                     parent->push_back(std::get<2>(curr)->cast<Redis::VariantRedisNode>());
-                     stk.top() = {'*', std::get<1>(stk.top()) - 1, parent};
-                 }
-            }
+            // The length of aggregate node
+            std::size_t arrLength {std::stoull(serialized.substr(1, lenTokEnd))}, currPos {lenTokEnd + 2};
+            std::shared_ptr<AggregateRedisNode> aggNode {std::make_shared<AggregateRedisNode>()};
+            for (std::size_t i{0}; i < arrLength; i++)
+                aggNode->push_back(deserializeBulkStr(serialized, currPos));
+            return currPos == serialized.size()? aggNode: errNode;
+        } else {
+            return errNode;
         }
-        
-        return errorNode;
     }
 
     /* --------------- PLAIN REDIS NODE --------------- */
@@ -191,14 +185,8 @@ namespace Redis {
 
     std::vector<std::string> AggregateRedisNode::vector() const {
         std::vector<std::string> result;
-        for (std::size_t i{0}; i < size(); i++) {
-            if (values[i]->getType() == NODE_TYPE::PLAIN)
-                result.emplace_back(values[i]->cast<PlainRedisNode>()->getMessage());
-            else if (values[i]->getType() == NODE_TYPE::VARIANT)
-                result.emplace_back(values[i]->cast<VariantRedisNode>()->str());
-            else
-                throw PlainRedisNode("Node cannot contain aggregate nodes inside", false);
-        }
+        for (std::size_t i{0}; i < size(); i++)
+            result.emplace_back(values[i]->str());
         return result;
     }
 

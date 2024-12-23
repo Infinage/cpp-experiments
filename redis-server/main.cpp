@@ -16,8 +16,7 @@
 #include <vector>
 
 #include "include/Node.hpp"
-
-// TODO: rename to Node Cache & create a new Socket Cache?
+#include "include/Server.hpp"
 #include "include/Cache.hpp"
 
 bool serverRunning {true};
@@ -31,31 +30,14 @@ void closeSockets(int signal_) {
         close(p.first);
 }
 
-void lower(std::string &inpStr) {
-    std::transform(inpStr.begin(), inpStr.end(), inpStr.begin(), [](const char ch) { 
-        return std::tolower(ch); 
-    });
-}
-
-bool allDigitsUnsigned(const std::string::const_iterator& begin, const std::string::const_iterator& end) {
-    return std::all_of(begin, end, [](const char ch){
-        return std::isdigit(ch);
-    });
-}
-
-bool allDigitsSigned(const std::string::const_iterator& begin, const std::string::const_iterator& end) {
-    return begin != end && allDigitsUnsigned(begin + 1, end) && (*begin == '-' || std::isdigit(*begin));
-}
-
 // Recv request from client return true / false based on status
-bool readRequest(int client_fd, std::string &request, std::size_t &currPos, std::stack<std::tuple<char, std::size_t>> &stk) {
-    // Dummy message to return on error
-    const std::string errorMessage = "-Error receiving data\r\n";
+bool readRequest(int client_fd, std::string &request) {
+    const char *recvError = "-Error receiving data\r\n", *invalidInp = "-Invalid input data\r\n";
 
     // Read one portion at a time
     char buffer[1024] = {0};
     if (recv(client_fd, buffer, sizeof(buffer), 0) <= 0) {
-        request = errorMessage;
+        request = recvError;
         return true;
     }
 
@@ -63,45 +45,56 @@ bool readRequest(int client_fd, std::string &request, std::size_t &currPos, std:
     request += buffer;
 
     // Try to check if received data is 'complete', return false otherwise
-    while (currPos < request.size()) {
-        // We check for req end usually by counting '\r\n' except
-        // when we are parsing a bulk string, in which case we count chars
-        if (stk.empty() || std::get<0>(stk.top()) != '$') {
-            std::size_t tokEnd {request.find("\r\n", currPos)};
-            if (tokEnd == std::string::npos) { return false; } 
-            else {
-                if (request.at(currPos) == '$' || request.at(currPos) == '*') {
-                    std::size_t aggLength {
-                        request.at(currPos + 1) == '-'? 0: 
-                        std::stoull(request.substr(currPos + 1, tokEnd - currPos - 1))
-                    };
-                    stk.emplace(request.at(currPos), aggLength);
-                } else { stk.emplace(request.at(currPos), 0); }
+    char ch {request[0]};
+    if (ch == '+' || ch == '-' || ch == ':')
+        return request.find("\r\n") != std::string::npos;
+    else if (ch == '$') {
+        std::size_t lenTokEnd {request.find("\r\n")};
+        if (lenTokEnd == std::string::npos) return false;
 
-                currPos = tokEnd + 2;
+        bool isValidInt = Redis::allDigitsSigned(request.begin() + 1, request.begin() + static_cast<long long>(lenTokEnd));
+        if (!isValidInt) { request = invalidInp; return true; }
+    
+        if (request[1] == '-' && request.size() < 5) 
+            return false;
+        else if (request[1] == '-' && request == "$-1\r\n")
+            return true;
+        else if (request[1] == '-') {
+            request = invalidInp; return true;
+        } else {
+            std::size_t strLength {std::stoull(request.substr(1, lenTokEnd))};
+            return lenTokEnd + 2 + strLength + 2 < request.size();
+        }
+    } else if (ch == '*') {
+        std::size_t lenTokEnd {request.find("\r\n")};
+        if (lenTokEnd == std::string::npos) return false;
+
+        bool isValidInt = Redis::allDigitsSigned(request.begin() + 1, request.begin() + static_cast<long long>(lenTokEnd));
+        if (!isValidInt) { request = invalidInp; return true; }
+
+        if (request[1] == '-' && request.size() < 5) 
+            return false;
+        else if (request[1] == '-' && request == "*-1\r\n")
+            return true;
+        else if (request[1] == '-') {
+            request = invalidInp; return true;
+        } else {
+            std::size_t arrLength {std::stoull(request.substr(1, lenTokEnd))};
+            std::size_t totalDelims {Redis::countSubstring(request, "\r\n")}, 
+                        totalStrs {Redis::countSubstring(request, "$")},
+                        expectedDelims {(2 * arrLength) + 1};
+            if (totalDelims > expectedDelims || totalStrs > arrLength) {
+                request = invalidInp; return true;
+            } else if (totalDelims < expectedDelims && totalStrs < arrLength) {
+                return false;
+            } else { 
+                return true;
             }
-        } 
-
-        // We are currently parsing a bulk string
-        else {
-             std::size_t bulkStrAddLength {std::min(std::get<1>(stk.top()), request.size() - currPos)};
-             stk.top() = {'$', std::get<1>(stk.top()) - bulkStrAddLength};
-             currPos += bulkStrAddLength;
-
-             // If complete, update currPos to include '\r\n'
-             if (std::get<1>(stk.top()) == 0) currPos += 2;
-             else return false;
         }
-
-        // Pop the top most if we can and add to prev guy
-        while (!stk.empty() && std::get<1>(stk.top()) == 0) {
-             stk.pop();
-             if (stk.empty()) return true;
-             else stk.top() = {'*', std::get<1>(stk.top()) - 1};
-        }
+    } else {
+        request = invalidInp;
+        return true;
     }
-
-    return false;
 }
 
 // Send response to client return true / false based on status
@@ -118,44 +111,44 @@ bool sendResponse(int client_fd, std::string &response, std::size_t &currPos) {
     return currPos == 0;
 }
 
-std::string handleCommandPing(std::shared_ptr<Redis::AggregateRedisNode> &args) {
-    if (args->size() == 0) {
+std::string handleCommandPing(std::vector<std::string> &args) {
+    if (args.size() == 1) {
         return Redis::PlainRedisNode("PONG").serialize();
-    } else if (args->size() == 1) {
-        return args->front()->serialize();
+    } else if (args.size() == 2) {
+        return Redis::VariantRedisNode(args.back()).serialize();
     } else {
         return Redis::PlainRedisNode("Wrong number of arguments for 'ping' command", false).serialize();
     }
 }
 
-std::string handleCommandEcho(std::shared_ptr<Redis::AggregateRedisNode> &args) {
-    if (args->size() == 1) {
-        return args->front()->serialize();
+std::string handleCommandEcho(std::vector<std::string> &args) {
+    if (args.size() == 2) {
+        return Redis::VariantRedisNode(args.back()).serialize();
     } else {
         return Redis::PlainRedisNode("Wrong number of arguments for 'echo' command", false).serialize();
     }
 }
 
-std::string handleCommandSet(std::shared_ptr<Redis::AggregateRedisNode> &args, Redis::Cache &cache) {
-    if (args->size() >= 2) {
+std::string handleCommandSet(std::vector<std::string> &args, Redis::Cache &cache) {
+    if (args.size() >= 3) {
         // Store the value at specified key
-        std::string key {(*args)[0]->str()};
-        std::string value {(*args)[1]->str()};
+        std::string key {args[1]};
+        std::string value {args[2]};
         cache.setValue(key, std::make_shared<Redis::VariantRedisNode>(value));
 
         // Set the expiry
-        if (args->size() >= 4) {
-            for (std::size_t i {2}; i < args->size() - 1; i++) {
+        if (args.size() >= 5) {
+            for (std::size_t i {3}; i < args.size() - 1; i++) {
                 // Extract this and the next
-                std::string expiryCode {(*args)[static_cast<long>(i)]->str()};
-                std::string expiry {(*args)[static_cast<long>(i + 1)]->str()};
+                std::string expiryCode {args[i]};
+                std::string expiry {args[i + 1]};
 
                 // To lower case
-                lower(expiryCode);
+                Redis::lower(expiryCode);
 
                 // Check if code is valid and expiry code
                 bool isValidCode {expiryCode == "ex" || expiryCode == "exat" || expiryCode == "px" || expiryCode == "pxat"}, 
-                     isValidExpiry {isValidCode && allDigitsUnsigned(expiry.cbegin(), expiry.cend())};
+                     isValidExpiry {isValidCode && Redis::allDigitsUnsigned(expiry.cbegin(), expiry.cend())};
 
                 if (!isValidCode)        { continue; }
                 else if (!isValidExpiry) { return Redis::PlainRedisNode("Invalid syntax", false).serialize(); }
@@ -175,19 +168,19 @@ std::string handleCommandSet(std::shared_ptr<Redis::AggregateRedisNode> &args, R
     }
 }
 
-std::string handleCommandGet(std::shared_ptr<Redis::AggregateRedisNode> &args, Redis::Cache &cache) {
-    if (args->size() == 1) {
-        std::string key {(*args)[0]->str()};
+std::string handleCommandGet(std::vector<std::string> &args, Redis::Cache &cache) {
+    if (args.size() == 2) {
+        std::string key {args[1]};
         return cache.getValue(key)->serialize();
     } else {
         return Redis::PlainRedisNode("Wrong number of arguments for 'get' command", false).serialize();
     }
 }
 
-std::string handleCommandExists(std::shared_ptr<Redis::AggregateRedisNode> &args, Redis::Cache &cache) {
-    std::vector<std::string> strArgs {args->vector()};
+std::string handleCommandExists(std::vector<std::string> &args, Redis::Cache &cache) {
     long result {0};
-    for (std::string &arg: strArgs) {
+    for (std::size_t i{1}; i < args.size(); i++) {
+        std::string arg {args[i]};
         if (cache.exists(arg)) {
             result++;
         }
@@ -195,10 +188,10 @@ std::string handleCommandExists(std::shared_ptr<Redis::AggregateRedisNode> &args
     return Redis::VariantRedisNode(result).serialize();
 }
 
-std::string handleCommandDel(std::shared_ptr<Redis::AggregateRedisNode> &args, Redis::Cache &cache) {
-    std::vector<std::string> strArgs {args->vector()};
+std::string handleCommandDel(std::vector<std::string> &args, Redis::Cache &cache) {
     long result {0};
-    for (std::string &arg: strArgs) {
+    for (std::size_t i{1}; i < args.size(); i++) {
+        std::string arg {args[i]};
         if (cache.exists(arg)) {
             result += !cache.expired(arg);
             cache.erase(arg); 
@@ -207,15 +200,15 @@ std::string handleCommandDel(std::shared_ptr<Redis::AggregateRedisNode> &args, R
     return Redis::VariantRedisNode(result).serialize();
 }
 
-std::string handleCommandLAdd(std::shared_ptr<Redis::AggregateRedisNode> &args, Redis::Cache &cache, long by) {
-    if (args->size() == 1) {
-        std::string key {(*args)[0]->str()};
+std::string handleCommandLAdd(std::vector<std::string> &args, Redis::Cache &cache, long by) {
+    if (args.size() == 2) {
+        std::string key {args[1]};
         if (!cache.exists(key) || cache.expired(key)) {
             cache.setValue(key, std::make_shared<Redis::VariantRedisNode>(std::to_string(by)));
             return cache.getValue(key)->serialize();
         } else {
             std::string value {cache.getValue(key)->cast<Redis::VariantRedisNode>()->str()};
-            if (allDigitsSigned(value.cbegin(), value.cend())) {
+            if (Redis::allDigitsSigned(value.cbegin(), value.cend())) {
                 cache.setValue(key, std::make_shared<Redis::VariantRedisNode>(std::to_string(std::stol(value) + by)));
                 return cache.getValue(key)->serialize();
             } else {
@@ -227,9 +220,9 @@ std::string handleCommandLAdd(std::shared_ptr<Redis::AggregateRedisNode> &args, 
     }
 }
 
-std::string handleCommandTTL(std::shared_ptr<Redis::AggregateRedisNode> &args, Redis::Cache &cache) {
-   if (args->size() == 1) {
-        std::string key {(*args)[0]->str()};
+std::string handleCommandTTL(std::vector<std::string> &args, Redis::Cache &cache) {
+   if (args.size() == 2) {
+        std::string key {args[1]};
         long ttlVal {cache.getTTL(key)};
         return Redis::VariantRedisNode(ttlVal > 0? ttlVal / 1000: ttlVal).serialize();
    } else {
@@ -237,11 +230,11 @@ std::string handleCommandTTL(std::shared_ptr<Redis::AggregateRedisNode> &args, R
    }
 }
 
-std::string handleCommandLRange(std::shared_ptr<Redis::AggregateRedisNode> &args, Redis::Cache &cache) {
-    std::vector<std::string> strArgs {args->vector()};
-    if (strArgs.size() == 3) {
-        std::string key {strArgs[0]};
-        if (!allDigitsSigned(strArgs[1].begin(), strArgs[1].end()) || !allDigitsSigned(strArgs[2].begin(), strArgs[2].end())) {
+// TODO: Simply have a result vector and write results (serialized)
+std::string handleCommandLRange(std::vector<std::string> &args, Redis::Cache &cache) {
+    if (args.size() == 4) {
+        std::string key {args[1]};
+        if (!Redis::allDigitsSigned(args[2].begin(), args[2].end()) || !Redis::allDigitsSigned(args[3].begin(), args[3].end())) {
             return Redis::PlainRedisNode("Value is not an integer or out of range", false).serialize();
         } else if (!cache.exists(key) || cache.expired(key)) {
             return Redis::AggregateRedisNode().serialize();
@@ -250,7 +243,7 @@ std::string handleCommandLRange(std::shared_ptr<Redis::AggregateRedisNode> &args
         } else {
             std::shared_ptr<Redis::AggregateRedisNode> value {cache.getValue(key)->cast<Redis::AggregateRedisNode>()};
             Redis::AggregateRedisNode result;
-            long N{static_cast<long>(value->size())}, left {std::stol(strArgs[1])}, right {std::stol(strArgs[2])};
+            long N{static_cast<long>(value->size())}, left {std::stol(args[2])}, right {std::stol(args[3])};
             if (left < 0) left = N + left;
             if (right < 0) right = N + right;
             left = std::max(left, 0L); right = std::min(right, N - 1);
@@ -263,10 +256,9 @@ std::string handleCommandLRange(std::shared_ptr<Redis::AggregateRedisNode> &args
     }
 }
 
-std::string handleCommandPush(std::shared_ptr<Redis::AggregateRedisNode> &args, Redis::Cache &cache, bool pushBack) {
-    std::vector<std::string> strArgs {args->vector()};
-    if (strArgs.size() >= 2) {
-        std::string key {strArgs[0]};
+std::string handleCommandPush(std::vector<std::string> &args, Redis::Cache &cache, bool pushBack) {
+    if (args.size() >= 3) {
+        std::string key {args[1]};
         bool exists {cache.exists(key) && !cache.expired(key)}, 
              isAggNode {exists && cache.getValue(key)->getType() == Redis::NODE_TYPE::AGGREGATE};
 
@@ -281,9 +273,9 @@ std::string handleCommandPush(std::shared_ptr<Redis::AggregateRedisNode> &args, 
         // Start inserting into the aggNode
         long result {0};
         std::shared_ptr<Redis::AggregateRedisNode> aggNode {cache.getValue(key)->cast<Redis::AggregateRedisNode>()};
-        for (std::size_t i{1}; i < strArgs.size(); i++) {
-            if (pushBack) aggNode->push_back(std::make_shared<Redis::VariantRedisNode>(strArgs[i])); 
-            else aggNode->push_front(std::make_shared<Redis::VariantRedisNode>(strArgs[i])); 
+        for (std::size_t i{2}; i < args.size(); i++) {
+            if (pushBack) aggNode->push_back(std::make_shared<Redis::VariantRedisNode>(args[i])); 
+            else aggNode->push_front(std::make_shared<Redis::VariantRedisNode>(args[i])); 
             result++;
         }
         return Redis::VariantRedisNode(result).serialize();
@@ -293,9 +285,9 @@ std::string handleCommandPush(std::shared_ptr<Redis::AggregateRedisNode> &args, 
     }
 }
 
-std::string handleCommandLLen(std::shared_ptr<Redis::AggregateRedisNode> &args, Redis::Cache &cache) {
-    if (args->size() == 1) {
-        std::string key {(*args)[0]->str()};
+std::string handleCommandLLen(std::vector<std::string> &args, Redis::Cache &cache) {
+    if (args.size() == 2) {
+        std::string key {args[1]};
         if (!cache.exists(key) || cache.expired(key)) {
             return Redis::VariantRedisNode(0).serialize();
         } else if (cache.getValue(key)->getType() != Redis::NODE_TYPE::AGGREGATE) {
@@ -309,8 +301,8 @@ std::string handleCommandLLen(std::shared_ptr<Redis::AggregateRedisNode> &args, 
     }
 }
 
-std::string handleCommandSave(std::shared_ptr<Redis::AggregateRedisNode> &args, Redis::Cache &cache, bool background = false) {
-    if (args->size() != 0) {
+std::string handleCommandSave(std::vector<std::string> &args, Redis::Cache &cache, bool background = false) {
+    if (args.size() != 1) {
         return Redis::PlainRedisNode("ERR wrong number of arguments for command", false).serialize();
     } else if (background) {
         int pid {fork()};
@@ -327,29 +319,22 @@ std::string handleCommandSave(std::shared_ptr<Redis::AggregateRedisNode> &args, 
     }
 }
 
+// TODO: Have Server function that directly returns serialized output given input string/long/error/plain etc
+// TODO: Input is always an aggregate list -> cast to vector
+// TODO: Directly read a RESP inp and convert to a vector of strings for Server input
 std::string handleRequest(std::string &request, Redis::Cache &cache) {
     // Process the request
     std::shared_ptr<Redis::RedisNode> reqNode {Redis::RedisNode::deserialize(request)};
-    std::string command;
-    std::shared_ptr<Redis::AggregateRedisNode> args;
-    if (reqNode->getType() == Redis::NODE_TYPE::PLAIN) {
-        std::shared_ptr<Redis::PlainRedisNode> plainNode {reqNode->cast<Redis::PlainRedisNode>()};
-        command = plainNode->getMessage();
-        args = std::make_shared<Redis::AggregateRedisNode>();
-    } else if (reqNode->getType() == Redis::NODE_TYPE::VARIANT) {
-        std::shared_ptr<Redis::VariantRedisNode> varNode = reqNode->cast<Redis::VariantRedisNode>();
-        command = std::get<std::string>(varNode->getValue());
-        args = std::make_shared<Redis::AggregateRedisNode>();
+    std::vector<std::string> args; std::string command;
+    if (reqNode->getType() != Redis::NODE_TYPE::AGGREGATE) {
+        command = "missing";
     } else {
-        std::shared_ptr<Redis::AggregateRedisNode> aggNode{reqNode->cast<Redis::AggregateRedisNode>()};
-        std::shared_ptr<Redis::VariantRedisNode>   varNode{aggNode->front()->cast<Redis::VariantRedisNode>()};
-        aggNode->pop_front();
-        command = std::get<std::string>(varNode->getValue());
-        args = aggNode;
+        args = reqNode->cast<Redis::AggregateRedisNode>()->vector();
+        command = args[0];
     }
 
     // Convert to lower case
-    lower(command);
+    Redis::lower(command);
 
     // Prepare a suitable response
     std::string serializedResponse;
@@ -496,7 +481,7 @@ int main() {
                 std::stack<std::tuple<char, std::size_t>> &stk {std::get<3>(socketInfo[client_fd])};
 
                 // Read request from client
-                bool status {(readRequest(client_fd, request, currPos, stk))};
+                bool status {(readRequest(client_fd, request))};
                 if (!status) {
                     // Read pending data
                     socketInfo[client_fd] = {POLLIN, request, currPos, stk};
