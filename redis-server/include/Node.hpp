@@ -23,7 +23,7 @@ namespace Redis {
             virtual std::string serialize() const = 0;
             virtual ~RedisNode();
             RedisNode(const NODE_TYPE &t);
-            NODE_TYPE getType() const;
+            const NODE_TYPE &getType() const;
             static std::shared_ptr<RedisNode> deserialize(const std::string &request);
             static std::shared_ptr<VariantRedisNode> deserializeBulkStr(const std::string& serialized, std::size_t &currPos);
             template<typename T> std::shared_ptr<T> cast();
@@ -36,7 +36,7 @@ namespace Redis {
 
         public:
             PlainRedisNode(const std::string &message, bool notError = true);
-            std::string getMessage() const;
+            const std::string &getMessage() const;
             std::string serialize() const override;
     };
 
@@ -46,7 +46,7 @@ namespace Redis {
 
         public:
             VariantRedisNode(const VARIANT_NODE_TYPE &value);
-            VARIANT_NODE_TYPE getValue() const;
+            const VARIANT_NODE_TYPE &getValue() const;
             void setValue(const VARIANT_NODE_TYPE &value);
             std::string str() const;
             std::string serialize() const override;
@@ -70,7 +70,7 @@ namespace Redis {
             std::shared_ptr<VariantRedisNode> front();
             std::shared_ptr<VariantRedisNode> back();
 
-            std::shared_ptr<VariantRedisNode> operator[](long idx_) const;
+            const std::shared_ptr<VariantRedisNode> &operator[](long idx_) const;
 
             std::vector<std::string> vector() const;
             std::string serialize() const override;

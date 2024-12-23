@@ -1,3 +1,4 @@
+#include <charconv>
 #include <deque>
 #include <iostream>
 #include <memory>
@@ -18,7 +19,7 @@ namespace Redis {
     RedisNode::~RedisNode() = default;
     RedisNode::RedisNode(const NODE_TYPE &t): type(t) {} 
 
-    NODE_TYPE RedisNode::getType() const { 
+    const NODE_TYPE &RedisNode::getType() const { 
         return type; 
     }
 
@@ -29,17 +30,19 @@ namespace Redis {
 
         // Figure out the length of bulk str and check if valid
         std::size_t lenTokEnd {serialized.find("\r\n", currPos)};
-        bool isValidInt {lenTokEnd != std::string::npos};
-        isValidInt &= Redis::allDigitsSigned(serialized.begin() + static_cast<long long>(currPos) + 1, serialized.begin() + static_cast<long long>(lenTokEnd));
-        if (!isValidInt) 
+        if (lenTokEnd == std::string::npos)
             throw std::make_shared<PlainRedisNode>("Invalid input", false);
 
         // If neg length (only -1 is possible)
         if (serialized[currPos + 1] == '-') 
             return std::make_shared<VariantRedisNode>(nullptr);
 
-        // Read strLen number of characeters & update currPos
-        std::size_t strLength {std::stoull(serialized.substr(currPos + 1, lenTokEnd))};
+        // Parse the length using from_chars
+        std::size_t strLength;
+        std::from_chars_result parseResult {std::from_chars(serialized.c_str() + currPos + 1, serialized.c_str() + lenTokEnd, strLength)};
+        if (parseResult.ec != std::errc())
+            throw std::make_shared<PlainRedisNode>("Invalid input", false);
+
         currPos = lenTokEnd + 2 + strLength + 2;
         return std::make_shared<VariantRedisNode>(serialized.substr(lenTokEnd + 2, strLength));
     };
@@ -54,15 +57,15 @@ namespace Redis {
             std::size_t tokEnd {serialized.find("\r\n")};
             if (tokEnd == std::string::npos) return errNode;
             else {
-                std::string token {serialized.substr(1, tokEnd - 1)};
+                std::string_view token {std::string_view(serialized.data() + 1, tokEnd - 1)};
                 switch (ch) {
                     case '+':
-                        return std::make_shared<PlainRedisNode>(token);
+                        return std::make_shared<PlainRedisNode>(token.data());
                     case '-':
-                        return std::make_shared<PlainRedisNode>(token, false);
+                        return std::make_shared<PlainRedisNode>(token.data(), false);
                     default:
                         bool validInt {Redis::allDigitsSigned(token.begin(), token.end())};
-                        return validInt? std::make_shared<VariantRedisNode>(std::stol(token)): errNode;
+                        return validInt? std::make_shared<VariantRedisNode>(std::stol(token.data())): errNode;
                 }
             }
         } else if (serialized[0] == '$') {
@@ -98,7 +101,7 @@ namespace Redis {
         return (isNotError? "+": "-") + message + SEP;
     }
 
-    std::string PlainRedisNode::getMessage() const { 
+    const std::string &PlainRedisNode::getMessage() const { 
         return message; 
     }
 
@@ -107,7 +110,7 @@ namespace Redis {
     VariantRedisNode::VariantRedisNode(const VARIANT_NODE_TYPE &value): 
         RedisNode(NODE_TYPE::VARIANT), value(value) {}
 
-    VARIANT_NODE_TYPE VariantRedisNode::getValue() const { return value; }
+    const VARIANT_NODE_TYPE &VariantRedisNode::getValue() const { return value; }
 
     void VariantRedisNode::setValue(const VARIANT_NODE_TYPE &value) { 
         if (value.index() == this->value.index())
@@ -173,7 +176,7 @@ namespace Redis {
         return values.back(); 
     }
 
-    std::shared_ptr<VariantRedisNode> AggregateRedisNode::operator[](long idx_) const {
+    const std::shared_ptr<VariantRedisNode> &AggregateRedisNode::operator[](long idx_) const {
         long N {static_cast<long>(values.size())};
         long idx {idx_ >= 0? idx_: N + idx_};
         if (idx < 0 || idx >= N)
@@ -184,16 +187,17 @@ namespace Redis {
     }
 
     std::vector<std::string> AggregateRedisNode::vector() const {
-        std::vector<std::string> result;
+        std::vector<std::string> result(size());
         for (std::size_t i{0}; i < size(); i++)
-            result.emplace_back(values[i]->str());
+            result[i] = values[i]->str();
         return result;
     }
 
     std::string AggregateRedisNode::serialize() const {
-        std::string serialized {"*" + std::to_string(values.size()) + "\r\n"};
+        std::ostringstream serialized; 
+        serialized << "*" << values.size() << "\r\n";
         for (const std::shared_ptr<VariantRedisNode> &value: values)
-            serialized += value->serialize();
-        return serialized;
+            serialized << value->serialize();
+        return serialized.str();
     }
 }
