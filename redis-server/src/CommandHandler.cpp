@@ -1,6 +1,9 @@
+#include <algorithm>
+#include <cctype>
 #include <charconv>
 #include <filesystem>
 #include <iostream>
+#include <regex>
 #include <sstream>
 
 #include "../include/CommandHandler.hpp"
@@ -228,6 +231,48 @@ namespace Redis {
         }
     }
 
+    std::string CommandHandler::handleCommandKeys(std::vector<std::string> &args) {
+        if (args.size() == 2) {
+            std::string &pattern {args[1]}, regexStr{};
+
+            // Convert pattern to regex
+            for (const char ch: pattern) {
+                if (ch == '?')
+                    regexStr += ".";
+                else if (ch == '*')
+                    regexStr += ".*";
+                else if (ch == '[' || ch == ']' || ch == '^' || ch == '-')
+                    regexStr += ch;
+                else if (std::ispunct(ch))
+                    regexStr += "\\" + std::string(1, ch);
+                else
+                    regexStr += ch;
+            }
+
+            // Create a regex obj and filter keys that match
+            try {
+                std::size_t matches{0};
+                std::regex re{regexStr};
+                std::ostringstream oss;
+                for (const std::pair<const std::string, std::shared_ptr<RedisNode>> &p: cache) {
+                    if (std::regex_match(p.first, re)) {
+                        oss << VariantRedisNode(p.first).serialize();
+                        matches++;
+                    }
+                }
+
+                // Create the result string
+                std::ostringstream result;
+                result << "*" << matches << Redis::SEP << oss.str();
+                return result.str();
+            } catch (const std::regex_error &e) {
+                return Redis::PlainRedisNode("ERR invalid pattern: " + pattern, false).serialize();
+            }
+        } else {
+            return Redis::PlainRedisNode("ERR wrong number of arguments for command", false).serialize();
+        }
+    }
+
     std::string CommandHandler::handleRequest(std::string &request) {
         // Process the request
         std::shared_ptr<Redis::RedisNode> reqNode {Redis::RedisNode::deserialize(request)};
@@ -274,6 +319,8 @@ namespace Redis {
             serializedResponse = handleCommandSave(args);
         else if (command == "bgsave")
             serializedResponse = handleCommandSave(args, true);
+        else if (command == "keys")
+            serializedResponse = handleCommandKeys(args);
         else
             serializedResponse = Redis::PlainRedisNode("Not supported", false).serialize();
 

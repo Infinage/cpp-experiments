@@ -18,6 +18,7 @@ namespace Redis {
             std::string handleCommandPush(std::vector<std::string> &args, bool pushBack);
             std::string handleCommandLLen(std::vector<std::string> &args);
             std::string handleCommandSave(std::vector<std::string> &args, bool background = false);
+            std::string handleCommandKeys(std::vector<std::string> &args);
 
         public:
             CommandHandler(const char* dbFP);

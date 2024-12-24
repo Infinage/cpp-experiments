@@ -10,6 +10,10 @@
 #include "../include/Server.hpp"
 #include "../include/Utils.hpp"
 
+// Init static variables for the server
+std::atomic<bool> Redis::Server::serverRunning {true};
+std::unordered_map<int, Redis::Server::SOCKET_INFO_VALUE_TYPE> Redis::Server::socketInfo{};
+
 namespace Redis {
 
     /* --------------- SERVER CLASS METHOD IMPLEMENTATIONS --------------- */

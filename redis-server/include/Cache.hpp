@@ -19,6 +19,8 @@ namespace Redis {
             void readEncodedString(std::ifstream &ifs, std::string &placeholder);
 
         public:
+            std::unordered_map<std::string, std::shared_ptr<RedisNode>>::const_iterator begin() const;
+            std::unordered_map<std::string, std::shared_ptr<RedisNode>>::const_iterator end() const;
             static unsigned long timeSinceEpoch();
             bool exists(const std::string &key) const;
             bool expired(const std::string &key) const;

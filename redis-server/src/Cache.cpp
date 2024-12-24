@@ -21,6 +21,14 @@ namespace Redis {
         return static_cast<unsigned long>(tseMs);
     }
 
+    std::unordered_map<std::string, std::shared_ptr<RedisNode>>::const_iterator Cache::begin() const {
+        return cache.cbegin();
+    }
+
+    std::unordered_map<std::string, std::shared_ptr<RedisNode>>::const_iterator Cache::end() const {
+        return cache.cend();
+    }
+
     bool Cache::exists(const std::string &key) const {
         return cache.find(key) != cache.end();
     }
