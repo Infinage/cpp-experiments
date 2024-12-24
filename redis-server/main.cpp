@@ -1,11 +1,4 @@
-#include <atomic>
-#include <unordered_map>
-
 #include "include/Server.hpp"
-
-// Init static variables for the server
-std::atomic<bool> Redis::Server::serverRunning {true};
-std::unordered_map<int, Redis::Server::SOCKET_INFO_VALUE_TYPE> Redis::Server::socketInfo{};
 
 int main() {
 

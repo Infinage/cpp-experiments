@@ -34,8 +34,10 @@ namespace Redis {
             throw std::make_shared<PlainRedisNode>("Invalid input", false);
 
         // If neg length (only -1 is possible)
-        if (serialized[currPos + 1] == '-') 
+        if (serialized[currPos + 1] == '-') {
+            currPos = serialized.size();
             return std::make_shared<VariantRedisNode>(nullptr);
+        }
 
         // Parse the length using from_chars
         std::size_t strLength;
@@ -57,12 +59,12 @@ namespace Redis {
             std::size_t tokEnd {serialized.find("\r\n")};
             if (tokEnd == std::string::npos) return errNode;
             else {
-                std::string_view token {std::string_view(serialized.data() + 1, tokEnd - 1)};
+                std::string token {serialized.substr(1, tokEnd - 1)};
                 switch (ch) {
                     case '+':
-                        return std::make_shared<PlainRedisNode>(token.data());
+                        return std::make_shared<PlainRedisNode>(token);
                     case '-':
-                        return std::make_shared<PlainRedisNode>(token.data(), false);
+                        return std::make_shared<PlainRedisNode>(token, false);
                     default:
                         bool validInt {Redis::allDigitsSigned(token.begin(), token.end())};
                         return validInt? std::make_shared<VariantRedisNode>(std::stol(token.data())): errNode;
