@@ -1,8 +1,3 @@
-/*
-   redis-cli set abc 123123adasdasdsadsadsadasdasdasdasdsaddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddasdasdasdasdasdasdsadasdsadsadsadsadadsadasdsadsadasdsadsadsadasdasdqweqwedasassadasdweqwqwdwdasdasfweqwdasdsadqwqwfadsdasasfqweqwdadasddasdasdasdasddqwewqihuasdsadasdlsaldhsaldhlasdhlsakhdksalxlklqlqwjdlwdlqwlnqwdlqwjmwqkwopqjowhdpwhdpqwdqwmdwqpodkqwpdqwhpdqwdjwqowqpowqdowkdqwdoqkdwqjdpqwopqwohpoqwfnwqonopfpwnwmdoqpdokwqdpwqdonwdqwodqwodkqwpdhqwpdhqwpdomwqdpqdqopwdopwqmdomqwodpqwopdhwqodwqndowqdomqwodwqoqwopqwojuwqprupqwfoqwfmowmdwomdpqndpowqnqwohqwojdqwpwqodpqwoqwmqwpmmwq,xqwpojqwpfhqhqwipdhqwdnqwxwoqmdqowmxqwndqwidhqwopdnqwmomxqwowq,fmnqwodnqwopjqwojdqowndoqwmopwqmndpoqwhdjwqpmoqwpmxpqwxwqodjqwoxwpqnpqwhjqwopmqwpoxmqwopoqpowhfownqowocmqwpo,qwop,xqwqpwonqasdadasdasdasdasdsadasdasdsadasasdasdasasdasdasdasdsadasdasdasdsadsadasdasdasdsadasdasa
-
-   Fix this
- */
 #include <algorithm>
 #include <arpa/inet.h>
 #include <cctype>
@@ -13,6 +8,7 @@
 #include <iostream>
 #include <memory>
 #include <netinet/in.h>
+#include <sstream>
 #include <stack>
 #include <string>
 #include <sys/socket.h>
@@ -42,13 +38,14 @@ bool readRequest(int client_fd, std::string &request) {
 
     // Read one portion at a time
     char buffer[1024] = {0};
-    if (recv(client_fd, buffer, sizeof(buffer), 0) <= 0) {
+    long recvd {recv(client_fd, buffer, sizeof(buffer), 0)};
+    if (recvd <= 0) {
         request = recvError;
         return true;
     }
 
     // Append received data into request string
-    request += buffer;
+    request.append(buffer, static_cast<std::size_t>(recvd));
 
     // Try to check if received data is 'complete', return false otherwise
     char ch {request[0]};
@@ -238,8 +235,11 @@ std::string handleCommandTTL(std::vector<std::string> &args, Redis::Cache &cache
 
 std::string handleCommandLRange(std::vector<std::string> &args, Redis::Cache &cache) {
     if (args.size() == 4) {
+        long left, right;
         std::string &key {args[1]};
-        if (!Redis::allDigitsSigned(args[2].begin(), args[2].end()) || !Redis::allDigitsSigned(args[3].begin(), args[3].end())) {
+        std::from_chars_result parseResult1 {std::from_chars(args[2].c_str(), args[2].c_str() + args[2].size(), left)};
+        std::from_chars_result parseResult2 {std::from_chars(args[3].c_str(), args[2].c_str() + args[3].size(), right)};
+        if (parseResult1.ec != std::errc() || parseResult2.ec != std::errc()) { 
             return Redis::PlainRedisNode("Value is not an integer or out of range", false).serialize();
         } else if (!cache.exists(key) || cache.expired(key)) {
             return Redis::AggregateRedisNode().serialize();
@@ -247,14 +247,15 @@ std::string handleCommandLRange(std::vector<std::string> &args, Redis::Cache &ca
             return Redis::PlainRedisNode("WRONGTYPE Operation against a key holding the wrong kind of value", false).serialize();
         } else {
             std::shared_ptr<Redis::AggregateRedisNode> value {cache.getValue(key)->cast<Redis::AggregateRedisNode>()};
-            Redis::AggregateRedisNode result;
-            long N{static_cast<long>(value->size())}, left {std::stol(args[2])}, right {std::stol(args[3])};
+            long N{static_cast<long>(value->size())};
             if (left < 0) left = N + left;
             if (right < 0) right = N + right;
             left = std::max(left, 0L); right = std::min(right, N - 1);
+            std::ostringstream oss;
+            oss << "*" << (left<= right? right - left + 1: 0) << Redis::SEP;
             for (long curr {left}; curr <= right; curr++)
-                result.push_back((*value)[curr]);
-            return result.serialize();
+                oss << (*value)[curr]->serialize();
+            return oss.str();
         }
     } else {
         return Redis::PlainRedisNode("ERR wrong number of arguments for command", false).serialize();

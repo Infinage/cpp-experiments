@@ -74,15 +74,20 @@ namespace Redis {
             return currPos == serialized.size()? varNode: errNode;
         } else if (serialized[0] == '*') {
             std::size_t lenTokEnd {serialized.find("\r\n")};
-            if (lenTokEnd == std::string::npos || !Redis::allDigitsSigned(serialized.begin() + 1, serialized.begin() + static_cast<long long>(lenTokEnd))) 
+            if (lenTokEnd == std::string::npos)
                 return std::make_shared<PlainRedisNode>("Invalid input", false);
 
             // If neg length (only -1 is possible)
             if (serialized[1] == '-') 
                 return std::make_shared<VariantRedisNode>(nullptr);
 
+            // Try parsing the length
+            std::size_t arrLength, currPos {lenTokEnd + 2};
+            std::from_chars_result parseResult {std::from_chars(serialized.c_str() + 1, serialized.c_str() + lenTokEnd, arrLength)};
+            if (parseResult.ec != std::errc())
+                return std::make_shared<PlainRedisNode>("Invalid input", false);
+
             // The length of aggregate node
-            std::size_t arrLength {std::stoull(serialized.substr(1, lenTokEnd))}, currPos {lenTokEnd + 2};
             std::shared_ptr<AggregateRedisNode> aggNode {std::make_shared<AggregateRedisNode>()};
             for (std::size_t i{0}; i < arrLength; i++)
                 aggNode->push_back(deserializeBulkStr(serialized, currPos));

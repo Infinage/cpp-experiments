@@ -146,10 +146,10 @@ namespace Redis {
         if (!ifs) return false;            
         else {
             // Verify header
-            char header[9], nextByte;
+            char header[10], nextByte; 
             ifs.read(header, 9);            
             if (std::strcmp(header, "REDIS0003") != 0) {
-                std::cerr << corruptedSaveMsg;
+                std::cerr << "Header mismatch, " << corruptedSaveMsg;
                 return false;
             }
 
@@ -165,7 +165,7 @@ namespace Redis {
 
             // Read database selector
             if (nextByte != static_cast<char>(0xFE)) {
-                std::cerr << corruptedSaveMsg;
+                std::cerr << "Database selector char is missing, " << corruptedSaveMsg;
                 return false;
             } else {
                 ifs.get(nextByte);
@@ -175,7 +175,7 @@ namespace Redis {
             std::size_t cacheSize{}, ttlSize{};
             ifs.get(nextByte);
             if (nextByte != static_cast<char>(0xFB)) {
-                std::cerr << corruptedSaveMsg;
+                std::cerr << "Database size meta char is missing, " << corruptedSaveMsg;
                 return false;
             } else {
                 ifs.read(reinterpret_cast<char *>(&cacheSize), sizeof (std::size_t));
@@ -206,7 +206,7 @@ namespace Redis {
             // Read the last FF byte
             ifs.get(nextByte);
             if (nextByte != static_cast<char>(0xFF)) {
-                std::cerr << corruptedSaveMsg;
+                std::cerr << "Save file end char is missing, " << corruptedSaveMsg;
                 return false;
             }
 
