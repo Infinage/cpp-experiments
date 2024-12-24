@@ -5,8 +5,8 @@
 #include <sstream>
 #include <vector>
 
-#include "../include/Server.hpp"
 #include "../include/Node.hpp"
+#include "../include/Utils.hpp"
 
 namespace Redis {
 

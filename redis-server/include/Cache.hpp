@@ -3,6 +3,8 @@
 #include <fstream>
 #include <memory>
 #include <unordered_map>
+#include <string>
+#include <sys/poll.h>
 
 #include "Node.hpp"
 
