@@ -1,9 +1,23 @@
+#include <deque>
 #include <iostream>
+#include <memory>
 #include <vector>
+
 #include "../include/Node.hpp"
 
 int main() {
     // Sample Tests for Serialization
+    std::unique_ptr<Redis::VariantRedisNode> 
+        n1 {std::make_unique<Redis::VariantRedisNode>("ping")},
+        n2 {std::make_unique<Redis::VariantRedisNode>("echo")},
+        n3 {std::make_unique<Redis::VariantRedisNode>("hello world")},
+        n4 {std::make_unique<Redis::VariantRedisNode>("get")},
+        n5 {std::make_unique<Redis::VariantRedisNode>("key")};
+
+    Redis::AggregateRedisNode aggN1, aggN2, aggN3;
+    aggN1.push_back(std::move(n1)); aggN2.push_back(std::move(n2)), aggN2.push_back(std::move(n3));
+    aggN3.push_back(std::move(n4)); aggN3.push_back(std::move(n5));
+
     std::vector<std::tuple<std::string, std::string, std::string>> serializationTests {
         {"NULLPTR", Redis::VariantRedisNode(nullptr).serialize(), "$-1\r\n"},
         {"123413213", Redis::VariantRedisNode(123413213).serialize(), ":123413213\r\n"},
@@ -11,20 +25,9 @@ int main() {
         {"Error message", Redis::PlainRedisNode("Error message", false).serialize(), "-Error message\r\n"},
         {"''", Redis::VariantRedisNode("").serialize(), "$0\r\n\r\n"},
         {"'hello world'", Redis::PlainRedisNode("hello world").serialize(), "+hello world\r\n"},
-
-        {"['ping']", Redis::AggregateRedisNode({
-            std::make_shared<Redis::VariantRedisNode>("ping")
-        }).serialize(), "*1\r\n$4\r\nping\r\n"},
-
-        {"['echo', 'hello world']", Redis::AggregateRedisNode({
-            std::make_shared<Redis::VariantRedisNode>("echo"), 
-            std::make_shared<Redis::VariantRedisNode>("hello world")
-        }).serialize(), "*2\r\n$4\r\necho\r\n$11\r\nhello world\r\n"},
-
-        {"['get', 'key']", Redis::AggregateRedisNode({
-            std::make_shared<Redis::VariantRedisNode>("get"), 
-            std::make_shared<Redis::VariantRedisNode>("key")
-        }).serialize(), "*2\r\n$3\r\nget\r\n$3\r\nkey\r\n"},
+        {"['ping']", aggN1.serialize(), "*1\r\n$4\r\nping\r\n"},
+        {"['echo', 'hello world']", aggN2.serialize(), "*2\r\n$4\r\necho\r\n$11\r\nhello world\r\n"},
+        {"['get', 'key']", aggN3.serialize(), "*2\r\n$3\r\nget\r\n$3\r\nkey\r\n"},
     };
 
     // Sample Tests for Deserialization

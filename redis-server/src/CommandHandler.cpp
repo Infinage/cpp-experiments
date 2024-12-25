@@ -3,6 +3,7 @@
 #include <charconv>
 #include <filesystem>
 #include <iostream>
+#include <memory>
 #include <regex>
 #include <sstream>
 
@@ -43,7 +44,7 @@ namespace Redis {
             // Store the value at specified key
             std::string &key {args[1]};
             std::string &value {args[2]};
-            cache.setValue(key, std::make_shared<Redis::VariantRedisNode>(value));
+            cache.setValue(key, std::make_unique<Redis::VariantRedisNode>(value));
 
             // Set the expiry
             if (args.size() >= 5) {
@@ -80,7 +81,8 @@ namespace Redis {
     std::string CommandHandler::handleCommandGet(std::vector<std::string> &args) {
         if (args.size() == 2) {
             std::string &key {args[1]};
-            return cache.getValue(key)->serialize();
+            RedisNode* value {cache.getValue(key)};
+            return value? value->serialize(): Redis::VariantRedisNode(nullptr).serialize();
         } else {
             return Redis::PlainRedisNode("Wrong number of arguments for 'get' command", false).serialize();
         }
@@ -113,12 +115,14 @@ namespace Redis {
         if (args.size() == 2) {
             std::string &key {args[1]};
             if (!cache.exists(key) || cache.expired(key)) {
-                cache.setValue(key, std::make_shared<Redis::VariantRedisNode>(std::to_string(by)));
+                cache.setValue(key, std::make_unique<Redis::VariantRedisNode>(std::to_string(by)));
                 return cache.getValue(key)->serialize();
+            } else if (cache.getValue(key)->getType() != NODE_TYPE::VARIANT) {
+                return Redis::PlainRedisNode("value is not an integer", false).serialize();
             } else {
-                const std::string &value {cache.getValue(key)->cast<Redis::VariantRedisNode>()->str()};
+                const std::string &value {static_cast<VariantRedisNode*>(cache.getValue(key))->str()};
                 if (Redis::allDigitsSigned(value.cbegin(), value.cend())) {
-                    cache.setValue(key, std::make_shared<Redis::VariantRedisNode>(std::to_string(std::stol(value) + by)));
+                    cache.setValue(key, std::make_unique<Redis::VariantRedisNode>(std::to_string(std::stol(value) + by)));
                     return cache.getValue(key)->serialize();
                 } else {
                     return Redis::PlainRedisNode("value is not an integer or out of range", false).serialize();
@@ -152,15 +156,15 @@ namespace Redis {
             } else if (cache.getValue(key)->getType() != Redis::NODE_TYPE::AGGREGATE) {
                 return Redis::PlainRedisNode("WRONGTYPE Operation against a key holding the wrong kind of value", false).serialize();
             } else {
-                std::shared_ptr<Redis::AggregateRedisNode> value {cache.getValue(key)->cast<Redis::AggregateRedisNode>()};
+                AggregateRedisNode* value {static_cast<AggregateRedisNode*>(cache.getValue(key))};
                 long N{static_cast<long>(value->size())};
                 if (left < 0) left = N + left;
                 if (right < 0) right = N + right;
                 left = std::max(left, 0L); right = std::min(right, N - 1);
                 std::ostringstream oss;
-                oss << "*" << (left<= right? right - left + 1: 0) << Redis::SEP;
+                oss << "*" << (left <= right? right - left + 1: 0) << Redis::SEP;
                 for (long curr {left}; curr <= right; curr++)
-                    oss << (*value)[curr]->serialize();
+                    oss << value->operator[](curr).serialize();
                 return oss.str();
             }
         } else {
@@ -180,14 +184,14 @@ namespace Redis {
 
             // If it doesn't exist, create new
             if (!exists)
-                cache.setValue(key, std::make_shared<Redis::AggregateRedisNode>());
+                cache.setValue(key, std::make_unique<Redis::AggregateRedisNode>());
 
             // Start inserting into the aggNode
             long result {0};
-            std::shared_ptr<Redis::AggregateRedisNode> aggNode {cache.getValue(key)->cast<Redis::AggregateRedisNode>()};
+            AggregateRedisNode* aggNode {static_cast<AggregateRedisNode*>(cache.getValue(key))};
             for (std::size_t i{2}; i < args.size(); i++) {
-                if (pushBack) aggNode->push_back(std::make_shared<Redis::VariantRedisNode>(args[i])); 
-                else aggNode->push_front(std::make_shared<Redis::VariantRedisNode>(args[i])); 
+                if (pushBack) aggNode->push_back(std::make_unique<Redis::VariantRedisNode>(args[i])); 
+                else aggNode->push_front(std::make_unique<Redis::VariantRedisNode>(args[i])); 
                 result++;
             }
             return Redis::VariantRedisNode(result).serialize();
@@ -205,7 +209,7 @@ namespace Redis {
             } else if (cache.getValue(key)->getType() != Redis::NODE_TYPE::AGGREGATE) {
                 return Redis::PlainRedisNode("WRONGTYPE Operation against a key holding the wrong kind of value", false).serialize();
             } else {
-                std::size_t N {cache.getValue(key)->cast<Redis::AggregateRedisNode>()->size()};
+                std::size_t N {static_cast<AggregateRedisNode*>(cache.getValue(key))->size()};
                 return Redis::VariantRedisNode(static_cast<long>(N)).serialize();
             }
         } else {
@@ -254,7 +258,7 @@ namespace Redis {
                 std::size_t matches{0};
                 std::regex re{regexStr};
                 std::ostringstream oss;
-                for (const std::pair<const std::string, std::shared_ptr<RedisNode>> &p: cache) {
+                for (const std::pair<const std::string, std::unique_ptr<RedisNode>> &p: cache) {
                     if (std::regex_match(p.first, re)) {
                         oss << VariantRedisNode(p.first).serialize();
                         matches++;
@@ -275,12 +279,13 @@ namespace Redis {
 
     std::string CommandHandler::handleRequest(std::string &request) {
         // Process the request
-        std::shared_ptr<Redis::RedisNode> reqNode {Redis::RedisNode::deserialize(request)};
+        std::unique_ptr<Redis::RedisNode> reqNode {Redis::RedisNode::deserialize(request)};
         std::vector<std::string> args; std::string command;
         if (reqNode->getType() != Redis::NODE_TYPE::AGGREGATE) {
             command = "missing";
         } else {
-            args = reqNode->cast<Redis::AggregateRedisNode>()->vector();
+            AggregateRedisNode* aggNode {static_cast<AggregateRedisNode*>(reqNode.get())};
+            args = aggNode->vector();
             command = args[0];
         }
 

@@ -19,7 +19,7 @@ int main() {
 
     // Test TTLS
     std::cout << "Testing TTLS..\n";
-    cache.setValue("abc", std::make_shared<Redis::VariantRedisNode>("123"));
+    cache.setValue("abc", std::make_unique<Redis::VariantRedisNode>("123"));
     printResult(!cache.expired("abc"), "Should be present:       ");
     cache.setTTLS("abc", 1);
     std::this_thread::sleep_for(std::chrono::milliseconds(995));
@@ -32,7 +32,7 @@ int main() {
 
     // Test TTLSAt
     std::cout << "Testing TTLSAt..\n";
-    cache.setValue("abc", std::make_shared<Redis::VariantRedisNode>("123"));
+    cache.setValue("abc", std::make_unique<Redis::VariantRedisNode>("123"));
     printResult(!cache.expired("abc"), "Should be present:       ");
     cache.setTTLSAt("abc", static_cast<unsigned long>(std::ceil((Redis::Cache::timeSinceEpoch() + 1000) / 1000)));
     std::this_thread::sleep_for(std::chrono::milliseconds(995));
@@ -45,7 +45,7 @@ int main() {
 
     // Test TTLMS
     std::cout << "Testing TTLMS..\n";
-    cache.setValue("abc", std::make_shared<Redis::VariantRedisNode>("123"));
+    cache.setValue("abc", std::make_unique<Redis::VariantRedisNode>("123"));
     printResult(!cache.expired("abc"), "Should be present:       ");
     cache.setTTLMS("abc", 100);
     std::this_thread::sleep_for(std::chrono::milliseconds(95));
@@ -58,7 +58,7 @@ int main() {
 
     // Test TTLMSAt
     std::cout << "Testing TTLMSAt..\n";
-    cache.setValue("abc", std::make_shared<Redis::VariantRedisNode>("123"));
+    cache.setValue("abc", std::make_unique<Redis::VariantRedisNode>("123"));
     printResult(!cache.expired("abc"), "Should be present:       ");
     cache.setTTLMSAt("abc", Redis::Cache::timeSinceEpoch() + 100);
     std::this_thread::sleep_for(std::chrono::milliseconds(95));

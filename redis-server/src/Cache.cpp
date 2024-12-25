@@ -21,11 +21,11 @@ namespace Redis {
         return static_cast<unsigned long>(tseMs);
     }
 
-    std::unordered_map<std::string, std::shared_ptr<RedisNode>>::const_iterator Cache::begin() const {
+    std::unordered_map<std::string, std::unique_ptr<RedisNode>>::const_iterator Cache::begin() const {
         return cache.cbegin();
     }
 
-    std::unordered_map<std::string, std::shared_ptr<RedisNode>>::const_iterator Cache::end() const {
+    std::unordered_map<std::string, std::unique_ptr<RedisNode>>::const_iterator Cache::end() const {
         return cache.cend();
     }
 
@@ -37,17 +37,17 @@ namespace Redis {
         return ttl.find(key) != ttl.end() && ttl.at(key) < timeSinceEpoch();
     }
 
-    std::shared_ptr<RedisNode> Cache::getValue(const std::string &key) {
+    RedisNode* Cache::getValue(const std::string &key) {
         // Delete key if expired
         if (expired(key)) { cache.erase(key); ttl.erase(key); }
 
         // Check key and return as usual
-        if (!exists(key)) return std::make_shared<Redis::VariantRedisNode>(nullptr);
-        else return cache.at(key);
+        if (!exists(key)) return nullptr;
+        else return cache.at(key).get();
     }
 
-    void Cache::setValue(const std::string &key, const std::shared_ptr<RedisNode> &value) {
-        cache[key] = value;
+    void Cache::setValue(const std::string &key, std::unique_ptr<RedisNode> &&value) {
+        cache[key] = std::move(value);
     }
 
     long Cache::getTTL(const std::string &key) const {
@@ -99,7 +99,7 @@ namespace Redis {
     bool Cache::save(const std::string &fname) {
         // Remove the expired keys - SNAPSHOT TIME
         unsigned long TS {timeSinceEpoch()};
-        for (std::unordered_map<const std::string, std::shared_ptr<RedisNode>>::iterator it {cache.begin()}; it != cache.end();) {
+        for (std::unordered_map<const std::string, std::unique_ptr<RedisNode>>::iterator it {cache.begin()}; it != cache.end();) {
             if (ttl.find(it->first) != ttl.end() && ttl[it->first] < TS) {
                 ttl.erase(it->first);
                 it = cache.erase(it);
@@ -129,7 +129,7 @@ namespace Redis {
             ofs.write(reinterpret_cast<char *>(&ttlSize), sizeof (std::size_t));
 
             // Write key-value pairs
-            for (const std::pair<const std::string, std::shared_ptr<RedisNode>> &kv: cache) {
+            for (const std::pair<const std::string, std::unique_ptr<RedisNode>> &kv: cache) {
                 bool ttlExists {ttl.find(kv.first) != ttl.end()};
                 // Add TTL
                 if (ttlExists) {
@@ -138,7 +138,7 @@ namespace Redis {
                 }
 
                 // Value-Type, Key, Value
-                const std::shared_ptr<Redis::RedisNode> &node {kv.second};
+                const std::unique_ptr<Redis::RedisNode> &node {kv.second};
                 ofs.put(node->getType() == Redis::NODE_TYPE::PLAIN? 'P': node->getType() == Redis::NODE_TYPE::VARIANT? 'V': 'A');
                 writeEncodedString(ofs, kv.first);
                 writeEncodedString(ofs, node->serialize());

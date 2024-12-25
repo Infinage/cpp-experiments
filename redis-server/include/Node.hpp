@@ -15,7 +15,7 @@ namespace Redis {
     // Forward decl
     class VariantRedisNode;
 
-    class RedisNode: public std::enable_shared_from_this<RedisNode> {
+    class RedisNode {
         protected:
             const NODE_TYPE type;
 
@@ -24,9 +24,8 @@ namespace Redis {
             virtual ~RedisNode();
             RedisNode(const NODE_TYPE &t);
             const NODE_TYPE &getType() const;
-            static std::shared_ptr<RedisNode> deserialize(const std::string &request);
-            static std::shared_ptr<VariantRedisNode> deserializeBulkStr(const std::string& serialized, std::size_t &currPos);
-            template<typename T> std::shared_ptr<T> cast();
+            static std::unique_ptr<RedisNode> deserialize(const std::string &request);
+            static std::unique_ptr<VariantRedisNode> deserializeBulkStr(const std::string& serialized, std::size_t &currPos);
     };
 
     class PlainRedisNode: public RedisNode {
@@ -43,9 +42,11 @@ namespace Redis {
     class VariantRedisNode: public RedisNode {
         private:
             VARIANT_NODE_TYPE value;
+            mutable std::string serialized;
 
         public:
             VariantRedisNode(const VARIANT_NODE_TYPE &value);
+            VariantRedisNode(const VARIANT_NODE_TYPE &value, const std::string &serialized);
             const VARIANT_NODE_TYPE &getValue() const;
             void setValue(const VARIANT_NODE_TYPE &value);
             std::string str() const;
@@ -54,30 +55,25 @@ namespace Redis {
 
     class AggregateRedisNode: public RedisNode {
         private:
-            std::deque<std::shared_ptr<VariantRedisNode>> values;
+            std::deque<std::unique_ptr<VariantRedisNode>> values;
 
         public:
-            AggregateRedisNode(const std::deque<std::shared_ptr<VariantRedisNode>> &values = {});
+            AggregateRedisNode(std::deque<std::unique_ptr<VariantRedisNode>> &&values = {});
 
-            void push_back(const std::shared_ptr<VariantRedisNode> &node);
-            void push_front(const std::shared_ptr<VariantRedisNode> &node);
+            void push_back(std::unique_ptr<VariantRedisNode> &&node);
+            void push_front(std::unique_ptr<VariantRedisNode> &&node);
 
             std::size_t size() const;
 
             void pop_back();
             void pop_front();
 
-            std::shared_ptr<VariantRedisNode> front();
-            std::shared_ptr<VariantRedisNode> back();
+            VariantRedisNode& front();
+            VariantRedisNode& back();
 
-            const std::shared_ptr<VariantRedisNode> &operator[](long idx_) const;
+            const VariantRedisNode &operator[](long idx_) const;
 
             std::vector<std::string> vector() const;
             std::string serialize() const override;
     };
-
-    template<typename T> 
-    std::shared_ptr<T> RedisNode::cast() {
-        return std::static_pointer_cast<T>(shared_from_this());
-    }
 }
