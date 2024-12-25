@@ -156,15 +156,26 @@ namespace Redis {
             } else if (cache.getValue(key)->getType() != Redis::NODE_TYPE::AGGREGATE) {
                 return Redis::PlainRedisNode("WRONGTYPE Operation against a key holding the wrong kind of value", false).serialize();
             } else {
+                // Get the requested node
                 AggregateRedisNode* value {static_cast<AggregateRedisNode*>(cache.getValue(key))};
+                const std::deque<std::unique_ptr<VariantRedisNode>> &values {value->getValues()};
+
+                // Negative indices casted to +ve & ensure that it is within bounds
                 long N{static_cast<long>(value->size())};
                 if (left < 0) left = N + left;
                 if (right < 0) right = N + right;
                 left = std::max(left, 0L); right = std::min(right, N - 1);
+                std::size_t 
+                    resultLen {static_cast<std::size_t>(left <= right? right - left + 1: 0)}, 
+                    left_ {static_cast<std::size_t>(left)},
+                    right_ {static_cast<std::size_t>(right)};
+
+                // Create a osstring stream and gather results
                 std::ostringstream oss;
-                oss << "*" << (left <= right? right - left + 1: 0) << Redis::SEP;
-                for (long curr {left}; curr <= right; curr++)
-                    oss << value->operator[](curr).serialize();
+                oss << "*" << resultLen << Redis::SEP;
+                for (std::size_t curr {left_}; curr <= right_; curr++)
+                    oss << values[curr]->serialize();
+
                 return oss.str();
             }
         } else {

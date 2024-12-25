@@ -198,6 +198,10 @@ namespace Redis {
         return *values.back(); 
     }
 
+    const std::deque<std::unique_ptr<VariantRedisNode>> &AggregateRedisNode::getValues() const {
+        return values;
+    }
+
     const VariantRedisNode &AggregateRedisNode::operator[](long idx_) const {
         long N {static_cast<long>(values.size())};
         long idx {idx_ >= 0? idx_: N + idx_};

@@ -72,6 +72,7 @@ namespace Redis {
             VariantRedisNode& back();
 
             const VariantRedisNode &operator[](long idx_) const;
+            const std::deque<std::unique_ptr<VariantRedisNode>> &getValues() const;
 
             std::vector<std::string> vector() const;
             std::string serialize() const override;
