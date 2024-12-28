@@ -1,7 +1,6 @@
 #include <SFML/Graphics.hpp>
 #include <SFML/Graphics/Color.hpp>
 #include <SFML/Graphics/Rect.hpp>
-#include <SFML/Graphics/RectangleShape.hpp>
 #include <SFML/Graphics/RenderWindow.hpp>
 #include <SFML/Graphics/Texture.hpp>
 #include <SFML/Graphics/View.hpp>
@@ -9,9 +8,7 @@
 #include <SFML/System/Vector2.hpp>
 #include <SFML/Window/Event.hpp>
 #include <SFML/Window/Keyboard.hpp>
-#include <SFML/Window/Mouse.hpp>
 #include <SFML/Window/VideoMode.hpp>
-#include <SFML/Window/WindowStyle.hpp>
 
 constexpr int VIEW_WIDTH {512};
 constexpr int VIEW_HEIGHT {512};
@@ -48,21 +45,20 @@ class TextureAnimation {
 
 class Pacman {
     private:
-        sf::RectangleShape body;
+        sf::Sprite body;
         float speed;
         sf::Texture texture;
         TextureAnimation animation;
 
     public:
-        Pacman(float moveSpeed, float animationSwitchTime, const std::string &textureFpath): 
-            body(sf::Vector2f(50.0f, 50.0f)), speed(moveSpeed)
+        Pacman(float moveSpeed, float animationSwitchTime, const std::string &textureFpath): speed(moveSpeed)
         {
+            body.setScale(2.f, 2.f);
             texture.loadFromFile(textureFpath);
             animation = TextureAnimation{texture.getSize(), animationSwitchTime};
-            body.setTexture(&texture);
-            body.setOrigin(body.getSize().x / 2, body.getSize().y / 2);
-            body.setFillColor(sf::Color::Yellow);
-            body.setPosition(256, 256);;
+            body.setTexture(texture);
+            body.setOrigin(static_cast<float>(animation.uvRect.width) / 2, static_cast<float>(animation.uvRect.height) / 2);
+            body.setPosition(VIEW_WIDTH / 2., VIEW_HEIGHT / 2.);
         }
 
         void draw(sf::RenderWindow &window) { window.draw(body); }
@@ -93,12 +89,14 @@ class Pacman {
             sf::FloatRect bounds{
                 viewCenter.x - viewSize.x / 2.f,
                 viewCenter.y - viewSize.y / 2.f,
-                viewSize.x,
-                viewSize.y
+                viewSize.x, viewSize.y 
             };
 
             // Move the body while clamping its position to within the view bounds
-            sf::Vector2f pacmanSize {body.getSize()}, nextPos {body.getPosition() + movement};
+            sf::Vector2f pacmanScale {body.getScale()};
+            sf::Vector2f pacmanUnscaledSize {static_cast<float>(animation.uvRect.width), static_cast<float>(animation.uvRect.height)};
+            sf::Vector2f pacmanSize {pacmanScale.x * pacmanUnscaledSize.x, pacmanScale.y * pacmanUnscaledSize.y};
+            sf::Vector2f nextPos {body.getPosition() + movement};
             nextPos.x = std::clamp(nextPos.x, bounds.left + pacmanSize.x / 2, bounds.left + bounds.width - pacmanSize.x / 2);
             nextPos.y = std::clamp(nextPos.y, bounds.top + pacmanSize.y / 2, bounds.top + bounds.height - pacmanSize.y / 2);
             body.setPosition(nextPos);
@@ -106,7 +104,7 @@ class Pacman {
 };
 
 int main() {
-    sf::RenderWindow window {sf::VideoMode(VIEW_WIDTH, VIEW_HEIGHT), "Pacman Sample", sf::Style::Close};
+    sf::RenderWindow window {sf::VideoMode(VIEW_WIDTH, VIEW_HEIGHT), "Pacman Sample"};
     sf::View view{
         sf::Vector2f(VIEW_WIDTH / 2., VIEW_HEIGHT / 2.), 
         sf::Vector2f{static_cast<float>(VIEW_WIDTH), static_cast<float>(VIEW_HEIGHT)
@@ -140,10 +138,10 @@ int main() {
         }
 
         // Set bounding box
+        window.clear();
         pacman.move(deltaTime, view);
 
         // Clear and display
-        window.clear();
         window.setView(view);
         pacman.draw(window);
         window.display();
