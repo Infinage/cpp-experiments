@@ -1,6 +1,6 @@
 # Compiler and Flags
 CXX = g++
-CXXFLAGS = -std=c++23 -Wall -Wextra -lsfml-graphics -lsfml-window -lsfml-system
+CXXFLAGS = -std=c++23 -Wall -Wextra -lsfml-graphics -lsfml-window -lsfml-system -I include
 
 # Directories
 SRC_DIR = src
