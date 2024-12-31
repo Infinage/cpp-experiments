@@ -25,7 +25,7 @@ std::array<std::array<CELL, MAP_WIDTH>, MAP_HEIGHT> getMap() {
 
 bool renderWorld(
     std::array<std::array<CELL, MAP_WIDTH>, MAP_HEIGHT> &map, sf::RenderWindow &window, 
-    Pacman &pacman, Ghost &blinky, Wall &wall, Food &food
+    Pacman &pacman, Ghost &blinky, Ghost &pinky, Wall &wall, Food &food
 ) {
     bool pelletExists {false};
     for (std::size_t i {0}; i < MAP_HEIGHT; i++) {
@@ -48,6 +48,7 @@ bool renderWorld(
 
     pacman.draw(window);
     blinky.draw(window);
+    pinky.draw(window);
     return pelletExists;
 }
 
@@ -73,6 +74,32 @@ sf::Vector2f snap2Grid(sf::Vector2f pos, float alignTol) {
         pos.y = topLeftY;
 
     return pos;
+}
+
+std::pair<std::size_t, std::size_t> travel(std::size_t cx, std::size_t cy, DIRS dir, int steps) {
+    // Which direction to travel?
+    int dx {0}, dy {0};
+    switch (dir) {
+        case    DIRS::UP: dy = -steps; break;
+        case  DIRS::DOWN: dy = +steps; break;
+        case  DIRS::LEFT: dx = -steps; break;
+        case DIRS::RIGHT: dx = +steps; break;
+    }
+
+    // Cast for comparison & ops
+    std::size_t dx_ {dx < 0? static_cast<std::size_t>(-dx): static_cast<std::size_t>(dx)};
+    std::size_t dy_ {dy < 0? static_cast<std::size_t>(-dy): static_cast<std::size_t>(dy)};
+    std::size_t WIDTH {static_cast<std::size_t>(MAP_WIDTH)}, HEIGHT {static_cast<std::size_t>(MAP_HEIGHT)};
+
+    // Clamp CX
+    if (dx < 0) cx = dx_ > cx? 0: cx - dx_;
+    else cx = std::min(WIDTH, cx + dx_);
+
+    // Clamp CY
+    if (dy < 0) cy = dy_ > cy? 0: cy - dy_;
+    else cy = std::min(HEIGHT, cy + dy_);
+
+    return {cx, cy};
 }
 
 double eDist(const std::pair<std::size_t, std::size_t> &curr, const std::pair<std::size_t, std::size_t> &target) {

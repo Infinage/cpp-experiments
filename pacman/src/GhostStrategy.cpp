@@ -1,5 +1,4 @@
 #include <cmath>
-#include <iostream>
 #include <limits>
 #include <tuple>
 #include <vector>
@@ -45,11 +44,26 @@ DIRS Shadow::getNext() {
         }
     }
 
-    // DEBUG
-    std::pair<std::size_t, std::size_t> ghostPos {ghost.getPosition()};
-    std::cout << "Target: " << targetTile.first << ", " << targetTile.second << "\n";
-    std::cout << "Ghost: " << ghostPos.first << ", " << ghostPos.second << "\n";
-    std::cout << "Dir chosen: " << minDir << ", Dist: " << minDist <<  "\n\n";
+    return minDir;
+}
+
+Ambush::Ambush(std::array<std::array<CELL, MAP_WIDTH>, MAP_HEIGHT> &map, Ghost &ghost, Pacman &pacman)
+    : Strategy(map, ghost), pacman(pacman) {}
+
+DIRS Ambush::getNext() {
+    // Project pacman direction by 4 steps
+    auto [tx, ty] {pacman.getPosition()};
+    auto [nx, ny] {travel(tx, ty, pacman.getDir(), 4)};
+
+    DIRS currDir {ghost.getDir()}, minDir{revDirs.at(ghost.getDir())}; 
+    double minDist {std::numeric_limits<double>::max()};
+    for (auto [cx, cy, dir]: getNeighbouringCells()) {
+        double dist {eDist({cx, cy}, {nx, ny})};
+        if (dist < minDist && dir != revDirs.at(currDir)) {
+            minDist = dist;
+            minDir = dir;
+        }
+    }
 
     return minDir;
 }

@@ -27,3 +27,12 @@ class Shadow: public Strategy {
         Shadow(std::array<std::array<CELL, MAP_WIDTH>, MAP_HEIGHT> &map, Ghost &ghost, Pacman &pacman);
         DIRS getNext() override;
 };
+
+class Ambush: public Strategy {
+    private:
+        Pacman &pacman;
+
+    public:
+        Ambush(std::array<std::array<CELL, MAP_WIDTH>, MAP_HEIGHT> &map, Ghost &ghost, Pacman &pacman);
+        DIRS getNext() override;
+};

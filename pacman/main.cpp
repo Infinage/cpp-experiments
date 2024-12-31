@@ -23,14 +23,21 @@ int main() {
     // Init sprites
     Pacman pacman{PACMAN_SPRITE_FILE, 4, 2};
     pacman.setPosition(15, 9);
+
     Ghost blinky{BLINKY_SPRITE_FILE, 1, 8};
     blinky.setPosition(7, 9);
+
+    Ghost pinky{PINKY_SPRITE_FILE, 1, 8};
+    pinky.setPosition(9, 8);
+
     Wall wall{WALL_SPRITE_FILE, 1, 1};
     Food food{FOOD_SPRITE_FILE, 1, 2};
 
-    // Create a set strategies for the ghosts
+    // Create and set strategies for the ghosts
     std::unique_ptr<Strategy> blinkyChaseStrategy {std::make_unique<Shadow>(map, blinky, pacman)};
     blinky.setChaseStrategy(std::move(blinkyChaseStrategy));
+    std::unique_ptr<Strategy> pinkyChaseStrategy {std::make_unique<Ambush>(map, pinky, pacman)};
+    pinky.setChaseStrategy(std::move(pinkyChaseStrategy));
 
     sf::Clock clk;
     float deltaTime;
@@ -56,10 +63,11 @@ int main() {
 
         // Move Ghosts
         blinky.update(deltaTime, map, pacman);
+        pinky.update(deltaTime, map, pacman);
 
         // Draw the elements
         window.clear();
-        pelletExists = renderWorld(map, window, pacman, blinky, wall, food);
+        pelletExists = renderWorld(map, window, pacman, blinky, pinky, wall, food);
         window.display();
     }
 

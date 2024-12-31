@@ -90,14 +90,7 @@ DIRS Ghost::getDir() const { return currDir; }
 bool Ghost::shouldChangeDir(std::array<std::array<CELL, MAP_WIDTH>, MAP_HEIGHT> &map) const {
     auto [px, py] {body.getPosition()};
     auto [cx, cy] {getPosition()};
-
-    std::size_t nx {cx}, ny {cy};
-    switch (getDir()) {
-        case    DIRS::UP: ny--; break;
-        case  DIRS::DOWN: ny++; break;
-        case  DIRS::LEFT: nx--; break;
-        case DIRS::RIGHT: nx++; break;
-    }
+    auto [nx, ny] = travel(cx, cy, getDir());
 
     bool snapped2Grid {static_cast<float>(cx * CELL_SIZE) == px && static_cast<float>(cy * CELL_SIZE) == py};
     bool nextIsWall {snapped2Grid && map[ny][nx] == CELL::WALL};
