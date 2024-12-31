@@ -16,9 +16,10 @@ class BaseSprite {
         virtual ~BaseSprite() = default;
         BaseSprite(const char* SPRITE_FILE, unsigned int rows, unsigned int cols, float speed);
         void setPosition(std::size_t row, std::size_t col);
+        std::pair<std::size_t, std::size_t> getPosition() const;
         void setSpeed(float speed);
         void setTextureRect(const sf::IntRect &rect);
-        void draw(sf::RenderWindow &window);
-        unsigned int getHeight();
-        unsigned int getWidth();
+        void draw(sf::RenderWindow &window) const;
+        unsigned int getHeight() const;
+        unsigned int getWidth() const;
 };
