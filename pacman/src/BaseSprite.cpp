@@ -23,7 +23,7 @@ void BaseSprite::setPosition(std::size_t row, std::size_t col) {
 }
 
 std::pair<std::size_t, std::size_t> BaseSprite::getPosition() const {
-    sf::Vector2f pos{snap2Grid(body.getPosition(), 0.25f)};
+    sf::Vector2f pos{snap2Grid(body.getPosition(), 0.05f)};
     return {static_cast<std::size_t>(pos.x / CELL_SIZE), static_cast<std::size_t>(pos.y / CELL_SIZE)};
 }
 

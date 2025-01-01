@@ -19,7 +19,13 @@ Pacman::Pacman(const char* SPRITE_FILE, unsigned int rows, unsigned int cols, fl
     currDir = DIRS::LEFT;
 }
 
-DIRS Pacman::getDir() const { return currDir; }
+DIRS Pacman::getDir() const { 
+    return currDir; 
+}
+
+bool Pacman::isPoweredUp() const { 
+    return powerUpTimer > 0; 
+}
 
 void Pacman::update(float deltaTime, std::array<std::array<CELL, MAP_WIDTH>, MAP_HEIGHT> &map) {
     // Move pacman around
@@ -37,7 +43,7 @@ void Pacman::update(float deltaTime, std::array<std::array<CELL, MAP_WIDTH>, MAP
 
     if (movement.x != 0 || movement.y != 0) {
         if (nextDir != currDir) {
-            sf::Vector2f snappedCoords {snap2Grid(body.getPosition(), 0.30f)};
+            sf::Vector2f snappedCoords {snap2Grid(body.getPosition(), 0.05f)};
             body.setPosition(snappedCoords);
             currDir = nextDir; 
         }
@@ -51,11 +57,17 @@ void Pacman::update(float deltaTime, std::array<std::array<CELL, MAP_WIDTH>, MAP
             if (map[nearestY][nearestX] == CELL::PELLET) {
                 map[nearestY][nearestX] = CELL::EMPTY;
             } else if (map[nearestY][nearestX] == CELL::ENERGIZER) {
+                powerUpTimer = PACMAN_POWER_UP_TIME;
                 map[nearestY][nearestX] = CELL::EMPTY;
             }
         }
     }
 
+    // Update the powerup timer if pacman has recently eaten an energizer
+    if (powerUpTimer > 0)
+        powerUpTimer = std::max(0.f, powerUpTimer - deltaTime);
+
+    // Update the pacman animation for every frame
     anim[currDir].update(deltaTime);
     body.setTextureRect(anim[currDir].getRect());
 }
@@ -70,8 +82,14 @@ Food::Food(const char* SPRITE_FILE, unsigned int rows, unsigned int cols):
 
 // ****************** Define functions for Ghost ****************** //
 
-Ghost::Ghost(const char* SPRITE_FILE, unsigned int rows, unsigned int cols, float speed): 
-    BaseSprite(SPRITE_FILE, rows, cols, speed) 
+Ghost::Ghost(
+        const char* SPRITE_FILE, unsigned int rows, unsigned int cols, 
+        sf::Texture &frightTexture, Animation& frightAnimation, float speed
+    )
+    : 
+    BaseSprite(SPRITE_FILE, rows, cols, speed), 
+    frightTexture(frightTexture), 
+    frightAnimation(frightAnimation)
 {
     // Create animation objects for each direction
     anim[DIRS::RIGHT] = Animation{spriteHeight, spriteWidth, 0.15f, {{0 * spriteWidth, 0}, {1 * spriteWidth, 0}}};
@@ -81,13 +99,9 @@ Ghost::Ghost(const char* SPRITE_FILE, unsigned int rows, unsigned int cols, floa
     currDir = DIRS::LEFT;
 }
 
-void Ghost::setChaseStrategy(std::unique_ptr<Strategy> strategy) {
-    chaseStrategy = std::move(strategy);
-}
-
 DIRS Ghost::getDir() const { return currDir; }
 
-bool Ghost::shouldChangeDir(std::array<std::array<CELL, MAP_WIDTH>, MAP_HEIGHT> &map) const {
+bool Ghost::shouldChangeDir(MAP &map) const {
     auto [px, py] {body.getPosition()};
     auto [cx, cy] {getPosition()};
     auto [nx, ny] = travel(cx, cy, getDir());
@@ -102,9 +116,48 @@ bool Ghost::shouldChangeDir(std::array<std::array<CELL, MAP_WIDTH>, MAP_HEIGHT> 
     return nextIsWall || isCorridor;
 }
 
-void Ghost::update(float deltaTime, std::array<std::array<CELL, MAP_WIDTH>, MAP_HEIGHT> &map, Pacman &pacman) {
-    if (shouldChangeDir(map))
-        currDir = chaseStrategy->getNext();
+void Ghost::setChaseStrategy(std::unique_ptr<Strategy> strategy) {
+    strategy->setGhost(this);
+    this->chaseStrategy = std::move(strategy);
+}
+
+void Ghost::setFrightStrategy(std::unique_ptr<Strategy> strategy) {
+    strategy->setGhost(this);
+    this->frightStrategy = std::move(strategy);
+}
+
+void Ghost::update(float deltaTime, MAP &map, GHOSTS &ghosts, Pacman &pacman) {
+    if (pacman.isPoweredUp()) {
+        if (shouldChangeDir(map))
+            currDir = frightStrategy->getNext(map, pacman, ghosts);
+
+        if (currMode != FRIGHTENED) {
+            sf::Vector2f snappedCoords {snap2Grid(body.getPosition(), 1.f)};
+            body.setPosition(snappedCoords);
+            body.setTexture(frightTexture);
+            setSpeed(GHOST_FRIGHTENED_SPEED);
+        }
+
+        currMode = FRIGHTENED;
+        frightAnimation.update(deltaTime);
+        body.setTextureRect(frightAnimation.getRect());
+    }
+
+    else {
+        if (shouldChangeDir(map))
+            currDir = chaseStrategy->getNext(map, pacman, ghosts);
+
+        if (currMode != CHASE) {
+            sf::Vector2f snappedCoords {snap2Grid(body.getPosition(), 1.f)};
+            body.setPosition(snappedCoords);
+            body.setTexture(texture);
+            setSpeed(GHOST_SPEED);
+        }
+
+        currMode = CHASE;
+        anim[currDir].update(deltaTime);
+        body.setTextureRect(anim[currDir].getRect());
+    }
 
     sf::Vector2f movement;
     if (currDir == DIRS::DOWN)
@@ -123,6 +176,4 @@ void Ghost::update(float deltaTime, std::array<std::array<CELL, MAP_WIDTH>, MAP_
         
     }
 
-    anim[currDir].update(deltaTime);
-    body.setTextureRect(anim[currDir].getRect());
 }

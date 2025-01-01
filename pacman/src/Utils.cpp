@@ -64,16 +64,26 @@ bool checkNoWallCollision(float i, float j, std::array<std::array<CELL, MAP_WIDT
     }
 }
 
-sf::Vector2f snap2Grid(sf::Vector2f pos, float alignTol) {
-    float topLeftX {std::round(pos.x / CELL_SIZE) * CELL_SIZE};
-    float topLeftY {std::round(pos.y / CELL_SIZE) * CELL_SIZE};
+sf::Vector2f snap2Grid(const sf::Vector2f &pos, float alignTol) {
+    // Get 4 coords
+    float leftX {std::round(pos.x / CELL_SIZE) * CELL_SIZE}; 
+    float topY {std::round(pos.y / CELL_SIZE) * CELL_SIZE};
+    float rightX {leftX + CELL_SIZE}, bottomY {topY + CELL_SIZE};
 
-    if (std::abs(pos.x - topLeftX) / CELL_SIZE <= alignTol)
-        pos.x = topLeftX;
-    if (std::abs(pos.y - topLeftY) / CELL_SIZE <= alignTol)
-        pos.y = topLeftY;
+    // Check cell with most overlap
+    std::vector<sf::Vector2f> candidates {{leftX, topY}, {rightX, topY}, {leftX, bottomY}, {rightX, bottomY}};
+    float bestDelta = 1.f;
+    sf::Vector2f bestPos {pos};
+    for (sf::Vector2f &candidate: candidates) {
+        float deltaArea {std::abs(pos.x - candidate.x) * std::abs(pos.y - candidate.y)};
+        float delta {deltaArea / (CELL_SIZE * CELL_SIZE)};
+        if (delta < alignTol && delta < bestDelta) {
+            bestPos = candidate;
+            bestDelta = delta;
+        }
+    }
 
-    return pos;
+    return bestPos;
 }
 
 std::pair<std::size_t, std::size_t> travel(std::size_t cx, std::size_t cy, DIRS dir, int steps) {

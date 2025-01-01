@@ -1,38 +1,39 @@
 #pragma once
 
+#include <random>
 #include <vector>
 
 #include "Constants.hpp"
+#include "Sprites.hpp"
 
 // Forward Decl
 class Ghost; class Pacman;
 
 class Strategy {
     protected:
-        Ghost &ghost;
-        std::array<std::array<CELL, MAP_WIDTH>, MAP_HEIGHT> &map;
-        std::vector<std::tuple<std::size_t, std::size_t, DIRS>> getNeighbouringCells();
+        Ghost* ghost;
+        std::vector<std::tuple<std::size_t, std::size_t, DIRS>> getNeighbouringCells(MAP &map);
 
     public:
         virtual ~Strategy() = default;
-        Strategy(std::array<std::array<CELL, MAP_WIDTH>, MAP_HEIGHT> &map, Ghost &ghost);
-        virtual DIRS getNext() = 0;
+        void setGhost(Ghost *ghost);
+        virtual DIRS getNext(MAP &map, Pacman &pacman, GHOSTS &ghosts) = 0;
 };
 
 class Shadow: public Strategy {
-    private:
-        Pacman &pacman;
-
     public:
-        Shadow(std::array<std::array<CELL, MAP_WIDTH>, MAP_HEIGHT> &map, Ghost &ghost, Pacman &pacman);
-        DIRS getNext() override;
+        DIRS getNext(MAP &map, Pacman &pacman, GHOSTS &ghosts) override;
 };
 
 class Ambush: public Strategy {
+    public:
+        DIRS getNext(MAP &map, Pacman &pacman, GHOSTS &ghosts) override;
+};
+
+class Fright: public Strategy {
     private:
-        Pacman &pacman;
+        std::mt19937 RANDOM_GEN{ std::random_device{}() };
 
     public:
-        Ambush(std::array<std::array<CELL, MAP_WIDTH>, MAP_HEIGHT> &map, Ghost &ghost, Pacman &pacman);
-        DIRS getNext() override;
+        DIRS getNext(MAP &map, Pacman &pacman, GHOSTS &ghosts) override;
 };

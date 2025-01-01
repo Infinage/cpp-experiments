@@ -14,11 +14,13 @@ class Pacman: public BaseSprite {
     private:
         std::unordered_map<DIRS, Animation> anim;
         DIRS currDir;
+        float powerUpTimer{0};
 
     public:
         Pacman(const char* SPRITE_FILE, unsigned int rows, unsigned int cols, float speed = 1.f);
-        void update(float deltaTime, std::array<std::array<CELL, MAP_WIDTH>, MAP_HEIGHT> &map);
+        void update(float deltaTime, MAP &map);
         DIRS getDir() const;
+        bool isPoweredUp() const;
 };
 
 class Wall: public BaseSprite {
@@ -37,14 +39,21 @@ class Ghost: public BaseSprite {
 
     private:
         std::unordered_map<DIRS, Animation> anim;
+        sf::Texture &frightTexture;
+        Animation& frightAnimation;
         std::unique_ptr<Strategy> chaseStrategy;
+        std::unique_ptr<Strategy> frightStrategy;
         MODE currMode {CHASE};
         DIRS currDir{DIRS::LEFT};
 
     public:
-        Ghost(const char* SPRITE_FILE, unsigned int rows, unsigned int cols, float speed = 1.f);
-        void update(float deltaTime, std::array<std::array<CELL, MAP_WIDTH>, MAP_HEIGHT> &map, Pacman &pacman);
-        bool shouldChangeDir(std::array<std::array<CELL, MAP_WIDTH>, MAP_HEIGHT> &map) const;
+        Ghost(
+            const char* SPRITE_FILE, unsigned int rows, unsigned int cols,
+            sf::Texture &frightTexture, Animation& frightAnimation, float speed = GHOST_SPEED
+        );
+        void update(float deltaTime, MAP &map, GHOSTS &ghosts, Pacman &pacman);
+        bool shouldChangeDir(MAP &map) const;
         void setChaseStrategy(std::unique_ptr<Strategy> strategy);
+        void setFrightStrategy(std::unique_ptr<Strategy> strategy);
         DIRS getDir() const;
 };

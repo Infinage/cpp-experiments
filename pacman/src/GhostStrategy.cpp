@@ -1,17 +1,19 @@
 #include <cmath>
 #include <limits>
+#include <random>
 #include <tuple>
 #include <vector>
 
 #include "../include/GhostStrategy.hpp"
 #include "../include/Utils.hpp"
 
-Strategy::Strategy(std::array<std::array<CELL, MAP_WIDTH>, MAP_HEIGHT> &map, Ghost &ghost)
-    : ghost(ghost), map(map) {}
+void Strategy::setGhost(Ghost* ghost) {
+    this->ghost = ghost;
+}
 
-std::vector<std::tuple<std::size_t, std::size_t, DIRS>> Strategy::getNeighbouringCells() {
+std::vector<std::tuple<std::size_t, std::size_t, DIRS>> Strategy::getNeighbouringCells(MAP &map) {
     // Insert dir in order of priority - UP, LEFT, DOWN
-    auto [cx, cy] {ghost.getPosition()};
+    auto [cx, cy] {ghost->getPosition()};
     std::vector<std::tuple<std::size_t, std::size_t, DIRS>> dirs;
 
     if (cy > 0 && map[cy - 1][cx] != CELL::WALL)
@@ -29,14 +31,11 @@ std::vector<std::tuple<std::size_t, std::size_t, DIRS>> Strategy::getNeighbourin
     return dirs;
 }
 
-Shadow::Shadow(std::array<std::array<CELL, MAP_WIDTH>, MAP_HEIGHT> &map, Ghost &ghost, Pacman &pacman)
-    : Strategy(map, ghost), pacman(pacman) {}
-
-DIRS Shadow::getNext() {
+DIRS Shadow::getNext(MAP &map, Pacman &pacman, GHOSTS&) {
     std::pair<std::size_t, std::size_t> targetTile {pacman.getPosition()};
-    DIRS currDir {ghost.getDir()}, minDir{revDirs.at(ghost.getDir())}; 
+    DIRS currDir {ghost->getDir()}; DIRS minDir{revDirs.at(currDir)}; 
     double minDist {std::numeric_limits<double>::max()};
-    for (auto [cx, cy, dir]: getNeighbouringCells()) {
+    for (auto [cx, cy, dir]: getNeighbouringCells(map)) {
         double dist {eDist({cx, cy}, targetTile)};
         if (dist < minDist && dir != revDirs.at(currDir)) {
             minDist = dist;
@@ -47,17 +46,14 @@ DIRS Shadow::getNext() {
     return minDir;
 }
 
-Ambush::Ambush(std::array<std::array<CELL, MAP_WIDTH>, MAP_HEIGHT> &map, Ghost &ghost, Pacman &pacman)
-    : Strategy(map, ghost), pacman(pacman) {}
-
-DIRS Ambush::getNext() {
+DIRS Ambush::getNext(MAP &map, Pacman &pacman, GHOSTS&) {
     // Project pacman direction by 4 steps
     auto [tx, ty] {pacman.getPosition()};
     auto [nx, ny] {travel(tx, ty, pacman.getDir(), 4)};
 
-    DIRS currDir {ghost.getDir()}, minDir{revDirs.at(ghost.getDir())}; 
+    DIRS currDir {ghost->getDir()}; DIRS minDir{revDirs.at(currDir)}; 
     double minDist {std::numeric_limits<double>::max()};
-    for (auto [cx, cy, dir]: getNeighbouringCells()) {
+    for (auto [cx, cy, dir]: getNeighbouringCells(map)) {
         double dist {eDist({cx, cy}, {nx, ny})};
         if (dist < minDist && dir != revDirs.at(currDir)) {
             minDist = dist;
@@ -66,4 +62,15 @@ DIRS Ambush::getNext() {
     }
 
     return minDir;
+}
+
+DIRS Fright::getNext(MAP &map, Pacman&, GHOSTS&) {
+    // Random dir at each intersection
+    std::vector<std::tuple<std::size_t, std::size_t, DIRS>> neighbours {getNeighbouringCells(map)};
+    if (neighbours.empty()) return ghost->getDir();
+    else {
+        std::uniform_int_distribution<std::size_t> dist(0, neighbours.size() - 1);
+        std::size_t rand_idx {dist(RANDOM_GEN)};
+        return std::get<2>(neighbours[rand_idx]);
+    }
 }
