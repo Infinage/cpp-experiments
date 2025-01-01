@@ -17,8 +17,8 @@ void GhostManager::update(float deltaTime) {
             currTimer = prevTimer;
         }
 
-        for (std::size_t i{0}; i < ghosts.size(); i++)
-            ghosts[i]->setMode(currState);
+        for (Ghost *ghost: ghosts)
+            ghost->setMode(currState);
     }
 }
 
@@ -26,6 +26,7 @@ void GhostManager::frightenGhosts() {
     prevTimer = currTimer; prevState = currState;
     currTimer = PACMAN_POWER_UP_TIME;
     currState = Ghost::MODE::FRIGHTENED;
-    for (std::size_t i{0}; i < ghosts.size(); i++)
-        ghosts[i]->setMode(currState);
+
+    for (Ghost *ghost: ghosts)
+        ghost->setMode(currState);
 }

@@ -28,9 +28,13 @@ constexpr const char* PACMAN_SPRITE_FILE {"assets/pacman.png"};
 
 constexpr const char* BLINKY_SPRITE_FILE {"assets/blinky.png"};
 constexpr const char* PINKY_SPRITE_FILE {"assets/pinky.png"};
+constexpr const char* INKY_SPRITE_FILE {"assets/inky.png"};
+constexpr const char* CLYDE_SPRITE_FILE {"assets/clyde.png"};
 
-constexpr const std::pair<std::size_t, std::size_t> BLINKY_SCATTER_TARGET {std::make_pair(MAP_WIDTH, 0)};
+constexpr const std::pair<std::size_t, std::size_t> BLINKY_SCATTER_TARGET {std::make_pair(MAP_WIDTH - 1, 0)};
 constexpr const std::pair<std::size_t, std::size_t> PINKY_SCATTER_TARGET {std::make_pair(0, 0)};
+constexpr const std::pair<std::size_t, std::size_t> INKY_SCATTER_TARGET {std::make_pair(MAP_WIDTH - 1, MAP_HEIGHT - 1)};
+constexpr const std::pair<std::size_t, std::size_t> CLYDE_SCATTER_TARGET {std::make_pair(0, MAP_HEIGHT - 1)};
 
 constexpr const char* FOOD_SPRITE_FILE {"assets/food.png"};
 constexpr const char* WALL_SPRITE_FILE {"assets/wall.png"};
@@ -39,7 +43,7 @@ enum DIRS {UP=0, RIGHT=1, DOWN=2, LEFT=3};
 enum CELL {WALL, PELLET, ENERGIZER, EMPTY};
 
 using MAP = std::array<std::array<CELL, MAP_WIDTH>, MAP_HEIGHT>;
-using GHOSTS = std::array<Ghost*, 2>;
+using GHOSTS = std::array<Ghost*, 3>;
 
 const std::unordered_map<DIRS, DIRS> revDirs {
     {  DIRS::UP,  DIRS::DOWN}, { DIRS::DOWN,   DIRS::UP}, 

@@ -25,7 +25,7 @@ std::array<std::array<CELL, MAP_WIDTH>, MAP_HEIGHT> getMap() {
 
 bool renderWorld(
     std::array<std::array<CELL, MAP_WIDTH>, MAP_HEIGHT> &map, sf::RenderWindow &window, 
-    Pacman &pacman, Ghost &blinky, Ghost &pinky, Wall &wall, Food &food
+    Pacman &pacman, GHOSTS &ghosts, Wall &wall, Food &food
 ) {
     bool pelletExists {false};
     for (std::size_t i {0}; i < MAP_HEIGHT; i++) {
@@ -47,8 +47,11 @@ bool renderWorld(
     }
 
     pacman.draw(window);
-    blinky.draw(window);
-    pinky.draw(window);
+
+    // Draw the ghosts
+    for (Ghost *ghost: ghosts)
+        ghost->draw(window);
+
     return pelletExists;
 }
 
@@ -116,4 +119,10 @@ double eDist(const std::pair<std::size_t, std::size_t> &curr, const std::pair<st
     int dx { static_cast<int>(curr.first) -  static_cast<int>(target.first)};
     int dy {static_cast<int>(curr.second) - static_cast<int>(target.second)};
     return std::sqrt(dx * dx + dy * dy); 
+}
+
+int mDist(const std::pair<std::size_t, std::size_t> &curr, const std::pair<std::size_t, std::size_t> &target) {
+    int dx { static_cast<int>(curr.first) -  static_cast<int>(target.first)};
+    int dy {static_cast<int>(curr.second) - static_cast<int>(target.second)};
+    return std::abs(dx) + std::abs(dy);
 }

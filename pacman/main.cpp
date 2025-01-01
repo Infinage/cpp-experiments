@@ -50,8 +50,15 @@ int main() {
     pinky.setFrightStrategy(std::make_unique<Fright>());
     pinky.setScatterStrategy(std::make_unique<Scatter>(PINKY_SCATTER_TARGET));
 
+    // Clyde - Orange ghost
+    Ghost clyde{CLYDE_SPRITE_FILE, 1, 8, frightTexture, frightAnimation};
+    clyde.setPosition(9, 10);
+    clyde.setChaseStrategy(std::make_unique<Fickle>(CLYDE_SCATTER_TARGET));
+    clyde.setFrightStrategy(std::make_unique<Fright>());
+    clyde.setScatterStrategy(std::make_unique<Scatter>(CLYDE_SCATTER_TARGET));
+
     // Ghosts Array & Manager
-    GHOSTS ghosts = {&blinky, &pinky};
+    GHOSTS ghosts = {&blinky, &pinky, &clyde};
     GhostManager ghostManager{ghosts, map};
 
     sf::Clock clk;
@@ -80,14 +87,12 @@ int main() {
         pacman.update(deltaTime, map, ghostManager);
 
         // Move Ghosts
-        blinky.update(deltaTime, map, ghosts, pacman);
-        pinky.update(deltaTime, map, ghosts, pacman);
-
-        // Update the manager with the deltatime
+        for (Ghost *ghost: ghosts)
+            ghost->update(deltaTime, map, ghosts, pacman);
 
         // Draw the elements
         window.clear();
-        pelletExists = renderWorld(map, window, pacman, blinky, pinky, wall, food);
+        pelletExists = renderWorld(map, window, pacman, ghosts, wall, food);
         window.display();
     }
 

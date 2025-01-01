@@ -1,4 +1,5 @@
 #include <cmath>
+#include <iostream>
 #include <limits>
 #include <random>
 #include <tuple>
@@ -85,6 +86,39 @@ DIRS Scatter::getNext(MAP &map, Pacman&, GHOSTS&) {
     double minDist {std::numeric_limits<double>::max()};
     for (auto [cx, cy, dir]: getNeighbouringCells(map)) {
         double dist {eDist({cx, cy}, {nx, ny})};
+        if (dist < minDist && dir != revDirs.at(currDir)) {
+            minDist = dist;
+            minDir = dir;
+        }
+    }
+
+    // DEBUG
+    if (ny == MAP_HEIGHT - 1) {
+        std::cout << "Dist: " << minDist << "; Dir: " << minDir << "\n";
+    }
+
+    return minDir;
+}
+
+Fickle::Fickle(const std::pair<std::size_t, std::size_t> &target): targetTile(target) {}
+
+DIRS Fickle::getNext(MAP &map, Pacman &pacman, GHOSTS&) {
+    // Get fixed target, pacman dist and ghost's distance
+    auto [tx, ty] {targetTile};
+    auto [px, py] {pacman.getPosition()};
+    auto [gx, gy] {ghost->getPosition()};
+
+    // Compute distance from pacman and decide accordingly
+    double dist {static_cast<double>(mDist({gx, gy}, {px, py}))};
+    std::size_t nx, ny;
+    if (dist <= 8) { nx = tx; ny = ty; } 
+    else { nx = px; ny = py; }
+
+    // Compute the best dir to travel in
+    DIRS currDir {ghost->getDir()}; DIRS minDir{revDirs.at(currDir)}; 
+    double minDist {std::numeric_limits<double>::max()};
+    for (auto [cx, cy, dir]: getNeighbouringCells(map)) {
+        dist = eDist({cx, cy}, {nx, ny});
         if (dist < minDist && dir != revDirs.at(currDir)) {
             minDist = dist;
             minDir = dir;

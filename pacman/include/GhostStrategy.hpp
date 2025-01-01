@@ -46,3 +46,12 @@ class Scatter: public Strategy {
         Scatter(const std::pair<std::size_t, std::size_t> &target);
         DIRS getNext(MAP &map, Pacman &pacman, GHOSTS &ghosts) override;
 };
+
+class Fickle: public Strategy {
+    private:
+        std::pair<std::size_t, std::size_t> targetTile; 
+
+    public:
+        Fickle(const std::pair<std::size_t, std::size_t> &target);
+        DIRS getNext(MAP &map, Pacman &pacman, GHOSTS &ghosts) override;
+};
