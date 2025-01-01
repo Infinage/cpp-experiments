@@ -37,3 +37,12 @@ class Fright: public Strategy {
     public:
         DIRS getNext(MAP &map, Pacman &pacman, GHOSTS &ghosts) override;
 };
+
+class Scatter: public Strategy {
+    private:
+        std::pair<std::size_t, std::size_t> targetTile; 
+
+    public:
+        Scatter(const std::pair<std::size_t, std::size_t> &target);
+        DIRS getNext(MAP &map, Pacman &pacman, GHOSTS &ghosts) override;
+};

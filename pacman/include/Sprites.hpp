@@ -8,20 +8,9 @@
 #include "Animation.hpp"
 
 // Forward Decl
-class Strategy;
+class Strategy; class GhostManager;
 
-class Pacman: public BaseSprite {
-    private:
-        std::unordered_map<DIRS, Animation> anim;
-        DIRS currDir;
-        float powerUpTimer{0};
-
-    public:
-        Pacman(const char* SPRITE_FILE, unsigned int rows, unsigned int cols, float speed = 1.f);
-        void update(float deltaTime, MAP &map);
-        DIRS getDir() const;
-        bool isPoweredUp() const;
-};
+// ************* MISC SPRITES  ************* //
 
 class Wall: public BaseSprite {
     public:
@@ -33,6 +22,21 @@ class Food: public BaseSprite {
         Food(const char* SPRITE_FILE, unsigned int rows, unsigned int cols);
 };
 
+// ************* PACMAN SPRITE  ************* //
+
+class Pacman: public BaseSprite {
+    private:
+        std::unordered_map<DIRS, Animation> anim;
+        DIRS currDir;
+
+    public:
+        Pacman(const char* SPRITE_FILE, unsigned int rows, unsigned int cols, float speed = 1.f);
+        void update(float deltaTime, MAP &map, GhostManager &ghostManager);
+        DIRS getDir() const;
+};
+
+// ************* GHOST SPRITE  ************* //
+
 class Ghost: public BaseSprite {
     public:
         enum MODE {CHASE, SCATTER, FRIGHTENED};
@@ -43,7 +47,8 @@ class Ghost: public BaseSprite {
         Animation& frightAnimation;
         std::unique_ptr<Strategy> chaseStrategy;
         std::unique_ptr<Strategy> frightStrategy;
-        MODE currMode {CHASE};
+        std::unique_ptr<Strategy> scatterStrategy;
+        MODE currMode {SCATTER};
         DIRS currDir{DIRS::LEFT};
 
     public:
@@ -53,7 +58,9 @@ class Ghost: public BaseSprite {
         );
         void update(float deltaTime, MAP &map, GHOSTS &ghosts, Pacman &pacman);
         bool shouldChangeDir(MAP &map) const;
+        DIRS getDir() const;
         void setChaseStrategy(std::unique_ptr<Strategy> strategy);
         void setFrightStrategy(std::unique_ptr<Strategy> strategy);
-        DIRS getDir() const;
+        void setScatterStrategy(std::unique_ptr<Strategy> strategy);
+        void setMode(MODE mode);
 };

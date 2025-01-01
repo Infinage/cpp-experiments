@@ -14,6 +14,7 @@
 #include "include/Sprites.hpp"
 #include "include/Constants.hpp"
 #include "include/Utils.hpp"
+#include "include/GhostManager.hpp"
 
 int main() {
 
@@ -32,23 +33,26 @@ int main() {
     Pacman pacman{PACMAN_SPRITE_FILE, 4, 2};
     pacman.setPosition(15, 9);
 
-    Ghost blinky{BLINKY_SPRITE_FILE, 1, 8, frightTexture, frightAnimation};
-    blinky.setPosition(7, 9);
-
-    Ghost pinky{PINKY_SPRITE_FILE, 1, 8, frightTexture, frightAnimation};
-    pinky.setPosition(9, 8);
-
     Wall wall{WALL_SPRITE_FILE, 1, 1};
     Food food{FOOD_SPRITE_FILE, 1, 2};
 
-    // Create and set strategies for the ghosts
+    // Blinky - Red ghost
+    Ghost blinky{BLINKY_SPRITE_FILE, 1, 8, frightTexture, frightAnimation};
+    blinky.setPosition(7, 9);
     blinky.setChaseStrategy(std::make_unique<Shadow>());
     blinky.setFrightStrategy(std::make_unique<Fright>());
+    blinky.setScatterStrategy(std::make_unique<Scatter>(BLINKY_SCATTER_TARGET));
+
+    // Pinky - Pink ghost
+    Ghost pinky{PINKY_SPRITE_FILE, 1, 8, frightTexture, frightAnimation};
+    pinky.setPosition(9, 8);
     pinky.setChaseStrategy(std::make_unique<Ambush>());
     pinky.setFrightStrategy(std::make_unique<Fright>());
+    pinky.setScatterStrategy(std::make_unique<Scatter>(PINKY_SCATTER_TARGET));
 
-    // Ghosts Array
-    GHOSTS ghosts = {&blinky, &pinky, nullptr, nullptr};
+    // Ghosts Array & Manager
+    GHOSTS ghosts = {&blinky, &pinky};
+    GhostManager ghostManager{ghosts, map};
 
     sf::Clock clk;
     float deltaTime;
@@ -69,12 +73,17 @@ int main() {
             }
         }
 
+        // Update the ghost manager
+        ghostManager.update(deltaTime);
+
         // Move pacman
-        pacman.update(deltaTime, map);
+        pacman.update(deltaTime, map, ghostManager);
 
         // Move Ghosts
         blinky.update(deltaTime, map, ghosts, pacman);
         pinky.update(deltaTime, map, ghosts, pacman);
+
+        // Update the manager with the deltatime
 
         // Draw the elements
         window.clear();

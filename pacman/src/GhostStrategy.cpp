@@ -74,3 +74,22 @@ DIRS Fright::getNext(MAP &map, Pacman&, GHOSTS&) {
         return std::get<2>(neighbours[rand_idx]);
     }
 }
+
+Scatter::Scatter(const std::pair<std::size_t, std::size_t> &target): targetTile(target) {}
+
+DIRS Scatter::getNext(MAP &map, Pacman&, GHOSTS&) {
+    // Fixed target
+    auto [nx, ny] {targetTile};
+
+    DIRS currDir {ghost->getDir()}; DIRS minDir{revDirs.at(currDir)}; 
+    double minDist {std::numeric_limits<double>::max()};
+    for (auto [cx, cy, dir]: getNeighbouringCells(map)) {
+        double dist {eDist({cx, cy}, {nx, ny})};
+        if (dist < minDist && dir != revDirs.at(currDir)) {
+            minDist = dist;
+            minDir = dir;
+        }
+    }
+
+    return minDir;
+}
