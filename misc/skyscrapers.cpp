@@ -5,14 +5,31 @@
 #include <iomanip>
 #include <iostream>
 #include <istream>
+#include <limits>
 #include <random>
 #include <sstream>
+#include <tuple>
+#include <unordered_map>
 #include <unordered_set>
 #include <utility>
 #include <vector>
 
+/*
+ * If we at any cell we have hint* as 1, we set that to cell value to N (no candidates contenstion)
+ * If a particular value can only occur at a single cell in a particular row / col - assign it that val
+ */
+
 // Random num gen
 std::mt19937 RANDOM_GEN{std::random_device{}()};
+
+struct HashPair {
+    std::size_t operator()(const std::pair<std::size_t, int> &p) const {
+        return p.first * (static_cast<std::size_t>(p.second) * 31);
+    }
+};
+
+using SIZE_T_INT_P = std::pair<std::size_t, int>;
+using SIZE_T_INT_UMAP = std::unordered_map<SIZE_T_INT_P, std::unordered_set<std::size_t>, HashPair>;
 
 // Generate the puzzle
 bool generate(std::vector<std::vector<int>> &grid, std::size_t row, std::size_t col) {
@@ -101,7 +118,7 @@ std::array<std::vector<int>, 4> generateHints(std::vector<std::vector<int>> &gri
     return {top, right, down, left};
 }
 
-std::string print(std::vector<std::vector<int>> &puzzle, std::array<std::vector<int>, 4> &hints, bool pretty = true) {
+std::string print(const std::vector<std::vector<int>> &puzzle, const std::array<std::vector<int>, 4> &hints, bool pretty = true) {
     std::size_t N {puzzle.size()};
     std::vector<int> top{hints[0]}, right{hints[1]}, down{hints[2]}, left{hints[3]};
 
@@ -209,6 +226,22 @@ bool validateRight(const std::vector<std::vector<int>> &grid, const std::array<s
     }
 }
 
+bool validateLeft(const std::vector<std::vector<int>> &grid, const std::array<std::vector<int>, 4> &hints, std::size_t row) {
+    // Look left and try to check if condition holds true
+    int hint {hints[3][row]}, actual {0}, prevMax {0};
+    if (hint == 0) return true;
+    else {
+        for (std::size_t j {0}; j < grid.size(); j++) {
+            if (grid[row][j] > prevMax) {
+                prevMax = grid[row][j];
+                actual++; 
+            }
+        }
+
+        return actual == hint;
+    }
+}
+
 bool validateDown(const std::vector<std::vector<int>> &grid, const std::array<std::vector<int>, 4> &hints, std::size_t col) {
     // Look upwards and try to check if condition holds true
     int hint {hints[2][col]}, actual {0}, prevMax {0};
@@ -241,96 +274,177 @@ bool validateUp(const std::vector<std::vector<int>> &grid, const std::array<std:
     }
 }
 
-std::vector<int> generateCandidates(
+std::tuple<
+SIZE_T_INT_UMAP, SIZE_T_INT_UMAP,
+std::vector<std::vector<std::unordered_set<int>>>
+> generateCandidates(
     const std::vector<std::vector<int>> &grid, 
-    const std::array<std::vector<int>, 4> &hints, 
-    std::size_t row, std::size_t col
+    const std::array<std::vector<int>, 4> & hints
 ) {
-    std::unordered_set<int> invalidCandidates;
-    int  topActual{0},  topHint{hints[0][col]};
-    int leftActual{0}, leftHint{hints[3][row]};
-    int N {static_cast<int>(grid.size())};
 
-    // Eliminate all existing values - row
-    int prevMaxTop{0};
-    for (std::size_t i{0}; i < static_cast<std::size_t>(N); i++) {
-        invalidCandidates.insert(grid[i][col]);
-        if (i < row && grid[i][col] > prevMaxTop) {
-            prevMaxTop = grid[i][col];
-            topActual++;
+    std::size_t N {grid.size()};
+    std::vector<std::vector<std::unordered_set<int>>> candidates(N, std::vector<std::unordered_set<int>>(N));
+
+    // Each inside the puzzle can only be set at a single pos in the row / col
+    // Lets track where those positions are for each cell. This would help us to
+    // take a shortcut of assigning a cell a value if that value can only go to
+    // a particular cell - row or col wise
+    SIZE_T_INT_UMAP rowWise, colWise;
+    for (std::size_t i {0};i < N; i++) {
+        for (int j {1}; j <= static_cast<int>(N); j++) {
+            for (std::size_t pos {0}; pos < N; pos++) {
+                rowWise[{i, j}].insert(pos); 
+                colWise[{i, j}].insert(pos);
+            }
         }
     }
 
-    // Eliminate all existing values - col
-    int prevMaxLeft = 0;
-    for (std::size_t j{0}; j < static_cast<std::size_t>(N); j++) {
-        invalidCandidates.insert(grid[row][j]);
-        if (j < col && grid[row][j] > prevMaxLeft) {
-            prevMaxLeft = grid[row][j];
-            leftActual++;
+    for (std::size_t row {0}; row < N; row++) {
+        for (std::size_t col {0}; col < N; col++) {
+            if (grid[row][col] == 0) {
+                std::unordered_set<int> invalidCandidates;
+                // Eliminate existing values in same row
+                for (std::size_t i{0}; i < N; i++)
+                    if (grid[i][col] != 0)
+                        invalidCandidates.insert(grid[i][col]);
+
+                // Eliminate existing values in same col
+                for (std::size_t j{0}; j < N; j++)
+                    if (grid[row][j] != 0)
+                        invalidCandidates.insert(grid[row][j]);
+
+                // Eliminate using top hint
+                for (int i{static_cast<int>(N) - hints[0][col] + 2 + static_cast<int>(row)}; i <= static_cast<int>(N); i++)
+                    invalidCandidates.insert(i);
+
+                // Eliminate using right hint
+                for (int i{static_cast<int>(N) - hints[1][row] + 2 + static_cast<int>(N - col)}; i <= static_cast<int>(N); i++)
+                    invalidCandidates.insert(i);
+
+                // Eliminate using bottom hint
+                for (int i{static_cast<int>(N) - hints[2][col] + 2 + static_cast<int>(N - row)}; i <= static_cast<int>(N); i++)
+                    invalidCandidates.insert(i);
+
+                // Eliminate using left hint
+                for (int i{static_cast<int>(N) - hints[3][row] + 2 + static_cast<int>(col)}; i <= static_cast<int>(N); i++)
+                    invalidCandidates.insert(i);
+
+                // Only retain candidates that are valid
+                for (int candidate {1}; candidate <= static_cast<int>(N); candidate++) {
+                    if (invalidCandidates.find(candidate) == invalidCandidates.end()) {
+                        candidates[row][col].insert(candidate);
+                    } else {
+                        // Row / Col cannot contain this candidate
+                        rowWise[{row, candidate}].erase(col);
+                        colWise[{col, candidate}].erase(row);
+                    }
+                }
+            } else {
+                rowWise[{row, grid[row][col]}] = {col};
+                colWise[{col, grid[row][col]}] = {row};
+            }
         }
     }
 
-    // Fail early
-    if ((topHint > 0 && topActual > topHint) || (leftHint > 0 && leftActual > leftHint))
-        return {};
-
-    // When Hint equals Actual, we can no longer insert values greater than prevMax
-    if (topHint > 0 && topHint == topActual) {
-        for (int i {prevMaxTop + 1}; i <= N; i++)
-            invalidCandidates.insert(i);
+    // Update candidates if it can only be written to a single cell in a row / col
+    for (const std::pair<const SIZE_T_INT_P, std::unordered_set<std::size_t>> &p: rowWise) {
+        std::size_t row; int candidate;
+        std::tie(row, candidate) = p.first;
+        if (p.second.size() == 1) {
+            candidates[row][*p.second.begin()] = {candidate};
+            for (std::size_t i {0}; i < N; i++)
+                colWise[{i, candidate}].erase(row);
+        }
     }
-    if (leftHint > 0 && leftHint == leftActual) {
-        for (int i {prevMaxLeft + 1}; i <= N; i++)
-            invalidCandidates.insert(i);
+    for (const std::pair<const SIZE_T_INT_P, std::unordered_set<std::size_t>> &p: colWise) {
+        std::size_t col; int candidate;
+        std::tie(col, candidate) = p.first;
+        if (p.second.size() == 1) {
+            candidates[*p.second.begin()][col] = {candidate};
+            for (std::size_t i {0}; i < N; i++)
+                rowWise[{i, candidate}].erase(col);
+        }
     }
 
-    // Eliminate invalid candidates based on hints
-    for (int i {N - topHint + topActual + 2}; i <= N; i++)
-        invalidCandidates.insert(i);
-    for (int i {N - leftHint + leftActual + 2}; i <= N; i++)
-        invalidCandidates.insert(i);
-
-    // Return only valid candidates
-    std::vector<int> validCandidates;
-    for (int i {N}; i > 0; i--)
-        if (invalidCandidates.find(i) == invalidCandidates.end())
-        validCandidates.push_back(i);
-
-    return validCandidates;
+    return {rowWise, colWise, candidates};
 }
 
-bool solve(std::vector<std::vector<int>> &grid, const std::array<std::vector<int>, 4> &hints, std::size_t row, std::size_t col) {
-    std::size_t N {grid.size()}; 
-    if (row == N) {
-        return true;
-    } else if (col == N) {
-        return validateRight(grid, hints, row) && solve(grid, hints, row + 1, 0);
-    } else if (grid[row][col] != 0) {
-        bool checks {true};
-        if (row == N - 1) {
-            checks &= validateDown(grid, hints, col);
-            checks &= validateUp(grid, hints, col);
+bool solve(
+    std::vector<std::vector<int>> &grid, const std::array<std::vector<int>, 4> &hints, 
+    std::vector<std::vector<std::unordered_set<int>>> &candidates
+) {
+    std::size_t N {grid.size()}, minRow, minCol; 
+    std::size_t minCandidates {std::numeric_limits<std::size_t>::max()};
+
+    // Pick the cell with min candidates for faster pruning
+    for (std::size_t row {0}; row < N; row++) {
+        for (std::size_t col {0}; col < N; col++) {
+            std::size_t numCandidates {candidates[row][col].size()};
+            if (grid[row][col] == 0 && numCandidates == 0) return false;
+            else if (grid[row][col] == 0 && numCandidates < minCandidates) {
+                minCandidates = numCandidates;
+                minRow = row; minCol = col;
+            }
         }
-        return checks && solve(grid, hints, row, col + 1);
-    } else {
-        std::vector<int> candidates{generateCandidates(grid, hints, row, col)};
-        while(!candidates.empty()) {
-             int candidate {candidates.back()};
-             candidates.pop_back();
-             grid[row][col] = candidate;
-             if ((row < N - 1 || validateDown(grid, hints, col)) && solve(grid, hints, row, col + 1))
-                 return true;
+    }
+
+    // Return true if all solved
+    if (minCandidates == std::numeric_limits<std::size_t>::max())
+        return true;
+
+    // Next step
+    std::unordered_set<int> tempCandidates {candidates[minRow][minCol]};
+    for (int candidate: tempCandidates) {
+
+        // We store the removed candidates to restore later
+        std::vector<std::pair<std::size_t, std::size_t>> removedFromCandidates;
+
+        grid[minRow][minCol] = candidate;
+        candidates[minRow][minCol].erase(candidate);
+
+        // Remove candidates from affected cells - store to revert back on fail
+        bool allCellsHaveCandidates {true}, rowHintOkay {true}, colHintOkay {true}; 
+        std::size_t rowFilled {0}, colFilled {0};
+        for (std::size_t i{0}; i < N; i++) { // Going downwards
+            std::unordered_set<int> &cellCandidates {candidates[i][minCol]};
+            if (grid[i][minCol] != 0) colFilled++;
+            else if (cellCandidates.find(candidate) != cellCandidates.end()) {
+                cellCandidates.erase(candidate);
+                removedFromCandidates.push_back({i, minCol});
+                allCellsHaveCandidates &= !cellCandidates.empty();
+            }
+        }
+        for (std::size_t j{0}; j < N; j++) { // Going rightwards
+            std::unordered_set<int> &cellCandidates {candidates[minRow][j]};
+            if (grid[minRow][j] != 0) rowFilled++;
+            else if (cellCandidates.find(candidate) != cellCandidates.end()) {
+                cellCandidates.erase(candidate);
+                removedFromCandidates.push_back({minRow, j});
+                allCellsHaveCandidates &= !cellCandidates.empty();
+            }
         }
 
-        grid[row][col] = 0;
-        return false;
+        // Ensure row / col hints are okay
+        rowHintOkay = rowFilled < N || (validateLeft(grid, hints, minRow) && validateRight(grid, hints, minRow));
+        colHintOkay = colFilled < N || (validateUp(grid, hints, minCol) && validateDown(grid, hints, minCol));
+
+        if (allCellsHaveCandidates && rowHintOkay && colHintOkay && solve(grid, hints, candidates))
+            return true;
+
+        // Revert changes
+        candidates[minRow][minCol] = tempCandidates;
+        grid[minRow][minCol] = 0;
+        for (auto [i, j]: removedFromCandidates)
+            candidates[i][j].insert(candidate);
     }
+
+    return false;
 }
 
 int main(int argc, char** argv) {
-    if (argc != 2 || (std::strcmp(argv[1], "generate") != 0 && std::strcmp(argv[1], "solve") != 0))
+    if (argc != 2 || (std::strcmp(argv[1], "generate") != 0 && std::strcmp(argv[1], "solve") != 0)) {
         std::cout << "Usage: `echo <N> | skyscrapers generate` (OR) `skyscrapers solve < <file.txt>`\n";
+    }
 
     else if (std::strcmp(argv[1], "generate") == 0) {
         std::size_t N;
@@ -342,8 +456,12 @@ int main(int argc, char** argv) {
     }
 
     else {
-        auto [puzzle, hints] = read(std::cin);
-        bool status {solve(puzzle, hints, 0, 0)};
+        std::pair<std::vector<std::vector<int>>, std::array<std::vector<int>, 4>> inputResult {read(std::cin)};
+        auto [puzzle, hints] {inputResult};
+        SIZE_T_INT_UMAP rowWise, colWise;
+        std::vector<std::vector<std::unordered_set<int>>> candidates;
+        std::tie(rowWise, colWise, candidates) = generateCandidates(puzzle, hints);
+        bool status {solve(puzzle, hints, candidates)};
         if (!status) { std::cerr << "Invalid board.\n"; return 1; }
         std::cout << print(puzzle, hints, true);
     }
