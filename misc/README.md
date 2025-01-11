@@ -81,6 +81,47 @@ Encode a message from a text file into a barcode:
 ./convert output.pbm output.png
 ```
 
+## Skyscrapers
+
+A CLI puzzle game generator and solver based on the popular Skyscrapers logic puzzle. The program can generate new puzzles, verify puzzle solutions, and solve given puzzles.
+
+### Usage
+
+- Generate a Skyscrapers puzzle: Run the program with the desired grid size as an argument.
+```
+echo 5 | ./skyscrapers generate
+```
+
+- Solve a Skyscrapers puzzle: Provide a text file containing the puzzle definition.
+```
+./skyscrapers solve < puzzle.txt
+```
+
+### Input file format
+
+- The corners represent the puzzle size.
+- Clues are positioned around the edges of the grid (top, right, bottom, left), with 0 indicating no clue.
+- 0 inside the grid denotes empty cells to be filled.
+
+#### Sample puzzle
+
+```
+8 0 0 0 3 3 4 0 3 8
+0 0 0 0 0 0 0 0 0 3
+3 0 0 3 0 0 0 0 0 0
+4 0 0 0 0 0 3 0 5 0
+0 3 0 0 0 6 0 0 0 5
+2 0 0 0 0 0 0 0 1 4
+0 4 5 0 0 0 0 0 0 0
+3 0 0 0 0 5 0 4 0 0
+0 0 0 0 0 0 0 0 3 0
+8 2 0 1 0 4 0 4 3 8
+```
+
+Puzzle size: The corners (8 at the top-left and bottom-right) indicate the grid is 8x8.
+Clues: The first and last rows/columns around the grid specify how many skyscrapers are visible from that direction.
+Grid content: 0 represents blank cells to be filled with skyscraper heights.
+
 ## Build Instructions
 
 To build the project, use the provided `Makefile`. It will create both debug and release versions of the executables.
