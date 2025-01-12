@@ -7,6 +7,7 @@
 #include <iostream>
 #include <istream>
 #include <ostream>
+#include <sstream>
 #include <string>
 #include <system_error>
 
@@ -24,22 +25,17 @@ const std::string helpMessage {
     "writing to OUTPUT (or standard output).\n\n"
     "With no options, matching lines are merged to the first occurrence.\n\n"
     "Mandatory arguments to long options are mandatory for short options too.\n"
-    "  -c, --count           prefix lines by the number of occurrences\n"
-    "  -d, --repeated        only print duplicate lines, one for each group\n"
-    "  -D                    print all duplicate lines\n"
-    "      --all-repeated[=METHOD]  like -D, but allow separating groups\n"
-    "                                 with an empty line;\n"
-    "                                 METHOD={none(default),prepend,separate}\n"
-    "  -f, --skip-fields=N   avoid comparing the first N fields\n"
-    "      --group[=METHOD]  show all items, separating groups with an empty line;\n"
-    "                          METHOD={separate(default),prepend,append,both}\n"
-    "  -i, --ignore-case     ignore differences in case when comparing\n"
-    "  -s, --skip-chars=N    avoid comparing the first N characters\n"
-    "  -u, --unique          only print unique lines\n"
-    "  -z, --zero-terminated     line delimiter is NUL, not newline\n"
-    "  -w, --check-chars=N   compare no more than N characters in lines\n"
-    "      --help        display this help and exit\n"
-    "      --version     output version information and exit\n\n"
+    "  -c, --count             prefix lines by the number of occurrences\n"
+    "  -d, --repeated          only print duplicate lines, one for each group\n"
+    "  -D  --all-repeated      print all duplicate lines\n"
+    "  -f, --skip-fields=N     avoid comparing the first N fields\n"
+    "  -h, --help              display this help and exit\n"
+    "  -i, --ignore-case       ignore differences in case when comparing\n"
+    "  -s, --skip-chars=N      avoid comparing the first N characters\n"
+    "  -u, --unique            only print unique lines\n"
+    "  -v, --version           output version information and exit\n"
+    "  -w, --check-chars=N     compare no more than N characters in lines\n"
+    "  -z, --zero-terminated   line delimiter is NUL, not newline\n\n"
     "A field is a run of blanks (usually spaces and/or TABs), then non-blank\n"
     "characters.  Fields are skipped before chars.\n"
 };
@@ -49,7 +45,17 @@ int main(int argc, char **argv) {
     std::string ifname, ofname;
     bool countFlag {false}, repeatFlag {false}; 
     bool uniqueFlag {false}, ignoreCase {false};
-    int compareChars {-1}, skipChars {0};
+    bool allRepeated {false}, zeroTerminated {false};
+    int compareChars {-1}, skipChars {0}, skipFields {0};
+
+    // Helper to parse an int from a string - throw err on fail
+    std::function<void(std::string&, int&)> parseInt {[](std::string &charStr, int &result) {
+        std::from_chars_result validInt {std::from_chars(charStr.data(), charStr.data() + charStr.size(), result)};
+        if(validInt.ec != std::errc{} || validInt.ptr != charStr.data() + charStr.size()) {
+            std::cerr << "cuniq: " << charStr << " invalid number of bytes to compare\n";
+            std::exit(1);
+        }
+    }};
 
     int i {1};
     while (i < argc) {
@@ -66,13 +72,17 @@ int main(int argc, char **argv) {
             std::exit(0);
         } else if (arg == "-u" || arg == "--unique") {
             uniqueFlag = true;
+        } else if (arg == "-z" || arg == "--zero-terminated") {
+            zeroTerminated = true;
         } else if (arg == "-i" || arg == "--ignore-case") {
             ignoreCase = true;
+        } else if (arg == "-D" || arg == "--all-repeated") {
+            allRepeated = true;
         } else if (arg == "-w" || arg.starts_with("--check-chars")) {
             std::string compareCharsStr;
-
             if (arg == "-w" || arg == "--check-chars") {
-                compareCharsStr = argv[++i];
+                if (i + 1 < argc) compareCharsStr = argv[++i];
+                else { std::cerr << "cuniq: option requires an argument -- 'w'\n"; std::exit(1); }
             } else if (arg.size() >= 14 && arg.at(13) == '=') {
                 compareCharsStr = arg.substr(14);
             } else {
@@ -80,17 +90,14 @@ int main(int argc, char **argv) {
                 std::exit(1);
             }
 
-            // Check if compareCharsStr is valid
-            std::from_chars_result validInt {std::from_chars(compareCharsStr.data(), compareCharsStr.data() + compareCharsStr.size(), compareChars)};
-            if(validInt.ec != std::errc{} || validInt.ptr != compareCharsStr.data() + compareCharsStr.size()) {
-                std::cerr << "cuniq: " << compareCharsStr << " invalid number of bytes to compare\n";
-                std::exit(1);
-            }
+            // Check if compareCharsStr is valid and store it into compareChars
+            parseInt(compareCharsStr, compareChars);
+
         } else if (arg == "-s" || arg.starts_with("--skip-chars")) {
             std::string skipCharsStr;
-
             if (arg == "-s" || arg == "--skip-chars") {
-                skipCharsStr = argv[++i];
+                if (i + 1 < argc) skipCharsStr = argv[++i];
+                else { std::cerr << "cuniq: option requires an argument -- 's'\n"; std::exit(1); }
             } else if (arg.size() >= 13 && arg.at(12) == '=') {
                 skipCharsStr = arg.substr(13);
             } else {
@@ -98,21 +105,39 @@ int main(int argc, char **argv) {
                 std::exit(1);
             }
 
-            // Check if compareCharsStr is valid
-            std::from_chars_result validInt {std::from_chars(skipCharsStr.data(), skipCharsStr.data() + skipCharsStr.size(), skipChars)};
-            if(validInt.ec != std::errc{} || validInt.ptr != skipCharsStr.data() + skipCharsStr.size()) {
-                std::cerr << "cuniq: " << skipCharsStr << " invalid number of bytes to compare\n";
+            // Check if skipCharsStr is valid and store it into skipChars
+            parseInt(skipCharsStr, skipChars);
+
+        } else if (arg == "-f" || arg.starts_with("--skip-fields")) {
+            std::string skipFieldsStr;
+            if (arg == "-f" || arg == "--skip-fields") {
+                if (i + 1 < argc) skipFieldsStr = argv[++i];
+                else { std::cerr << "cuniq: option requires an argument -- 'f'\n"; std::exit(1); }
+            } else if (arg.size() >= 14 && arg.at(13) == '=') {
+                skipFieldsStr = arg.substr(14);
+            } else {
+                std::cerr << "cuniq: unrecognized option '" << arg << "'\nTry 'cuniq --help for more information.\n'";
                 std::exit(1);
             }
+
+            // Check if skipFieldsStr is valid and store it into skipFields
+            parseInt(skipFieldsStr, skipFields);
+
         } else if (arg.at(0) == '-' && arg.size() > 1) {
             std::cerr << "cuniq: unrecognized option '" << arg << "'\nTry 'cuniq --help for more information.\n'";
             std::exit(1);
-        } else if (ifname.empty()) {
-            ifname = arg;
-        } else {
-            ofname = arg;
-        }
+        } 
+        else if (ifname.empty()) { ifname = arg; } 
+        else { ofname = arg; }
+
         i++;
+    }
+
+    // repeatFlag & countFlag are incompatible
+    if (allRepeated && countFlag) {
+        std::cerr << "cuniq: printing all duplicated lines and repeat counts is meaningless.\n"
+                  << "Try 'cuniq --help' for more information.";
+        std::exit(1);
     }
 
     // Create streams for buffering input / outputs
@@ -124,39 +149,61 @@ int main(int argc, char **argv) {
         std::exit(1);
     }
 
+    std::function<std::string(const std::string&)> tokenizeAndSkipWhitespace {[&skipFields, &zeroTerminated](const std::string &str){
+        std::istringstream iss{str};
+        std::string line, token;
+        for (int i {0}; i < skipFields && iss >> line; i++);
+        std::getline(iss, token, zeroTerminated? '\0': '\n');
+        return token;
+    }};
+
     // Helper function to compare two string based (optionally ignore case)
     std::function<bool(const std::string&, const std::string&)> stringMatch {
-        [&skipChars, &compareChars, &ignoreCase](const std::string &str1, const std::string &str2) {
-            int str1Size {static_cast<int>(str1.size()) - skipChars}, str2Size {static_cast<int>(str2.size()) - skipChars};
-            str1Size = std::max(0, str1Size); str2Size = std::max(0, str2Size);
-            if (compareChars == -1 && str1Size != str2Size) 
-                return false;
-            else if (compareChars != -1 && (std::min(str1Size, compareChars) != std::min(str2Size, compareChars))) 
-                return false;
-            else {
-                int boundedCompareChars {compareChars == -1? str1Size: std::min(str1Size, compareChars)};
-                std::string::const_iterator beg1 {str1.cbegin() + skipChars}, beg2 {str2.cbegin() + skipChars};
-                return std::equal(beg1, beg1 + boundedCompareChars, beg2, [&ignoreCase](const char ch1, const char ch2) { 
-                    return ignoreCase? std::tolower(ch1) == std::tolower(ch2): ch1 == ch2; 
-                });
+        [&skipChars, &compareChars, &ignoreCase, tokenizeAndSkipWhitespace]
+            (const std::string &str1_, const std::string &str2_) {
+                // Skip fields if set
+                std::string str1 {tokenizeAndSkipWhitespace(str1_)}, str2 {tokenizeAndSkipWhitespace(str2_)};
+
+                // Proceed as usual
+                int str1Size {static_cast<int>(str1.size()) - skipChars}, str2Size {static_cast<int>(str2.size()) - skipChars};
+                str1Size = std::max(0, str1Size); str2Size = std::max(0, str2Size);
+                if (compareChars == -1 && str1Size != str2Size) 
+                    return false;
+                else if (compareChars != -1 && (std::min(str1Size, compareChars) != std::min(str2Size, compareChars))) 
+                    return false;
+                else {
+                    int boundedCompareChars {compareChars == -1? str1Size: std::min(str1Size, compareChars)};
+                    std::string::const_iterator beg1 {str1.cbegin() + skipChars}, beg2 {str2.cbegin() + skipChars};
+                    return std::equal(beg1, beg1 + boundedCompareChars, beg2, [&ignoreCase](const char ch1, const char ch2) { 
+                        return ignoreCase? std::tolower(ch1) == std::tolower(ch2): ch1 == ch2; 
+                    });
             }
         }
     };
 
     // Helper function to print based on condition
     std::function<void(std::string&, std::size_t)> print {
-        [op, &repeatFlag, &uniqueFlag, &countFlag](std::string &line, std::size_t count){
-            if (countFlag && (!repeatFlag || count > 1) && (!uniqueFlag || count == 1))
-                *op << std::string(6, ' ') << count << ' ';
-            if ((!repeatFlag || count > 1) && (!uniqueFlag || count == 1))
-                *op << line << "\n";
+        [op, &repeatFlag, &allRepeated, &uniqueFlag, &countFlag, &zeroTerminated] 
+            (std::string &line, std::size_t count) {
+                if (allRepeated) {
+                    if (count > 1) {
+                        for (std::size_t i {0}; i < count; i++)
+                            *op << line << (zeroTerminated? '\0': '\n');
+                    }
+                } else {
+                    if (countFlag && (!repeatFlag || count > 1) && (!uniqueFlag || count == 1))
+                        *op << std::string(6, ' ') << count << ' ';
+
+                    if ((!repeatFlag || count > 1) && (!uniqueFlag || count == 1))
+                        *op << line << (zeroTerminated? '\0': '\n');
+                }
         }
     };
 
     // Main logic to print
     std::size_t count {0};
     std::string line, prevLine;
-    while (std::getline(*inp, line)) {
+    while (std::getline(*inp, line, zeroTerminated? '\0': '\n')) {
         if (count == 0) {
             prevLine = line;
             count = 1;
