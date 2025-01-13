@@ -7,7 +7,7 @@ DEBUG_FLAGS = -ggdb
 RELEASE_FLAGS = -O2
 
 # Find source files
-SOURCES = fc.cpp cdiff.cpp spellcheck.cpp cxxd.cpp
+SOURCES = fc.cpp cdiff.cpp spellcheck.cpp cxxd.cpp cuniq.cpp
 
 # Output for both debug and release
 DEBUG_OUTPUTS = $(patsubst %.cpp, build/%.debug, $(SOURCES))
@@ -49,6 +49,12 @@ $(BUILD_DIR)/cdiff.out: cdiff.cpp | $(BUILD_DIR)
 $(BUILD_DIR)/cxxd.debug: cxxd.cpp | $(BUILD_DIR)
 	$(CXX) $< $(CXXFLAGS) $(DEBUG_FLAGS) -o $@
 $(BUILD_DIR)/cxxd.out: cxxd.cpp | $(BUILD_DIR)
+	$(CXX) $< $(CXXFLAGS) $(RELEASE_FLAGS) -o $@
+
+# Compile cuniq
+$(BUILD_DIR)/cuniq.debug: cuniq.cpp | $(BUILD_DIR)
+	$(CXX) $< $(CXXFLAGS) $(DEBUG_FLAGS) -o $@
+$(BUILD_DIR)/cuniq.out: cuniq.cpp | $(BUILD_DIR)
 	$(CXX) $< $(CXXFLAGS) $(RELEASE_FLAGS) -o $@
 
 # Clean up the project
