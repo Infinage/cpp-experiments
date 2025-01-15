@@ -11,12 +11,12 @@ const getURLCount = async() => {
 const shortenURL = async () => {
   const longUrl = document.getElementById('longUrl').value;
   if (!longUrl.trim()) {
-    alert("Please enter a valid URL.");
+    showNotification("Please enter a valid URL.");
     return; 
   }
 
   try {
-    const response = await fetch('http://localhost:8080/', {
+    const response = await fetch('/', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ url: longUrl })
@@ -27,33 +27,33 @@ const shortenURL = async () => {
     if (data.short_url !== undefined && response.ok) {
       const resultDiv = document.getElementById('result');
       resultDiv.innerHTML = `
-        <span class="url">URL: ${data.short_url}</span>
+        <span class="url">URL${response.status == 201? '*': ''}: ${data.short_url}</span>
         <span class="button" onclick="copyToClipboard('${data.short_url}')">📋</span>
         <span class="button" onclick="deleteURL('${data.key}')">🗑️</span>
       `;
     } else {
-      alert("Error: " + data || "Unable to shorten URL.");
+      showNotification("Error: " + data || "Unable to shorten URL.");
     }
   } 
-  catch (error) { alert("Error: " + error.message); } 
+  catch (error) { showNotification("Error: " + error.message); } 
   finally { getURLCount(); }
 }
 
 const deleteURL = async (shortUrl) => {
   try {
-    const response = await fetch(`http://localhost:8080/${shortUrl}`, { method: 'DELETE' });
+    const response = await fetch(`/${shortUrl}`, { method: 'DELETE' });
 
     if (response.status === 200) {
-      alert("URL deleted successfully!");
+      showNotification("URL deleted successfully!");
       document.getElementById('result').innerHTML = "";
     } else if (response.status === 404) {
-      alert("URL not found!");
+      showNotification("URL not found!");
       document.getElementById('result').innerHTML = "";
     } else {
-      alert("An error occurred while deleting the URL.");
+      showNotification("An error occurred while deleting the URL.");
     }
   } catch (error) {
-    alert("Error: " + error);
+    showNotification("Error: " + error);
   } finally {
     getURLCount();
   }
@@ -62,8 +62,27 @@ const deleteURL = async (shortUrl) => {
 const copyToClipboard = async (text) => {
   try {
     await navigator.clipboard.writeText(text);
-    alert("Copied to clipboard!");
+    showNotification("Copied to clipboard!");
   } catch (error) {
-    alert("Failed to copy: " + err);
+    showNotification("Failed to copy: " + err);
   }
 }
+
+// Hold reference to timeout to support multiple notifications
+let snackbarTimeout;
+
+// Function to show notification 
+const showNotification = (message, delayMS=2500) => {
+    const snackbar = document.getElementById('snackbar');
+    snackbar.innerText = message;
+    snackbar.classList.add("show");
+    clearTimeout(snackbarTimeout);
+    snackbarTimeout = setTimeout(closeNotification, delayMS); 
+};
+
+// Function to hide the snackbar
+const closeNotification = () => {
+    const snackbar = document.getElementById('snackbar');
+    snackbar.innerText = "";
+    snackbar.classList.remove("show");
+};

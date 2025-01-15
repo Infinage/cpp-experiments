@@ -8,6 +8,7 @@ body {
     background-color: #121212;  /* Dark background */
     color: #e0e0e0;  /* Light text color */
 }
+
 .container {
     width: 60vh;
     text-align: center;
@@ -16,11 +17,13 @@ body {
     border-radius: 10px;
     box-shadow: 0 4px 10px rgba(0, 0, 0, 0.5);  /* Slightly darker shadow */
 }
+
 #urlCount sup {
     font-size: 0.4em;
     margin-left: 5px;
     color: #ffab00;  /* Highlighted color for count */
 }
+
 .input-container {
     display: grid;
     grid-template-columns: 1fr auto;
@@ -28,6 +31,7 @@ body {
     align-items: center;
     margin-top: 10px;
 }
+
 input[type="text"] {
     padding: 10px;
     border: 1px solid #555;  /* Darker border */
@@ -35,6 +39,7 @@ input[type="text"] {
     background-color: #333;  /* Dark input field */
     color: #fff;  /* Light text color inside input */
 }
+
 button {
     padding: 10px 20px;
     background: #6200ea;  /* Purple button */
@@ -43,31 +48,80 @@ button {
     border-radius: 5px;
     cursor: pointer;
 }
+
 button:hover {
     background: #3700b3;  /* Darker purple on hover */
 }
+
 .result {
     margin-top: 20px;
     font-size: 16px;
     color: #e0e0e0;  /* Light text color */
 }
+
 .result a {
     color: #bb86fc;  /* Light purple link */
     text-decoration: none;
     cursor: pointer;
 }
+
 .result a:hover {
     text-decoration: underline;
 }
+
 .result span.url {
     font-style: italic;
     color: #b0b0b0;  /* Lighter color for URLs */
 }
+
 .result span.button {
     cursor: pointer; 
     margin-left: 10px;
     color: #bb86fc;  /* Purple button style */
 }
+
 .result span.button:hover {
     color: #3700b3;  /* Darker purple on hover */
+}
+
+#snackbar {
+  visibility: hidden;
+  min-width: 250px;
+  margin-left: -125px;
+  background-color: #333;
+  color: #fff;
+  text-align: center;
+  border-radius: 2px;
+  padding: 16px;
+  position: fixed;
+  z-index: 1;
+  left: 50%;
+  bottom: 30px;
+  font-size: 17px;
+}
+
+#snackbar.show {
+  visibility: visible;
+  -webkit-animation: fadein 0.5s, fadeout 0.5s 2.5s;
+  animation: fadein 0.5s, fadeout 0.5s 2.5s;
+}
+
+@-webkit-keyframes fadein {
+  from {bottom: 0; opacity: 0;} 
+  to {bottom: 30px; opacity: 1;}
+}
+
+@keyframes fadein {
+  from {bottom: 0; opacity: 0;}
+  to {bottom: 30px; opacity: 1;}
+}
+
+@-webkit-keyframes fadeout {
+  from {bottom: 30px; opacity: 1;} 
+  to {bottom: 0; opacity: 0;}
+}
+
+@keyframes fadeout {
+  from {bottom: 30px; opacity: 1;}
+  to {bottom: 0; opacity: 0;}
 }

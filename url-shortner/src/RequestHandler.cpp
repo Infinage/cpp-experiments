@@ -139,10 +139,12 @@ std::string RequestHandler::processRequest(const std::string &buffer) {
             std::string longURL {parsedPostBody.second};
             if (!std::regex_match(longURL, ProtocolRegex))
                 longURL = "http://" + longURL;
+            if (cache.find(longURL) == cache.end())
+                responseCode = 201;
             std::string shortURL {shortenURL(longURL)};
             responseBody = std::format(
-                R"({{"key": "{}", "long_url": "{}", "short_url": "localhost:{}/{}"}})", 
-                shortURL, parsedPostBody.second, serverPort, shortURL
+                R"({{"key": "{}", "long_url": "{}", "short_url": "{}:{}/{}"}})", 
+                shortURL, parsedPostBody.second, serverIP, serverPort, shortURL
             );
         } else {
             responseBody = '"' + parsedPostBody.second + '"';
