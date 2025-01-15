@@ -1,0 +1,64 @@
+body {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    height: 100vh;
+    margin: 0;
+    font-family: Arial, sans-serif;
+    background-color: #f4f4f9;
+}
+.container {
+    width: 60vh;
+    text-align: center;
+    background: #fff;
+    padding: 20px 30px;
+    border-radius: 10px;
+    box-shadow: 0 4px 10px rgba(0, 0, 0, 0.2);
+}
+#urlCount sup {
+    font-size: 0.4em;
+    margin-left: 5px;
+}
+.input-container {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    column-gap: 10px;
+    align-items: center;
+    margin-top: 10px;
+}
+input[type="text"] {
+    padding: 10px;
+    border: 1px solid #ccc;
+    border-radius: 5px;
+}
+button {
+    padding: 10px 20px;
+    background: #007bff;
+    color: #fff;
+    border: none;
+    border-radius: 5px;
+    cursor: pointer;
+}
+button:hover {
+    background: #0056b3;
+}
+.result {
+    margin-top: 20px;
+    font-size: 16px;
+    color: #333;
+}
+.result a {
+    color: #007bff;
+    text-decoration: none;
+    cursor: pointer;
+}
+.result a:hover {
+    text-decoration: underline;
+}
+.result span.url {
+  font-style: italic;
+}
+.result span.button {
+  cursor: pointer; 
+  margin-left: 10px;
+}

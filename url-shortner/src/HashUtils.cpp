@@ -1,4 +1,5 @@
 #include "../include/HashUtils.hpp"
+
 #include <random>
 
 std::vector<std::uint8_t> generateKey(const std::string &key, const std::size_t length) {
@@ -10,13 +11,13 @@ std::vector<std::uint8_t> generateKey(const std::string &key, const std::size_t 
     return keyVec;
 }
 
-std::vector<std::uint8_t> encryptSizeT(std::size_t value, const std::string &key) {
+std::string encryptSizeT(std::size_t value, const std::string &key) {
     std::size_t valSize {sizeof(std::size_t)};
     std::uint8_t* valueBytes {reinterpret_cast<std::uint8_t*>(&value)};
     std::vector<std::uint8_t> keyVec {generateKey(key, valSize)}, result {valueBytes, valueBytes + valSize};
     for (std::size_t i {0}; i < valSize; i++)
         result[i] ^= keyVec[i];
-    return result;
+    return base62EncodeBytes(result);
 }
 
 std::string base62Encode(std::size_t value) {
@@ -35,4 +36,3 @@ std::string base62EncodeBytes(std::vector<std::uint8_t> &bytes) {
         combined = (combined << 8) | byte;
     return base62Encode(combined);
 }
-
