@@ -2,7 +2,7 @@
 
 int main() {
 
-    constexpr const char* SERVER_IP {"127.0.0.1"};
+    constexpr const char* SERVER_IP {"0.0.0.0"};
     constexpr int PORT {8080};
     constexpr int SERVER_BACKLOG {10};
 

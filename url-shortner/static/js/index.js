@@ -26,9 +26,10 @@ const shortenURL = async () => {
     
     if (data.short_url !== undefined && response.ok) {
       const resultDiv = document.getElementById('result');
+      const shortUrl = window.location.origin + '/' + data.key;
       resultDiv.innerHTML = `
-        <span class="url">URL${response.status == 201? '*': ''}: ${data.short_url}</span>
-        <span class="button" onclick="copyToClipboard('${data.short_url}')">📋</span>
+        <span class="url">URL${response.status == 201? '*': ''}: ${shortUrl}</span>
+        <span class="button" onclick="copyToClipboard('${shortUrl}')">📋</span>
         <span class="button" onclick="deleteURL('${data.key}')">🗑️</span>
       `;
     } else {
@@ -63,8 +64,8 @@ const copyToClipboard = async (text) => {
   try {
     await navigator.clipboard.writeText(text);
     showNotification("Copied to clipboard!");
-  } catch (error) {
-    showNotification("Failed to copy: " + err);
+  } catch (err) {
+    showNotification("Failed to copy.");
   }
 }
 
