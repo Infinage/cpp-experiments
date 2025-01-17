@@ -22,7 +22,7 @@ $(OUTPUT).debug: $(SRC_FILES) main.cpp
 	$(CXX) $(CXXFLAGS) $^ -o $@
 
 # Release build
-release: CXXFLAGS += -O2
+release: CXXFLAGS += -O2 -static
 release: $(OUTPUT)
 
 $(OUTPUT): $(SRC_FILES) main.cpp
