@@ -1,6 +1,7 @@
 #include <array>
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <fstream>
 #include <iostream>
 #include <sstream>
@@ -43,6 +44,18 @@ class BrainFuck {
             return stk.empty();
         }
 
+        // Strip comments
+        static std::string stripComments(const std::string &code) {
+            std::ostringstream oss;
+            for (const char ch: code) {
+                if (ch == '>' || ch == '<' || ch == '+' || ch == '-' 
+                 || ch == '.' || ch == ',' || ch == '[' || ch == ']')
+                    oss << ch;
+            }
+
+            return oss.str();
+        }
+
     public:
         void shell() {
             std::cout << "Brainfuck Interpreter. Hit Ctrl+C to exit.\n";
@@ -52,28 +65,44 @@ class BrainFuck {
                 if (!std::getline(std::cin, line)) { 
                     std::cout << "\n"; break; 
                 } else if (validate(line, true)) {
-                    evaluate(line);
+                    executeRaw(line);
                 }
             }
         }
 
         void executeFile(const char* fname) {
+            std::size_t fnameLen {std::strlen(fname)};
+
             std::ifstream ifs{fname};
             if (!ifs) {
                 std::cerr << "No such file or directory.\n";
                 std::exit(1);
             }
 
+            // If '.bf' optimize and execute it else execute raw
+            bool optimize {fnameLen >= 3 && std::strcmp(fname + fnameLen - 3, ".bf") == 0};
+
             // Read the file to a string
             std::ostringstream oss; 
             oss << ifs.rdbuf();
             std::string code {oss.str()};
 
-            // Execute if valid
-            if (validate(code)) evaluate(code);
+            // Validate the input code for errors
+            bool isValid {validate(code)};
+            if (!isValid) std::exit(1);
+
+            // If unoptimized, execute raw
+            if (!optimize) executeRaw(code);
+
+            // Compile to bytecode and execute
+            else {
+                code = stripComments(code);
+                executeRaw(code);
+            }
         }
 
-        void evaluate(const std::string &code) {
+        // Execute raw string instruction
+        void executeRaw(const std::string &code) {
             std::size_t pos {0};
             while (pos < code.size()) {
                 char ch  {code.at(pos)};
