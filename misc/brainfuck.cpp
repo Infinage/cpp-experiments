@@ -6,25 +6,26 @@
 #include <iostream>
 #include <sstream>
 #include <stack>
+#include <vector>
 
 constexpr int MEMORY_SIZE {30000};
 
 class BrainFuck {
     private:
+        enum OPCODE { UPDATEVAL, SHIFTPTR, OUTPUT, INPUT, LSTART, LEND };
         std::array<std::uint8_t, MEMORY_SIZE> memory {0};
-        std::stack<std::size_t> loopStk;
         std::size_t ptr {0};
 
         // Validate and print an error message at point of error
         static bool validate(const std::string &code, bool showErr = true) {
             std::size_t lineNo {1};
-            std::stack<std::pair<std::size_t, std::size_t>> stk;
+            std::stack<std::pair<std::size_t, std::size_t>> loopStk;
             for (std::size_t i {0}; i < code.size(); i++) {
                 if (code[i] == '\n') lineNo++;
                 else if (code[i] == '[')
-                    stk.push({lineNo, i + 1});
+                    loopStk.push({lineNo, i + 1});
                 else if (code[i] == ']') {
-                    if (!stk.empty()) stk.pop();
+                    if (!loopStk.empty()) loopStk.pop();
                     else {
                         if (showErr) {
                             std::cerr << "Syntax error. Unexpected closing bracket in line " 
@@ -36,74 +37,18 @@ class BrainFuck {
                 }
             }
 
-            if (!stk.empty() && showErr) {
+            if (!loopStk.empty() && showErr) {
                 std::cerr << "Syntax error. Unclosed bracket in line " 
-                          << stk.top().first << " char " << stk.top().second << "\n";
+                          << loopStk.top().first << " char " << loopStk.top().second << "\n";
             }
 
-            return stk.empty();
+            return loopStk.empty();
         }
 
-        // Strip comments
-        static std::string stripComments(const std::string &code) {
-            std::ostringstream oss;
-            for (const char ch: code) {
-                if (ch == '>' || ch == '<' || ch == '+' || ch == '-' 
-                 || ch == '.' || ch == ',' || ch == '[' || ch == ']')
-                    oss << ch;
-            }
-
-            return oss.str();
-        }
-
-    public:
-        void shell() {
-            std::cout << "Brainfuck Interpreter. Hit Ctrl+C to exit.\n";
-            std::string line;
-            while (1) {
-                std::cout << "BF> ";
-                if (!std::getline(std::cin, line)) { 
-                    std::cout << "\n"; break; 
-                } else if (validate(line, true)) {
-                    executeRaw(line);
-                }
-            }
-        }
-
-        void executeFile(const char* fname) {
-            std::size_t fnameLen {std::strlen(fname)};
-
-            std::ifstream ifs{fname};
-            if (!ifs) {
-                std::cerr << "No such file or directory.\n";
-                std::exit(1);
-            }
-
-            // If '.bf' optimize and execute it else execute raw
-            bool optimize {fnameLen >= 3 && std::strcmp(fname + fnameLen - 3, ".bf") == 0};
-
-            // Read the file to a string
-            std::ostringstream oss; 
-            oss << ifs.rdbuf();
-            std::string code {oss.str()};
-
-            // Validate the input code for errors
-            bool isValid {validate(code)};
-            if (!isValid) std::exit(1);
-
-            // If unoptimized, execute raw
-            if (!optimize) executeRaw(code);
-
-            // Compile to bytecode and execute
-            else {
-                code = stripComments(code);
-                executeRaw(code);
-            }
-        }
-
-        // Execute raw string instruction
+        // Execute raw string instruction - assumes code is already validated
         void executeRaw(const std::string &code) {
             std::size_t pos {0};
+            std::stack<std::size_t> loopStk;
             while (pos < code.size()) {
                 char ch  {code.at(pos)};
                 switch (ch) {
@@ -145,6 +90,90 @@ class BrainFuck {
                 // Go to the next instruction
                 pos++;
             }
+        }
+
+        void executeByteCode(std::string &fname) {
+            std::ifstream ifs {fname, std::ios::binary};
+            if (!ifs) { std::cerr << "Unable to open file for reading bytecode.\n"; std::exit(1); }
+            std::vector<std::pair<OPCODE, long>> instructions;
+            while (ifs) {
+                OPCODE opcode; long val;
+                ifs.read(reinterpret_cast<char*>(&opcode), sizeof(OPCODE));
+                ifs.read(reinterpret_cast<char*>(&val), sizeof(long));
+
+                // Execute instruction
+            }
+        }
+
+    public:
+        void shell() {
+            std::cout << "Brainfuck Interpreter. Hit Ctrl+C to exit.\n";
+            std::string line;
+            while (1) {
+                std::cout << "BF> ";
+                if (!std::getline(std::cin, line)) { 
+                    std::cout << "\n"; break; 
+                } else if (validate(line, true)) {
+                    executeRaw(line);
+                }
+            }
+        }
+
+        static void compile2ByteCode(const std::string &fname) {
+            std::ifstream ifs{fname};
+            if (!ifs) { std::cerr << "No such file or directory.\n"; std::exit(1); }
+
+            // Read the file as a raw string
+            std::ostringstream oss; 
+            oss << ifs.rdbuf();
+            std::string code {oss.str()};
+
+            // Validate the code and exit if not valid
+            if (!validate(code)) std::exit(1);
+
+            // Process and write the instructions to bytecode
+            std::stack<std::size_t> stk;
+            std::vector<std::pair<OPCODE, long>> instructions;
+            for (const char ch: code) {
+                if (ch == '+' || ch == '-' || ch == '>' || ch == '<') {
+                    long   shiftVal {ch == '+' || ch == '>'? 1l: -1l};
+                    OPCODE currOpCode {ch == '+' || ch == '-'? OPCODE::UPDATEVAL: OPCODE::SHIFTPTR};
+                    if (!instructions.empty() && instructions.back().first == currOpCode)
+                        instructions.back().second += shiftVal;
+                    else
+                        instructions.push_back({currOpCode, shiftVal});
+                } else if (ch == '.' || ch == ',') {
+                    OPCODE currOpCode {ch == '.'? OPCODE::OUTPUT: OPCODE::INPUT};
+                    instructions.push_back({currOpCode, 0l});
+                } else if (ch == '[') {
+                    stk.push(instructions.size());
+                    instructions.push_back({OPCODE::LSTART, -1});
+                } else if (ch == ']') {
+                    std::size_t loopStartPos {stk.top()}; stk.pop();
+                    instructions[loopStartPos].second = static_cast<long>(instructions.size());
+                    instructions.push_back({OPCODE::LEND, static_cast<long>(loopStartPos)});
+                }
+            }
+
+            // Save the instruction set
+            std::ofstream ofs{fname + ".bfc", std::ios::binary};
+            if (!ofs) { std::cerr << "Unable to open file for writing bytecode.\n"; std::exit(1); }
+            for (const std::pair<OPCODE, long> &instruction: instructions) {
+                ofs.write(reinterpret_cast<const char*>(&instruction.first), sizeof(OPCODE));
+                ofs.write(reinterpret_cast<const char*>(&instruction.second), sizeof(long));
+            }
+        }
+
+        void executeFile(const char* fname_) {
+            std::string fname {fname_};
+            // Not a brainfuck compiled bytecode, compile it
+            if (!fname.ends_with(".bfc")) {
+                compile2ByteCode(fname);
+                fname += ".bfc";
+            }
+
+            // Execute the compiled code
+            executeByteCode(fname);
         }
 };
 
