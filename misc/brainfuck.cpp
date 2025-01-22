@@ -3,11 +3,13 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <sstream>
 #include <stack>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 /*
@@ -15,15 +17,15 @@
   1. [-]: Clear cell
   2. [>]: Find first zeroed cell to right
   3. [<]: Find first zeroed cell to left
-
-  Remove SHIFTPTR and UPDATEVAL if val = 0
+  4. [>+8<-]: Copy values over with an optional factor
  */
 
 constexpr int MEMORY_SIZE {30000};
 
 class BrainFuck {
     private:
-        enum OPCODE { UPDATEVAL, SHIFTPTR, OUTPUT, INPUT, LSTART, LEND };
+        enum OPCODE { UPDATEVAL, SHIFTPTR, OUTPUT, INPUT, LSTART, LEND, CLEAR, SHIFTPTR_NONZERO };
+        static std::unordered_set<char> BRAINFUCK_CHARS;
         std::array<std::uint8_t, MEMORY_SIZE> memory {0};
         std::size_t ptr {0};
 
@@ -46,7 +48,7 @@ class BrainFuck {
                     if (!loopStk.empty()) loopStk.pop();
                     else {
                         if (showErr) {
-                            std::cerr << "Syntax error. Unexpected closing bracket in line " 
+                            std::cerr << "Error: Unexpected closing bracket in line " 
                                       << lineNo << " char " << i + 1 << "\n";
                         }
 
@@ -56,7 +58,7 @@ class BrainFuck {
             }
 
             if (!loopStk.empty() && showErr) {
-                std::cerr << "Syntax error. Unclosed bracket in line " 
+                std::cerr << "Error: Unclosed bracket in line " 
                           << loopStk.top().first << " char " << loopStk.top().second << "\n";
             }
 
@@ -66,14 +68,38 @@ class BrainFuck {
         // Read file as raw text
         static std::string readRawFile(const std::string &fname) {
             std::ifstream ifs {fname};
-            if (!ifs) { std::cerr << "Unable to open file.\n"; std::exit(1); }
+            if (!ifs) { std::cerr << "Error: Unable to open file.\n"; std::exit(1); }
             std::ostringstream oss; 
             oss << ifs.rdbuf();
             return oss.str();
         }
 
+        // Extract substr excluding comments, compress if applicable
+        static std::string getLoopRepr(std::size_t start, std::size_t end, const std::string& code) {
+            std::ostringstream oss;
+            std::pair<char, std::size_t> curr{'\0', 0};
+            for (std::size_t pos {start}; pos <= end; pos++) {
+                char ch {code.at(pos)}; 
+                if (BRAINFUCK_CHARS.find(ch) == BRAINFUCK_CHARS.end()) 
+                    continue;
+                else if (curr.first == ch && ch != '[' && ch != ']' && ch != '.' && ch != ',') 
+                    curr.second++;
+                else {
+                    if (curr.first != '\0') oss << curr.first << (curr.second > 1? std::to_string(curr.second): "");
+                    curr = {ch, 1};
+                } 
+            }
+
+            oss << curr.first << (curr.second > 1? std::to_string(curr.second): "");
+            return oss.str();
+        }
+
         // Execute raw string instruction - assumes code is already validated
-        void executeRaw(const std::string &code) {
+        void executeRaw(const std::string &code, const std::string logFName = "") {
+            // Profiling loops with a counter
+            std::unordered_map<std::pair<std::size_t, std::size_t>, std::size_t, HashPair> loopCounter;
+            bool logOutput {!logFName.empty()};
+
             std::size_t pos {0};
             std::stack<std::size_t> loopStk;
             while (pos < code.size()) {
@@ -109,6 +135,7 @@ class BrainFuck {
                         }
                         break;
                     case ']':
+                        if (logOutput) loopCounter[{loopStk.top(), pos}]++;
                         if (memory[ptr] == 0) loopStk.pop();
                         else pos = loopStk.top();
                         break;
@@ -117,80 +144,17 @@ class BrainFuck {
                 // Go to the next instruction
                 pos++;
             }
-        }
-
-        static std::string getLoopRepr(std::size_t start, std::size_t end, std::vector<std::pair<OPCODE, long>> &instructions) {
-            std::ostringstream oss;
-            for (std::size_t pos {start}; pos <= end; pos++) {
-                OPCODE opcode; long val;
-                std::tie(opcode, val) = instructions[pos];
-                switch (opcode) {
-                    case OPCODE::INPUT:
-                        oss << ',';
-                        break;
-                    case OPCODE::OUTPUT:
-                        oss << '.';
-                        break;
-                    case OPCODE::SHIFTPTR:
-                        oss << (val >= 0? '>': '<') << std::abs(val);
-                        break;
-                    case OPCODE::UPDATEVAL:
-                        oss << (val >= 0? '+': '-') << std::abs(val);
-                        break;
-                    case OPCODE::LSTART:
-                        oss << '[';
-                        break;
-                    case OPCODE::LEND:
-                        oss << ']';
-                        break;
-                }
-            }
-
-            return oss.str();
-        }
-
-        // Execute bytecode (binary file, extension is not explicity checked)
-        void executeByteCode(const std::string &fname, const std::string &logFName) {
-            std::ifstream ifs {fname, std::ios::binary};
-            if (!ifs) { std::cerr << "Unable to open file for reading bytecode.\n"; std::exit(1); }
-            std::vector<std::pair<OPCODE, long>> instructions;
-            OPCODE opcode; long val;
-            while (ifs.read(reinterpret_cast<char*>(&opcode), sizeof(OPCODE)) 
-                && ifs.read(reinterpret_cast<char*>(   &val), sizeof(  long))) {
-                instructions.push_back({opcode, val});
-            }
-
-            // Log the instructions
-            std::unordered_map<std::string, std::size_t> loopCounter;
-            bool logOutput {!logFName.empty()};
-            if (logOutput)
-                logByteCodeInstructions(instructions, logFName);
-
-            // Execute bytecode, profile loops if logFName is set
-            for (std::size_t pos {0}; pos < instructions.size(); pos++) {
-                std::tie(opcode, val) = instructions[pos];
-                if (opcode == OPCODE::UPDATEVAL)
-                    memory[ptr] = static_cast<std::uint8_t>(((val + memory[ptr]) % 255 + 255) % 255);
-                else if (opcode == OPCODE::SHIFTPTR)
-                    ptr = static_cast<std::size_t>(((static_cast<long>(ptr) + val) % MEMORY_SIZE + MEMORY_SIZE) % MEMORY_SIZE);
-                else if (opcode == OPCODE::INPUT)
-                    memory[ptr] = static_cast<std::uint8_t>(std::getchar());
-                else if (opcode == OPCODE::OUTPUT)
-                    std::putchar(memory[ptr]);
-                else if (opcode == OPCODE::LSTART)
-                    pos = memory[ptr] == 0? static_cast<std::size_t>(val): pos;
-                else if (opcode == OPCODE::LEND) {
-                    std::size_t startPos {static_cast<std::size_t>(val)};
-                    if (logOutput) loopCounter[getLoopRepr(startPos, pos, instructions)]++;
-                    pos = memory[ptr] == 0? pos: startPos;
-                }
-            }
 
             // Output loop profiling output
             if (logOutput) {
+                // Get the loops string repr into a map
+                std::unordered_map<std::string, std::size_t> loopCounterStrRep;
+                for (const std::pair<const std::pair<std::size_t, std::size_t>, std::size_t> &kv: loopCounter)
+                    loopCounterStrRep[getLoopRepr(kv.first.first, kv.first.second, code)] += kv.second;
+
                 // Write to a vector for sorting
                 std::vector<std::pair<std::string, std::size_t>> loopCounterVec;
-                for (const std::pair<const std::string, std::size_t> &kv: loopCounter)
+                for (const std::pair<const std::string, std::size_t> &kv: loopCounterStrRep)
                     loopCounterVec.push_back({kv.first, kv.second});
                 
                 // Sort the vector
@@ -201,11 +165,55 @@ class BrainFuck {
                 );
 
                 // Write the profile output
-                std::ofstream log {logFName, std::ios::app};
-                if (!log) { std::cerr << "Unable to open file.\n"; std::exit(1); }
+                std::ofstream log {logFName};
+                if (!log) { std::cerr << "Error: Unable to open file for logging.\n"; std::exit(1); }
                 log << '\n' + std::string('-', 20) + '\n';
                 for (std::pair<std::string, std::size_t> &v: loopCounterVec)
                     log << v.first << "," << v.second << "\n";
+            }
+        }
+
+        // Execute bytecode (binary file, extension is not explicity checked)
+        void executeByteCode(const std::string &fname) {
+            std::ifstream ifs {fname, std::ios::binary};
+            if (!ifs) { std::cerr << "Error: Unable to open file for reading bytecode.\n"; std::exit(1); }
+            std::vector<std::pair<OPCODE, long>> instructions;
+            OPCODE opcode; long val;
+            while (ifs.read(reinterpret_cast<char*>(&opcode), sizeof(OPCODE)) 
+                && ifs.read(reinterpret_cast<char*>(   &val), sizeof(  long))) {
+                instructions.push_back({opcode, val});
+            }
+
+            // Execute bytecode, profile loops if logFName is set
+            for (std::size_t pos {0}; pos < instructions.size(); pos++) {
+                std::tie(opcode, val) = instructions[pos];
+                switch (opcode) {
+                    case OPCODE::UPDATEVAL:
+                        memory[ptr] = static_cast<std::uint8_t>(((val + memory[ptr]) % 255 + 255) % 255);
+                        break;
+                    case OPCODE::SHIFTPTR:
+                        ptr = static_cast<std::size_t>(((static_cast<long>(ptr) + val) % MEMORY_SIZE + MEMORY_SIZE) % MEMORY_SIZE);
+                        break;
+                    case OPCODE::INPUT:
+                        memory[ptr] = static_cast<std::uint8_t>(std::getchar());
+                        break;
+                    case OPCODE::OUTPUT:
+                        std::putchar(memory[ptr]);
+                        break;
+                    case OPCODE::LSTART:
+                        pos = memory[ptr] == 0? static_cast<std::size_t>(val): pos;
+                        break;
+                    case OPCODE::LEND:
+                        pos = memory[ptr] == 0? pos: static_cast<std::size_t>(val);
+                        break;
+                    case OPCODE::CLEAR:
+                        memory[ptr]  = 0;
+                        break;
+                    case OPCODE::SHIFTPTR_NONZERO:
+                        while(memory[ptr] != 0) 
+                            ptr = static_cast<std::size_t>(((static_cast<long>(ptr) + val) % MEMORY_SIZE + MEMORY_SIZE) % MEMORY_SIZE);
+                        break;
+                }
             }
         }
 
@@ -235,24 +243,36 @@ class BrainFuck {
                     stk.push(instructions.size());
                     instructions.push_back({OPCODE::LSTART, -1});
                 } else if (ch == ']') {
-                    std::size_t loopStartPos {stk.top()}; stk.pop();
-                    instructions[loopStartPos].second = static_cast<long>(instructions.size());
+                    std::size_t loopStartPos {stk.top()}, loopEndPos {instructions.size()}; stk.pop();
+                    instructions[loopStartPos].second = static_cast<long>(loopEndPos);
                     instructions.push_back({OPCODE::LEND, static_cast<long>(loopStartPos)});
+
+                    // If loop contains only UPDATEVAL, it is a clear
+                    if (loopEndPos - loopStartPos == 2 && instructions[loopStartPos + 1].first == OPCODE::UPDATEVAL) {
+                        instructions.pop_back(); instructions.pop_back(); instructions.pop_back();
+                        instructions.push_back({OPCODE::CLEAR, 1l});
+                    }
+
+                    // If loop contains only SHIFTPTR, it is shift until nonzero
+                    else if (loopEndPos - loopStartPos == 2 && instructions[loopStartPos + 1].first == OPCODE::SHIFTPTR) {
+                        instructions.pop_back(); instructions.pop_back(); instructions.pop_back();
+                        instructions.push_back({OPCODE::SHIFTPTR_NONZERO, instructions[loopStartPos + 1].second});
+                    }
                 }
             }
 
             // Save the instruction set
             std::ofstream ofs{fname + ".bfc", std::ios::binary};
-            if (!ofs) { std::cerr << "Unable to open file for writing bytecode.\n"; std::exit(1); }
+            if (!ofs) { std::cerr << "Error: Unable to open file for writing bytecode.\n"; std::exit(1); }
             for (const std::pair<OPCODE, long> &instruction: instructions) {
                 ofs.write(reinterpret_cast<const char*>(&instruction.first), sizeof(OPCODE));
                 ofs.write(reinterpret_cast<const char*>(&instruction.second), sizeof(long));
             }
         }
 
-        void logByteCodeInstructions(std::vector<std::pair<OPCODE, long>> &instructions, const std::string &fname) {
+        void _logByteCodeInstructions(std::vector<std::pair<OPCODE, long>> &instructions, const std::string &fname) {
             std::ofstream ofs {fname};
-            if (!ofs) { std::cerr << "Unable to open file for writing.\n"; std::exit(1); }
+            if (!ofs) { std::cerr << "Error: Unable to open file for writing.\n"; std::exit(1); }
             for (std::pair<OPCODE, long> &instruction: instructions)
                 ofs << instruction.first << "," << instruction.second << "\n";
         }
@@ -271,28 +291,52 @@ class BrainFuck {
             }
         }
 
-        void executeFile(const char* fname_) {
-            std::string fname {fname_};
-
-            // Not a brainfuck compiled bytecode, compile it
-            if (!fname.ends_with(".bfc")) {
-                compile2ByteCode(fname);
-                fname += ".bfc";
+        void executeFile(std::string &fname, bool profileFlag) {
+            // Fail if file is missing
+            if (!std::filesystem::exists(fname) || !std::filesystem::is_regular_file(fname)) {
+                std::cerr << "Error: No such file: " << fname << "\n";
+                std::exit(1);
             }
 
-            // Execute the compiled code & profile it
-            executeByteCode(fname, fname + ".log");
+            // Already compiled
+            else if (fname.ends_with(".bfc")) {
+                if (profileFlag) { std::cerr << "Error: Can't profile a compiled binary.\n"; std::exit(1); }
+                executeByteCode(fname);
+            }
+
+            // Execute Raw if not specified
+            else if (profileFlag) {
+                std::string code {readRawFile(fname)};
+                if (validate(code)) executeRaw(code, fname + ".log");
+            }
+
+            // Compile and execute
+            else {
+                compile2ByteCode(fname);
+                executeByteCode(fname + ".bfc");
+            }
         }
 };
 
+// Init static variables
+std::unordered_set<char> BrainFuck::BRAINFUCK_CHARS {'+', '-', '>', '<', ',', '.', '[', ']'};
+
+bool hasOpt(const std::string &arg, std::vector<std::string> &args) {
+    return std::find(args.begin(), args.end(), arg) != args.end();
+}
+
 int main(int argc, char **argv) {
     BrainFuck bf;
-    if (argc >= 3)
-        std::cout << "Usage: brainfuck [<script.bf>]\n";
-    else if (argc == 1)
+
+    std::vector<std::string> args {argv, argv + argc};
+    if (hasOpt("-h", args) || hasOpt("--help", args))
+        std::cout << "Usage: brainfuck [OPTIONS] [<script.bf>]\n";
+    else if (args.size() == 1)
         bf.shell();        
-    else if (argc == 2)
-        bf.executeFile(argv[1]);
+    else {
+        bool profileFlag {hasOpt("-p", args) || hasOpt("--profile", args)};
+        bf.executeFile(args.back(), profileFlag);
+    }
 
     return 0;
 }
