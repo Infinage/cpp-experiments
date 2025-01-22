@@ -8,6 +8,7 @@
 #include <iostream>
 #include <sstream>
 #include <stack>
+#include <tuple>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -17,15 +18,21 @@
   1. [-]: Clear cell
   2. [>]: Find first zeroed cell to right
   3. [<]: Find first zeroed cell to left
-  4. [>+8<-]: Copy values over with an optional factor
+  4. [>+8<-]: Copy values over with an optional factor, optionally support copying over to multiple cells
  */
 
-constexpr int MEMORY_SIZE {30000};
+constexpr std::size_t MEMORY_SIZE {30000};
 
 class BrainFuck {
     private:
-        enum OPCODE { UPDATEVAL, SHIFTPTR, OUTPUT, INPUT, LSTART, LEND, CLEAR, SHIFTPTR_NONZERO };
         static std::unordered_set<char> BRAINFUCK_CHARS;
+        enum OPCODE { 
+            UPDATEVAL, SHIFTPTR, OUTPUT, INPUT, LSTART, LEND, 
+            CLEAR, SHIFTPTR_ZERO, UPDATE_BY_CURR
+        };
+
+        using INSTRUCTION_T = std::tuple<OPCODE, long, long>;
+
         std::array<std::uint8_t, MEMORY_SIZE> memory {0};
         std::size_t ptr {0};
 
@@ -35,6 +42,11 @@ class BrainFuck {
                 return Hash(p.first) ^ (Hash(p.second) << 1);
             }
         };
+
+        template <typename T>
+        static T mod(T val, T modulus) {
+            return (val % modulus + modulus) % modulus;
+        }
 
         // Validate and print an error message at point of error
         static bool validate(const std::string &code, bool showErr = true) {
@@ -95,7 +107,7 @@ class BrainFuck {
         }
 
         // Execute raw string instruction - assumes code is already validated
-        void executeRaw(const std::string &code, const std::string logFName = "") {
+        void executeRaw(const std::string &code, const std::string &logFName = "") {
             // Profiling loops with a counter
             std::unordered_map<std::pair<std::size_t, std::size_t>, std::size_t, HashPair> loopCounter;
             bool logOutput {!logFName.empty()};
@@ -155,7 +167,7 @@ class BrainFuck {
                 // Write to a vector for sorting
                 std::vector<std::pair<std::string, std::size_t>> loopCounterVec;
                 for (const std::pair<const std::string, std::size_t> &kv: loopCounterStrRep)
-                    loopCounterVec.push_back({kv.first, kv.second});
+                    loopCounterVec.emplace_back(kv.first, kv.second);
                 
                 // Sort the vector
                 std::sort(loopCounterVec.begin(), loopCounterVec.end(), []
@@ -167,7 +179,6 @@ class BrainFuck {
                 // Write the profile output
                 std::ofstream log {logFName};
                 if (!log) { std::cerr << "Error: Unable to open file for logging.\n"; std::exit(1); }
-                log << '\n' + std::string('-', 20) + '\n';
                 for (std::pair<std::string, std::size_t> &v: loopCounterVec)
                     log << v.first << "," << v.second << "\n";
             }
@@ -177,44 +188,100 @@ class BrainFuck {
         void executeByteCode(const std::string &fname) {
             std::ifstream ifs {fname, std::ios::binary};
             if (!ifs) { std::cerr << "Error: Unable to open file for reading bytecode.\n"; std::exit(1); }
-            std::vector<std::pair<OPCODE, long>> instructions;
-            OPCODE opcode; long val;
+            std::vector<INSTRUCTION_T> instructions;
+            OPCODE opcode; long val1, val2;
             while (ifs.read(reinterpret_cast<char*>(&opcode), sizeof(OPCODE)) 
-                && ifs.read(reinterpret_cast<char*>(   &val), sizeof(  long))) {
-                instructions.push_back({opcode, val});
+                && ifs.read(reinterpret_cast<char*>(  &val1), sizeof(  long))
+                && ifs.read(reinterpret_cast<char*>(  &val2), sizeof(  long))) {
+                instructions.emplace_back(opcode, val1, val2);
             }
 
             // Execute bytecode, profile loops if logFName is set
             for (std::size_t pos {0}; pos < instructions.size(); pos++) {
-                std::tie(opcode, val) = instructions[pos];
+                std::tie(opcode, val1, val2) = instructions[pos];
                 switch (opcode) {
+
                     case OPCODE::UPDATEVAL:
-                        memory[ptr] = static_cast<std::uint8_t>(((val + memory[ptr]) % 255 + 255) % 255);
+                        memory[ptr] = static_cast<std::uint8_t>(mod(static_cast<long>(memory[ptr]) + val1, 255l));
                         break;
+
                     case OPCODE::SHIFTPTR:
-                        ptr = static_cast<std::size_t>(((static_cast<long>(ptr) + val) % MEMORY_SIZE + MEMORY_SIZE) % MEMORY_SIZE);
+                        ptr = static_cast<std::size_t>(mod(static_cast<long>(ptr) + val1, static_cast<long>(MEMORY_SIZE)));
                         break;
+
                     case OPCODE::INPUT:
                         memory[ptr] = static_cast<std::uint8_t>(std::getchar());
                         break;
+
                     case OPCODE::OUTPUT:
                         std::putchar(memory[ptr]);
                         break;
+
                     case OPCODE::LSTART:
-                        pos = memory[ptr] == 0? static_cast<std::size_t>(val): pos;
+                        pos = memory[ptr] == 0? static_cast<std::size_t>(val1): pos;
                         break;
+
                     case OPCODE::LEND:
-                        pos = memory[ptr] == 0? pos: static_cast<std::size_t>(val);
+                        pos = memory[ptr] == 0? pos: static_cast<std::size_t>(val1);
                         break;
+
                     case OPCODE::CLEAR:
                         memory[ptr]  = 0;
                         break;
-                    case OPCODE::SHIFTPTR_NONZERO:
+
+                    case OPCODE::SHIFTPTR_ZERO:
                         while(memory[ptr] != 0) 
-                            ptr = static_cast<std::size_t>(((static_cast<long>(ptr) + val) % MEMORY_SIZE + MEMORY_SIZE) % MEMORY_SIZE);
+                            ptr = static_cast<std::size_t>(mod(static_cast<long>(ptr) + val1, static_cast<long>(MEMORY_SIZE)));
                         break;
+
+                    case OPCODE::UPDATE_BY_CURR: {
+                        // Where the destination position is
+                        std::size_t copyTo {static_cast<std::size_t>(mod(static_cast<long>(ptr) + val1, static_cast<long>(MEMORY_SIZE)))};
+
+                        // Updated val to write
+                        long updatedVal {static_cast<long>(memory[copyTo])};
+                        updatedVal += val2 * static_cast<long>(memory[ptr]);
+                        updatedVal = mod(updatedVal, 255l);
+
+                        // Update val at destination
+                        memory[copyTo] = static_cast<std::uint8_t>(updatedVal);
+                    } break;
+
                 }
             }
+        }
+
+        /*
+         * - Check if starting and ending points are the same
+         * - Loop is non nested without any compound op codes
+         * - We decrement startPos memory by 1 
+         * - For eg: [<3+2<1+>4-]
+         */
+        static bool validateSimpleDistributionLoop(
+            std::size_t start, std::size_t end, 
+            std::vector<INSTRUCTION_T> &instructions,
+            std::unordered_map<long, long> &distributeTo
+        ) {
+            // Keep track of curr relative pos
+            long shift {0};
+            for (std::size_t pos {start + 1}; pos < end; pos++) {
+                OPCODE opcode; long val1, val2; 
+                std::tie(opcode, val1, val2) = instructions[pos];
+
+                // Move curr pointer
+                if (opcode == OPCODE::SHIFTPTR) shift += val1;
+
+                // Update value by a factor
+                else if (opcode == OPCODE::UPDATEVAL) distributeTo[shift] += val1;
+
+                // Disallow any other opcode
+                else return false;
+            }
+
+            // Check if we are back to where we start and 
+            // we are doing a simple decrement
+            bool status {shift == 0 && distributeTo[0] == -1};
+            return status;
         }
 
         // Compiles the raw code to bytecode - ".bfc" is appended to filename
@@ -227,54 +294,78 @@ class BrainFuck {
 
             // Process and write the instructions to bytecode
             std::stack<std::size_t> stk;
-            std::vector<std::pair<OPCODE, long>> instructions;
+            std::vector<INSTRUCTION_T> instructions;
             for (const char ch: code) {
                 if (ch == '+' || ch == '-' || ch == '>' || ch == '<') {
                     long   shiftVal {ch == '+' || ch == '>'? 1l: -1l};
                     OPCODE currOpCode {ch == '+' || ch == '-'? OPCODE::UPDATEVAL: OPCODE::SHIFTPTR};
-                    if (!instructions.empty() && instructions.back().first == currOpCode)
-                        instructions.back().second += shiftVal;
+                    if (!instructions.empty() && std::get<0>(instructions.back()) == currOpCode)
+                        std::get<1>(instructions.back()) += shiftVal;
                     else
-                        instructions.push_back({currOpCode, shiftVal});
+                        instructions.emplace_back(currOpCode, shiftVal, 0l);
                 } else if (ch == '.' || ch == ',') {
                     OPCODE currOpCode {ch == '.'? OPCODE::OUTPUT: OPCODE::INPUT};
-                    instructions.push_back({currOpCode, 1l});
+                    instructions.emplace_back(currOpCode, 1l, 0l);
                 } else if (ch == '[') {
                     stk.push(instructions.size());
-                    instructions.push_back({OPCODE::LSTART, -1});
+                    instructions.emplace_back(OPCODE::LSTART, -1, 0l);
                 } else if (ch == ']') {
                     std::size_t loopStartPos {stk.top()}, loopEndPos {instructions.size()}; stk.pop();
-                    instructions[loopStartPos].second = static_cast<long>(loopEndPos);
-                    instructions.push_back({OPCODE::LEND, static_cast<long>(loopStartPos)});
+                    std::get<1>(instructions[loopStartPos]) = static_cast<long>(loopEndPos);
+                    instructions.emplace_back(OPCODE::LEND, static_cast<long>(loopStartPos), 0l);
+
+                    // When we are processing simple distribution 
+                    // loops, we would make use of this guy
+                    std::unordered_map<long, long> distributeTo;
 
                     // If loop contains only UPDATEVAL, it is a clear
-                    if (loopEndPos - loopStartPos == 2 && instructions[loopStartPos + 1].first == OPCODE::UPDATEVAL) {
+                    if (loopEndPos - loopStartPos == 2 && std::get<0>(instructions[loopStartPos + 1]) == OPCODE::UPDATEVAL) {
                         instructions.pop_back(); instructions.pop_back(); instructions.pop_back();
-                        instructions.push_back({OPCODE::CLEAR, 1l});
+                        instructions.emplace_back(OPCODE::CLEAR, 1l, 0l);
                     }
 
                     // If loop contains only SHIFTPTR, it is shift until nonzero
-                    else if (loopEndPos - loopStartPos == 2 && instructions[loopStartPos + 1].first == OPCODE::SHIFTPTR) {
+                    else if (loopEndPos - loopStartPos == 2 && std::get<0>(instructions[loopStartPos + 1]) == OPCODE::SHIFTPTR) {
                         instructions.pop_back(); instructions.pop_back(); instructions.pop_back();
-                        instructions.push_back({OPCODE::SHIFTPTR_NONZERO, instructions[loopStartPos + 1].second});
+                        instructions.emplace_back(OPCODE::SHIFTPTR_ZERO, std::get<1>(instructions[loopStartPos + 1]), 0l);
                     }
+
+                    // For eg: [<3+2<1+>4-]
+                    else if (validateSimpleDistributionLoop(loopStartPos, loopEndPos, instructions, distributeTo)) {
+                        // Remove all instructions inside the loop
+                        while (instructions.size() > loopStartPos) 
+                            instructions.pop_back();
+
+                        // Insert INCR_BY_CURR, DECR_BY_CURR opcodes
+                        for (const std::pair<const long, long> &kv: distributeTo) {
+                            long shift, factor;
+                            std::tie(shift, factor) = kv;
+                            if (factor != 0 && shift != 0)
+                                instructions.emplace_back(OPCODE::UPDATE_BY_CURR, shift, factor);
+                        }
+
+                        // Clear curr cell
+                        instructions.emplace_back(OPCODE::CLEAR, 1l, 0l);
+                    }
+
                 }
             }
 
             // Save the instruction set
             std::ofstream ofs{fname + ".bfc", std::ios::binary};
             if (!ofs) { std::cerr << "Error: Unable to open file for writing bytecode.\n"; std::exit(1); }
-            for (const std::pair<OPCODE, long> &instruction: instructions) {
-                ofs.write(reinterpret_cast<const char*>(&instruction.first), sizeof(OPCODE));
-                ofs.write(reinterpret_cast<const char*>(&instruction.second), sizeof(long));
+            for (const INSTRUCTION_T &instruction: instructions) {
+                ofs.write(reinterpret_cast<const char*>(&std::get<0>(instruction)), sizeof(OPCODE));
+                ofs.write(reinterpret_cast<const char*>(&std::get<1>(instruction)), sizeof(long));
+                ofs.write(reinterpret_cast<const char*>(&std::get<2>(instruction)), sizeof(long));
             }
         }
 
-        void _logByteCodeInstructions(std::vector<std::pair<OPCODE, long>> &instructions, const std::string &fname) {
+        void _logByteCodeInstructions(std::vector<INSTRUCTION_T> &instructions, const std::string &fname) {
             std::ofstream ofs {fname};
             if (!ofs) { std::cerr << "Error: Unable to open file for writing.\n"; std::exit(1); }
-            for (std::pair<OPCODE, long> &instruction: instructions)
-                ofs << instruction.first << "," << instruction.second << "\n";
+            for (INSTRUCTION_T &instruction: instructions)
+                ofs << std::get<0>(instruction) << "," << std::get<1>(instruction) << "\n";
         }
 
     public:
@@ -300,7 +391,7 @@ class BrainFuck {
 
             // Already compiled
             else if (fname.ends_with(".bfc")) {
-                if (profileFlag) { std::cerr << "Error: Can't profile a compiled binary.\n"; std::exit(1); }
+                if (profileFlag) { std::cerr << "Error: Can't profile a Bytecode.\n"; std::exit(1); }
                 executeByteCode(fname);
             }
 
