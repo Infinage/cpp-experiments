@@ -543,14 +543,23 @@ class BrainFuck {
 
         void shell() {
             std::cout << "Brainfuck Interpreter. Hit Ctrl+C to exit.\n";
-            std::string line;
-            while (1) {
+            bool continueLoop {true};
+            while (continueLoop) {
                 std::cout << "BF> ";
-                if (!std::getline(std::cin, line)) { 
-                    std::cout << "\n"; break; 
-                } else if (validateCode(line, true)) {
-                    interpretCode(line);
+
+                // Continue reading input if line ends with '\'
+                std::string code, line;
+                while ((continueLoop = static_cast<bool>(std::getline(std::cin, line)))) {
+                    code += line;
+                    if (!line.empty() && line.back() == '\\') 
+                        code.pop_back(); // remove '\' at end
+                    else break;
                 }
+
+                // If Interupt or Ctrl + D is hit, don't execute code
+                if (!continueLoop) std::cout << "\n";
+                else if (validateCode(code, true)) 
+                    interpretCode(code);
             }
         }
 
