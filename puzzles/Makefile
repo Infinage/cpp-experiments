@@ -6,11 +6,8 @@ CXXFLAGS = -std=c++23 -Wall -Wextra
 DEBUG_FLAGS = -ggdb
 RELEASE_FLAGS = -O2
 
-# Additional configuration for minesweeper
-MINESWEEPER_CONFIGS = -L/home/kael/cpplib/lib -I/home/kael/cpplib/include -lftxui-component -lftxui-dom -lftxui-screen
-
 # Find source files
-SOURCES = minesweeper.cpp barcode.cpp brainfuck.cpp
+SOURCES = $(wildcard *.cpp)
 
 # Output for both debug and release
 DEBUG_OUTPUTS = $(patsubst %.cpp, build/%.debug, $(SOURCES))
@@ -29,13 +26,6 @@ build-debug: $(BUILD_DIR) $(DEBUG_OUTPUTS)
 
 # Build all .cpp files as release
 build-release: $(BUILD_DIR) $(RELEASE_OUTPUTS)
-
-# Compile minesweeper.cpp with FTXUI dependencies
-$(BUILD_DIR)/minesweeper.debug: minesweeper.cpp | $(BUILD_DIR)
-	$(CXX) $< $(CXXFLAGS) $(DEBUG_FLAGS) $(MINESWEEPER_CONFIGS) -o $@
-
-$(BUILD_DIR)/minesweeper.out: minesweeper.cpp | $(BUILD_DIR)
-	$(CXX) $< $(CXXFLAGS) $(RELEASE_FLAGS) $(MINESWEEPER_CONFIGS) -o $@
 
 # General rule for other .cpp files without FTXUI dependencies
 $(BUILD_DIR)/%.debug: %.cpp | $(BUILD_DIR)
