@@ -98,18 +98,18 @@ class CodeJudge {
                 std::cerr << "Failed to bind mount tmpActual / tmpError.\n"; std::exit(1);
             }
 
-            // Set NO_NEW_PRIVS to prevent privilege escalation
-            if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) == -1) {
-                std::cerr << "Failed to set NO_NEW_PRIVS.\n";
-                std::exit(1);
-            }
-
             // Only allow selected capabilities
             cap_t caps{cap_get_proc()}; cap_clear(caps);
             cap_value_t allowedCaps[] {};
             cap_set_flag(caps, CAP_PERMITTED, 1, allowedCaps, CAP_SET);
             cap_set_flag(caps, CAP_EFFECTIVE, 1, allowedCaps, CAP_SET);
             if (cap_set_proc(caps) == -1) { std::cerr << "Failed to apply capability changes.\n"; std::exit(1); }
+
+            // Set NO_NEW_PRIVS to prevent privilege escalation
+            if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) == -1) {
+                std::cerr << "Failed to set NO_NEW_PRIVS.\n";
+                std::exit(1);
+            }
 
             // Mount FS as write again and ensure it fails
             if (mount(nullptr, "/", nullptr, MS_REMOUNT, nullptr) != -1) {
@@ -219,16 +219,15 @@ class CodeJudge {
             }
 
             else {
-                int status;
+                bool result; int status;
                 if (waitpid(pid, &status, 0) == -1) {
                     std::cerr << "Failed to wait for child process.\n";
-                    return false;
+                    result = false;
                 }
 
                 else if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
-                    bool verdict {compareFiles()};
-                    std::cout << "Verdict: " << (verdict? "PASS": "FAIL") << "\n";
-                    return verdict;
+                    result = compareFiles();
+                    std::cout << "Verdict: " << (result? "PASS": "FAIL") << "\n";
 
                 } else {
 
@@ -255,12 +254,13 @@ class CodeJudge {
                         }
                     }
 
-                    // Cleanup logs
-                    std::filesystem::remove(tmpActual);
-                    std::filesystem::remove(tmpError);
-
-                    return false;
+                    result = false;
                 }
+
+                // Cleanup logs & return
+                std::filesystem::remove(tmpActual);
+                std::filesystem::remove(tmpError);
+                return result;
             }
         }
 };
