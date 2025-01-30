@@ -1,9 +1,13 @@
+#include <linux/capability.h>
+#include <sched.h>
 #include <sys/resource.h>
-#include <unistd.h>
 #include <fcntl.h>
 #include <sys/wait.h>
 #include <sys/time.h>
-#include <seccomp.h>
+#include <linux/prctl.h> 
+#include <sys/prctl.h>
+#include <sys/mount.h>
+#include <sys/capability.h>
 
 #include <csignal>
 #include <filesystem>
@@ -13,30 +17,16 @@
 #include <string>
 #include <vector>
 
+/*
+ * Objectives
+ *  - Run rootless
+ *  - Set runtime limit
+ *  - Set memory limit
+ *  - Sandbox the environment
+ */
+
 class CodeJudge {
     private:
-        // Syscalls that would be blocked with seccomp
-        static constexpr int blackList[] {
-            // Network related calls
-            SCMP_SYS(socket), SCMP_SYS(connect), SCMP_SYS(accept), SCMP_SYS(bind), 
-            SCMP_SYS(send), SCMP_SYS(recv), SCMP_SYS(sendto), SCMP_SYS(recvfrom), 
-
-            // Dangerous sys calls
-            SCMP_SYS(unlink), SCMP_SYS(rename), SCMP_SYS(link), SCMP_SYS(sendfile),
-            SCMP_SYS(truncate), SCMP_SYS(ftruncate), SCMP_SYS(chmod), SCMP_SYS(chown),
-            SCMP_SYS(setgid), SCMP_SYS(setuid), SCMP_SYS(setresuid), SCMP_SYS(setresgid),
-            SCMP_SYS(setpgid), SCMP_SYS(setsid), SCMP_SYS(kill), SCMP_SYS(tgkill), 
-            SCMP_SYS(rmdir),
-
-            // Process management calls
-            SCMP_SYS(fork), SCMP_SYS(vfork), SCMP_SYS(clone), SCMP_SYS(clone3),
-
-            // Additional syscalls to block
-            SCMP_SYS(creat), SCMP_SYS(mkdir), SCMP_SYS(mknod), SCMP_SYS(umount), 
-            SCMP_SYS(mount), SCMP_SYS(prctl), SCMP_SYS(ptrace), SCMP_SYS(syslog), 
-            SCMP_SYS(capget), SCMP_SYS(capset), SCMP_SYS(symlink),
-        };
-
         // Helper to redirect stream
         static void redirectStream(int originalFD, const std::string &redirectFileName, int flags, int mode = 0644) {
             int redirectFD {open(redirectFileName.c_str(), flags, mode)}, redirectStatus {-1};
@@ -73,26 +63,58 @@ class CodeJudge {
             setitimer(ITIMER_VIRTUAL, &timer, NULL);
         }
 
-        // Set seccomp rules - block unneeded sys calls
-        static void setSeccompRules() {
-            scmp_filter_ctx ctx = seccomp_init(SCMP_ACT_ALLOW);
-            if (!ctx) {
-                std::cerr << "Failed to initialize seccomp.\n";
+        void writeFile(const std::string &fpath, const std::string &line) {
+            std::ofstream ofs {fpath};
+            if (!ofs) { std::cerr << "Failed to open: " << fpath << "\n"; std::exit(1); }
+            ofs << line << "\n";
+            ofs.close();
+        }
+
+        void setupSandbox() {
+            constexpr int UNSHARE_FLAGS { CLONE_NEWUSER | CLONE_NEWNS | CLONE_NEWPID };
+            const int uid {static_cast<int>(geteuid())}, gid {static_cast<int>(getegid())};
+
+            // Create new namespaces
+            if (unshare(UNSHARE_FLAGS) == -1) { std::cerr << "Failed to create namespaces.\n"; std::exit(1); }
+
+            // UID / GID Mappings
+            writeFile("/proc/self/uid_map", "0 " + std::to_string(uid) + " 1");
+            writeFile("/proc/self/setgroups", "deny");
+            writeFile("/proc/self/gid_map", "0 " + std::to_string(gid) + " 1");
+
+            // Mount FS as read only
+            if (mount(nullptr, "/", nullptr, MS_PRIVATE | MS_REC | MS_BIND | MS_REMOUNT | MS_RDONLY, nullptr) == -1) {
+                std::cerr << "Failed to remount root as readonly.\n"; std::exit(1);
+            }
+
+            // Create a new temp FS
+            if (mount("tmpfs", "/tmp", "tmpfs", 0, nullptr) == -1) {
+                std::cerr << "Failed to create a tmpfs.\n"; std::exit(1);
+            }
+
+            // Bind the tmpActual & tmpError as RW
+            if (mount(tmpActual.c_str(), tmpActual.c_str(), nullptr, MS_BIND, nullptr) == -1
+             || mount(tmpError.c_str(), tmpError.c_str(), nullptr, MS_BIND, nullptr) == -1) {
+                std::cerr << "Failed to bind mount tmpActual / tmpError.\n"; std::exit(1);
+            }
+
+            // Set NO_NEW_PRIVS to prevent privilege escalation
+            if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) == -1) {
+                std::cerr << "Failed to set NO_NEW_PRIVS.\n";
                 std::exit(1);
             }
 
-            // Blacklist the sys calls
-            for (int syscall: blackList)
-                seccomp_rule_add(ctx, SCMP_ACT_KILL, syscall, 0);
+            // Only allow selected capabilities
+            cap_t caps{cap_get_proc()}; cap_clear(caps);
+            cap_value_t allowedCaps[] {};
+            cap_set_flag(caps, CAP_PERMITTED, 1, allowedCaps, CAP_SET);
+            cap_set_flag(caps, CAP_EFFECTIVE, 1, allowedCaps, CAP_SET);
+            if (cap_set_proc(caps) == -1) { std::cerr << "Failed to apply capability changes.\n"; std::exit(1); }
 
-            // Activate seccomp
-            if (seccomp_load(ctx) != 0) {
-                std::cerr << "Failed to load seccomp rules.\n";
-                std::exit(1);
-            }
-
-            // Release context (rules are already loaded)
-            seccomp_release(ctx);
+            // Mount FS as write again and ensure it fails
+            if (mount(nullptr, "/", nullptr, MS_REMOUNT, nullptr) != -1) {
+                std::cerr << "Remounting as writable succeeded.\n"; std::exit(1);
+            } 
         }
 
         void executeBinary() {
@@ -114,7 +136,6 @@ class CodeJudge {
 
             // If this line is reached, execvp failed
             std::cerr << "Execution of binary failed: " << binaryCmd << "\n";
-            std::exit(1);
         }
 
         bool compareFiles(bool showError = false) {
@@ -159,23 +180,20 @@ class CodeJudge {
             binaryCmd(binaryCmd), 
             questionsFile(questionsFile), 
             answersFile(answersFile),
-            tmpActual(tmpActual), 
-            tmpError(tmpError),
+            tmpActual(std::filesystem::current_path() / tmpActual), 
+            tmpError(std::filesystem::current_path() / tmpError),
             memoryLimit(memoryLimit),
             timeLimit(timeLimit)
         {}
 
-        ~CodeJudge() {
-            std::filesystem::remove(tmpActual);
-            std::filesystem::remove(tmpError);
-        }
-
         bool run() {
+
+            // Create the tmpActual / tmpError files
+            std::ofstream afile{tmpActual, std::ios::trunc}, efile{tmpError, std::ios::trunc};
+            if (!afile || !efile) { std::cerr << "Failed to create log files.\n"; std::exit(1); }
+
             int pid {fork()};
-            if (pid == -1) {
-                std::cerr << "Unable to fork.\n"; 
-                return false;
-            }
+            if (pid == -1) { std::cerr << "Unable to fork.\n"; return false; }
 
             else if (pid == 0) {
                 // Redirect stdin, stdout, stderr to respective files
@@ -183,14 +201,21 @@ class CodeJudge {
                 redirectStream(STDOUT_FILENO, tmpActual, O_WRONLY | O_CREAT | O_TRUNC);
                 redirectStream(STDERR_FILENO, tmpError, O_WRONLY | O_CREAT | O_TRUNC);
 
-                // Set memory, time limits & security rules
+                // Set memory, time limits
                 setMemoryLimit(memoryLimit);
                 setTimeLimit(timeLimit);
-                setSeccompRules();
+                setupSandbox();
 
                 // Binary reads from stdin (piped from file)
-                executeBinary();
-                return false;
+                int sandboxPID {fork()};
+                if (sandboxPID == -1) { std::cerr << "Unable to create sandbox fork.\n"; return false; }
+                else if (sandboxPID == 0) { executeBinary(); std::exit(1); } 
+                else { 
+                    int status {-1}; 
+                    waitpid(pid, &status, 0); 
+                    if (WIFEXITED(status) && WEXITSTATUS(status) == 0) std::exit(0);
+                    else { std::cerr << "Sandboxed process failed.\n"; std::exit(1); }
+                }
             }
 
             else {
@@ -210,11 +235,9 @@ class CodeJudge {
                     int signal {WTERMSIG(status)};
                     bool MLE {WIFSIGNALED(status) && signal == SIGSEGV};
                     bool TLE {WIFSIGNALED(status) && (signal == SIGALRM || signal == SIGVTALRM)};
-                    bool SECCOMPVIOLATION {WIFSIGNALED(status) && signal == SIGSYS};
 
                     if (TLE) std::cout << "Verdict: TLE\n";
                     else if (MLE) std::cout << "Verdict: MLE\n";
-                    else if (SECCOMPVIOLATION) std::cout << "Verdict: SERR\n";
                     else {
 
                         std::cout << "Verdict: GERR\n";
@@ -231,6 +254,10 @@ class CodeJudge {
                             std::cout << errLine << "\n";
                         }
                     }
+
+                    // Cleanup logs
+                    std::filesystem::remove(tmpActual);
+                    std::filesystem::remove(tmpError);
 
                     return false;
                 }
