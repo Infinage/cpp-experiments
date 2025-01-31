@@ -71,7 +71,7 @@ class CodeJudge {
         }
 
         void setupSandbox() {
-            constexpr int UNSHARE_FLAGS { CLONE_NEWUSER | CLONE_NEWNS | CLONE_NEWPID };
+            constexpr int UNSHARE_FLAGS { CLONE_NEWUSER | CLONE_NEWNS | CLONE_NEWPID | CLONE_NEWNET };
             const int uid {static_cast<int>(geteuid())}, gid {static_cast<int>(getegid())};
 
             // Create new namespaces
