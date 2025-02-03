@@ -1,9 +1,12 @@
-#include <linux/capability.h>
+#include <chrono>
+#include <cmath>
+#include <cstdlib>
 #include <sched.h>
 #include <sys/resource.h>
 #include <fcntl.h>
 #include <sys/wait.h>
 #include <sys/time.h>
+#include <sys/stat.h>
 #include <linux/prctl.h> 
 #include <sys/prctl.h>
 #include <sys/mount.h>
@@ -15,6 +18,7 @@
 #include <iostream>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <vector>
 
 /*
@@ -48,22 +52,44 @@ class CodeJudge {
         }
 
         // Helper to set timelimit
-        static void setTimeLimit(float timeLimit) {
+        static void setTimeLimit(float timeLimit, pid_t sandboxPID) {
             const float MIN_TIME_LIMIT = 0.001f;
             if (timeLimit < MIN_TIME_LIMIT)
                 timeLimit = MIN_TIME_LIMIT;
 
-            struct itimerval timer;
-            int sec = static_cast<int>(timeLimit);
-            int usec = static_cast<int>((timeLimit - static_cast<float>(sec)) * 1000000);
-            timer.it_value.tv_sec = sec;
-            timer.it_value.tv_usec = usec;
-            timer.it_interval.tv_sec = 0;
-            timer.it_interval.tv_usec = 0;
-            setitimer(ITIMER_VIRTUAL, &timer, NULL);
+            // Setup a thread to monitor elapsed time, send SIGKILL on TLE
+            std::thread([timeLimit, sandboxPID](){
+                std::chrono::milliseconds oneMS {std::chrono::milliseconds(1)};
+                std::chrono::time_point startPt {std::chrono::steady_clock::now()};
+                std::chrono::time_point endPt1 {startPt + std::chrono::milliseconds(static_cast<int>(timeLimit * 1000))};
+                std::chrono::time_point endPt2 {endPt1 + std::chrono::milliseconds(500)};
+
+                // Soft interupt process
+                while (std::chrono::steady_clock::now() < endPt1)
+                    std::this_thread::sleep_for(oneMS);
+                if (kill(sandboxPID, 0) == 0) { std::cerr << "TLE.\n"; kill(sandboxPID, SIGTERM); }
+
+                // Force kill if still continuing to execute
+                while (std::chrono::steady_clock::now() < endPt2)
+                    std::this_thread::sleep_for(oneMS);
+                if (kill(sandboxPID, 0) == 0) kill(sandboxPID, SIGKILL);
+            }).detach();
         }
 
-        void writeFile(const std::string &fpath, const std::string &line) {
+        static void unshareAndMapRoot(const int unshareFlags) {
+            // Store the UID / GID to be able to map later
+            const int uid {static_cast<int>(geteuid())}, gid {static_cast<int>(getegid())};
+
+            // Create new namespaces
+            if (unshare(CLONE_NEWUSER | unshareFlags) == -1) { std::cerr << "Failed to create namespaces.\n"; std::exit(1); }
+
+            // UID / GID Mappings
+            writeFile("/proc/self/uid_map", "0 " + std::to_string(uid) + " 1");
+            writeFile("/proc/self/setgroups", "deny");
+            writeFile("/proc/self/gid_map", "0 " + std::to_string(gid) + " 1");
+        }
+
+        static void writeFile(const std::string &fpath, const std::string &line) {
             std::ofstream ofs {fpath};
             if (!ofs) { std::cerr << "Failed to open: " << fpath << "\n"; std::exit(1); }
             ofs << line << "\n";
@@ -71,31 +97,20 @@ class CodeJudge {
         }
 
         void setupSandbox() {
-            constexpr int UNSHARE_FLAGS { CLONE_NEWUSER | CLONE_NEWNS | CLONE_NEWPID | CLONE_NEWNET };
-            const int uid {static_cast<int>(geteuid())}, gid {static_cast<int>(getegid())};
-
-            // Create new namespaces
-            if (unshare(UNSHARE_FLAGS) == -1) { std::cerr << "Failed to create namespaces.\n"; std::exit(1); }
-
-            // UID / GID Mappings
-            writeFile("/proc/self/uid_map", "0 " + std::to_string(uid) + " 1");
-            writeFile("/proc/self/setgroups", "deny");
-            writeFile("/proc/self/gid_map", "0 " + std::to_string(gid) + " 1");
-
-            // Mount FS as read only
-            if (mount(nullptr, "/", nullptr, MS_PRIVATE | MS_REC | MS_BIND | MS_REMOUNT | MS_RDONLY, nullptr) == -1) {
-                std::cerr << "Failed to remount root as readonly.\n"; std::exit(1);
+            // Mount FS as private
+            if (mount(nullptr, "/", nullptr, MS_PRIVATE | MS_REC, nullptr) == -1) {
+                std::cerr << "Failed to remount root as private.\n"; std::exit(1);
             }
+
+            // Try umounting and mounting proc
+			if (mount("proc", "/proc", "proc", 0, nullptr) == -1) {
+				std::cerr << "Failed to mount proc filesystem.\n";
+				std::exit(1);
+			}
 
             // Create a new temp FS
             if (mount("tmpfs", "/tmp", "tmpfs", 0, nullptr) == -1) {
                 std::cerr << "Failed to create a tmpfs.\n"; std::exit(1);
-            }
-
-            // Bind the tmpActual & tmpError as RW
-            if (mount(tmpActual.c_str(), tmpActual.c_str(), nullptr, MS_BIND, nullptr) == -1
-             || mount(tmpError.c_str(), tmpError.c_str(), nullptr, MS_BIND, nullptr) == -1) {
-                std::cerr << "Failed to bind mount tmpActual / tmpError.\n"; std::exit(1);
             }
 
             // Only allow selected capabilities
@@ -110,11 +125,6 @@ class CodeJudge {
                 std::cerr << "Failed to set NO_NEW_PRIVS.\n";
                 std::exit(1);
             }
-
-            // Mount FS as write again and ensure it fails
-            if (mount(nullptr, "/", nullptr, MS_REMOUNT, nullptr) != -1) {
-                std::cerr << "Remounting as writable succeeded.\n"; std::exit(1);
-            } 
         }
 
         void executeBinary() {
@@ -192,6 +202,8 @@ class CodeJudge {
             std::ofstream afile{tmpActual, std::ios::trunc}, efile{tmpError, std::ios::trunc};
             if (!afile || !efile) { std::cerr << "Failed to create log files.\n"; std::exit(1); }
 
+            // Unshare User and PID before Fork - Unshare Part 1
+            unshareAndMapRoot(CLONE_NEWPID | CLONE_NEWNS | CLONE_NEWNET);
             int pid {fork()};
             if (pid == -1) { std::cerr << "Unable to fork.\n"; return false; }
 
@@ -201,9 +213,8 @@ class CodeJudge {
                 redirectStream(STDOUT_FILENO, tmpActual, O_WRONLY | O_CREAT | O_TRUNC);
                 redirectStream(STDERR_FILENO, tmpError, O_WRONLY | O_CREAT | O_TRUNC);
 
-                // Set memory, time limits
+                // Setup Memory limits & Sandbox
                 setMemoryLimit(memoryLimit);
-                setTimeLimit(timeLimit);
                 setupSandbox();
 
                 // Binary reads from stdin (piped from file)
@@ -212,7 +223,8 @@ class CodeJudge {
                 else if (sandboxPID == 0) { executeBinary(); std::exit(1); } 
                 else { 
                     int status {-1}; 
-                    waitpid(pid, &status, 0); 
+                    setTimeLimit(timeLimit, sandboxPID);
+                    waitpid(sandboxPID, &status, 0); 
                     if (WIFEXITED(status) && WEXITSTATUS(status) == 0) std::exit(0);
                     else { std::cerr << "Sandboxed process failed.\n"; std::exit(1); }
                 }
@@ -231,9 +243,14 @@ class CodeJudge {
 
                 } else {
 
-                    int signal {WTERMSIG(status)};
-                    bool MLE {WIFSIGNALED(status) && signal == SIGSEGV};
-                    bool TLE {WIFSIGNALED(status) && (signal == SIGALRM || signal == SIGVTALRM)};
+                    // Error log file stream
+                    std::ifstream errLog{tmpError};
+                    std::string errLine;
+                    std::getline(errLog, errLine);
+
+                    int signal {WTERMSIG(status)}; bool signaled {WIFSIGNALED(status)};
+                    bool MLE {signaled && signal == SIGSEGV};
+                    bool TLE {(signaled && signal == SIGTERM) || errLine == "TLE."};
 
                     if (TLE) std::cout << "Verdict: TLE\n";
                     else if (MLE) std::cout << "Verdict: MLE\n";
@@ -246,8 +263,7 @@ class CodeJudge {
                             std::cout << "Reason: Exited with status " << WEXITSTATUS(status) << "\n";
 
                         // Print out the logs
-                        std::ifstream errLog{tmpError};
-                        std::string errLine;
+                        errLog.seekg(0);
                         while (errLog) {
                             std::getline(errLog, errLine); 
                             std::cout << errLine << "\n";
