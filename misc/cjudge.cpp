@@ -1,3 +1,5 @@
+#include <algorithm>
+#include <cctype>
 #include <sched.h>
 #include <sys/resource.h>
 #include <fcntl.h>
@@ -48,7 +50,8 @@ class CodeJudge {
             // Set memory limit for the process
             struct rlimit limit;
             limit.rlim_cur = limit.rlim_max = 1024 * 1024 * memoryLimit;
-            if (setrlimit(RLIMIT_AS, &limit) != 0 || setrlimit(RLIMIT_STACK, &limit) != 0 || setrlimit(RLIMIT_DATA, &limit) != 0) {
+            if (setrlimit(RLIMIT_AS, &limit) != 0 || setrlimit(RLIMIT_STACK, &limit) != 0 
+             || setrlimit(RLIMIT_DATA, &limit) != 0 || setrlimit(RLIMIT_RSS, &limit) != 0) {
                 std::cerr << "Failed to set memory limit.\n";
                 std::exit(1);
             }
@@ -75,28 +78,34 @@ class CodeJudge {
             }
         }
 
+        static void killAllExcept(const pid_t pid, const int signal) {
+            for (const std::filesystem::directory_entry &dir: std::filesystem::directory_iterator("/proc")) {
+                std::string dirStr {dir.path().filename()};
+                bool isPid {dir.is_directory() && std::all_of(dirStr.cbegin(), dirStr.cend(), [](const char ch) { return std::isdigit(ch); })}; 
+                if (isPid && dirStr != std::to_string(pid)) {
+                    pid_t currPid {static_cast<pid_t>(std::stoul(dirStr))};
+                    kill(currPid, signal);
+                }
+            }
+        }
+
         // Helper to set timelimit
-        static void setTimeLimit(float timeLimit, pid_t sandboxPID) {
+        static void setTimeLimit(float timeLimit, pid_t sandboxPID, pid_t cjudgePID) {
             const float MIN_TIME_LIMIT = 0.001f;
             if (timeLimit < MIN_TIME_LIMIT)
                 timeLimit = MIN_TIME_LIMIT;
 
             // Setup a thread to monitor elapsed time, send SIGKILL on TLE
-            std::thread([timeLimit, sandboxPID](){
-                // Wait duration & grace duration in MS
-                std::chrono::milliseconds waitDuration {static_cast<int>(timeLimit * 1.05 * 1000)}, graceDuration {250};
+            std::thread([timeLimit, sandboxPID, cjudgePID](){
+                // Wait duration in MS
+                std::chrono::milliseconds waitDuration {static_cast<int>(timeLimit * 1.05 * 1000)};
 
-                // Wait for specified time limit & soft interrupt
+                // Wait for specified time limit & kill if still running
                 std::this_thread::sleep_for(waitDuration);
                 if (kill(sandboxPID, 0) == 0) { 
                     std::cerr << "TLE.\n"; 
-                    kill(sandboxPID, SIGTERM); 
+                    killAllExcept(cjudgePID, SIGKILL);
                 }
-
-                // Wait for a short grace period & force kill if still running
-                std::this_thread::sleep_for(graceDuration);
-                if (kill(sandboxPID, 0) == 0) kill(sandboxPID, SIGKILL);
-
             }).detach();
         }
 
@@ -126,6 +135,9 @@ class CodeJudge {
         }
 
         void dropPriviledges() {
+            // Unshare USER NS, map as nobody
+            unshareAndMapUID(0, false);
+
             // Only allow selected capabilities
             cap_t caps{cap_get_proc()}; cap_clear(caps);
             cap_value_t allowedCaps[] {};
@@ -138,9 +150,6 @@ class CodeJudge {
                 std::cerr << "Failed to set NO_NEW_PRIVS.\n";
                 std::exit(1);
             }
-
-            // Unshare USER NS, map as nobody
-            unshareAndMapUID(0, false);
         }
 
         void setupSandbox() {
@@ -263,7 +272,7 @@ class CodeJudge {
                 else if (sandboxPID == 0) { executeBinary(); std::exit(1); } 
                 else { 
                     int status {-1}; 
-                    setTimeLimit(timeLimit, sandboxPID);
+                    setTimeLimit(timeLimit, sandboxPID, getpid());
                     waitpid(sandboxPID, &status, 0); 
                     if (WIFEXITED(status) && WEXITSTATUS(status) == 0) std::exit(0);
                     else { std::cerr << "Sandboxed process failed.\n"; std::exit(1); }
