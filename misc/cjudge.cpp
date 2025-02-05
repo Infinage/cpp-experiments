@@ -1,23 +1,14 @@
-#include <algorithm>
-#include <cctype>
-#include <sched.h>
-#include <sys/resource.h>
-#include <fcntl.h>
 #include <sys/wait.h>
-#include <sys/time.h>
-#include <sys/stat.h>
 #include <sys/prctl.h>
 #include <sys/mount.h>
+#include <sys/resource.h>
 #include <sys/capability.h>
 
+#include <charconv>
 #include <chrono>
-#include <cmath>
-#include <cstdlib>
-#include <csignal>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
-#include <sstream>
 #include <string>
 #include <thread>
 #include <vector>
@@ -33,7 +24,7 @@
 class CodeJudge {
     private:
         // Helper to redirect stream
-        static void redirectStream(int originalFD, const std::string &redirectFileName, int flags, int mode = 0644) {
+        static void redirectStream(int originalFD, const std::string &redirectFileName, int flags, int mode = 0666) {
             int redirectFD {open(redirectFileName.c_str(), flags, mode)}, redirectStatus {-1};
             if (redirectFD != -1) { redirectStatus = dup2(redirectFD, originalFD); close(redirectFD); }
             if (redirectFD == -1 || redirectStatus == -1) {
@@ -64,7 +55,7 @@ class CodeJudge {
             }
 
             // Set a limit to number of child processes
-            limit.rlim_cur = limit.rlim_max = nprocs;
+            limit.rlim_cur = limit.rlim_max = nprocs + 3;
             if (setrlimit(RLIMIT_NPROC, &limit) != 0) {
                 std::cerr << "Failed to set proc limit.\n";
                 std::exit(1);
@@ -78,6 +69,7 @@ class CodeJudge {
             }
         }
 
+        // Kill all process in the /proc/ directory, skip provided pid
         static void killAllExcept(const pid_t pid, const int signal) {
             for (const std::filesystem::directory_entry &dir: std::filesystem::directory_iterator("/proc")) {
                 std::string dirStr {dir.path().filename()};
@@ -109,7 +101,9 @@ class CodeJudge {
             }).detach();
         }
 
-        static void unshareAndMapUID(const int unshareFlags, bool rootUser = true) {
+        // Unshares with provided flags (user namespace is auto picked)
+        // Maps uid with provided newUID parameter
+        static void unshareAndMapUID(const int unshareFlags, bool newUID) {
             // Store the UID / GID to be able to map later
             const int uid {static_cast<int>(geteuid())}, gid {static_cast<int>(getegid())};
 
@@ -120,13 +114,12 @@ class CodeJudge {
             }
 
             // UID / GID Mappings
-            if (rootUser) {
-                writeFile("/proc/self/uid_map", "0 " + std::to_string(uid) + " 1");
-                writeFile("/proc/self/setgroups", "deny");
-                writeFile("/proc/self/gid_map", "0 " + std::to_string(gid) + " 1");
-            }
+            writeFile("/proc/self/uid_map", std::to_string(newUID) + " " + std::to_string(uid) + " 1");
+            writeFile("/proc/self/setgroups", "deny");
+            writeFile("/proc/self/gid_map", std::to_string(newUID) + " " + std::to_string(gid) + " 1");
         }
 
+        // Helper to write a single line to provided fpath
         static void writeFile(const std::string &fpath, const std::string &line) {
             std::ofstream ofs {fpath};
             if (!ofs) { std::cerr << "Failed to open: " << fpath << "\n"; std::exit(1); }
@@ -135,10 +128,10 @@ class CodeJudge {
         }
 
         void dropPriviledges() {
-            // Unshare USER NS, map as nobody
-            unshareAndMapUID(0, false);
+            // Map as nobody user
+            unshareAndMapUID(CLONE_NEWUSER, 65534);
 
-            // Only allow selected capabilities
+            // Only allow selected capabilities (None picked)
             cap_t caps{cap_get_proc()}; cap_clear(caps);
             cap_value_t allowedCaps[] {};
             cap_set_flag(caps, CAP_PERMITTED, 1, allowedCaps, CAP_SET);
@@ -153,14 +146,14 @@ class CodeJudge {
         }
 
         void setupSandbox() {
-            // Try umounting and mounting proc
+            // Try mounting a new proc file system
 			if (mount("proc", "/proc", "proc", 0, nullptr) == -1) {
 				std::cerr << "Failed to mount proc filesystem.\n";
 				std::exit(1);
 			}
 
             // Mount FS as private
-            unshareAndMapUID(CLONE_NEWNS);
+            unshareAndMapUID(CLONE_NEWNS, 0);
             if (mount(nullptr, "/", nullptr, MS_REC | MS_PRIVATE | MS_RDONLY | MS_BIND | MS_REMOUNT, nullptr) == -1) {
                 std::cerr << "Failed to remount root as private.\n"; std::exit(1);
             }
@@ -247,13 +240,14 @@ class CodeJudge {
         {}
 
         bool run() {
-
-            // Create the tmpActual / tmpError files
+            // Create the tmpActual / tmpError files, everyone can read write
             std::ofstream afile{tmpActual, std::ios::trunc}, efile{tmpError, std::ios::trunc};
             if (!afile || !efile) { std::cerr << "Failed to create log files.\n"; std::exit(1); }
+            std::filesystem::permissions(tmpActual, std::filesystem::perms::all);
+            std::filesystem::permissions(tmpError, std::filesystem::perms::all);
 
             // Unshare User, PID, Mount before Fork - Unshare Part 1
-            unshareAndMapUID(CLONE_NEWPID | CLONE_NEWNS | CLONE_NEWNET);
+            unshareAndMapUID(CLONE_NEWPID | CLONE_NEWNS | CLONE_NEWNET, 0);
             int pid {fork()};
             if (pid == -1) { std::cerr << "Unable to fork.\n"; return false; }
 
@@ -298,8 +292,8 @@ class CodeJudge {
                     std::getline(errLog, errLine);
 
                     int signal {WTERMSIG(status)}; bool signaled {WIFSIGNALED(status)};
-                    bool MLE {signaled && signal == SIGSEGV};
-                    bool TLE {(signaled && signal == SIGTERM) || errLine == "TLE."};
+                    bool MLE {signaled && (signal == SIGSEGV || signal == SIGABRT || signal == SIGXFSZ)};
+                    bool TLE {(signaled && signal == SIGTERM) || signal == SIGXCPU || errLine == "TLE."};
 
                     if (TLE) std::cout << "Verdict: TLE\n";
                     else if (MLE) std::cout << "Verdict: MLE\n";
@@ -330,10 +324,27 @@ class CodeJudge {
         }
 };
 
+template<typename T>
+void parseCLIArgument(const std::string &arg, const int pos, T &placeholder) {
+    std::from_chars_result parseResult {std::from_chars(arg.c_str() + pos, arg.c_str() + arg.size(), placeholder)};
+    if (parseResult.ec != std::errc() || parseResult.ptr != arg.c_str() + arg.size()) {
+        std::cerr << "Invalid value passed to argument: " << arg.c_str() + pos << "\n";
+        std::exit(1);
+    }
+}
+
 int main(int argc, char **argv) {
-    if (argc < 4) {
+
+    // If running as root, exit - no reliable way around at the moment
+    if (getuid() == 0) {
+        std::cerr << "Running as root is not supported.\n";
+        std::exit(1);
+    }
+
+    // Argument validation
+    else if (argc < 4) {
         if (argc == 1) {
-            std::cout << "Usage: cjudge [--memory=256] [--time=0.5] [--nprocs=10] <binary_command> <questions_file> <answers_file>\n";
+            std::cout << "Usage: cjudge [--memory=256] [--time=0.5] [--nprocs=1] <binary_command> <questions_file> <answers_file>\n";
             return 0;
         }
         else {
@@ -351,17 +362,17 @@ int main(int argc, char **argv) {
         // Specify memory and time limit
         unsigned long MEMORY_LIMIT_MB {256};
         float TIME_LIMIT_SEC {0.5};
-        unsigned long N_PROCS {10};
+        unsigned long N_PROCS {1};
 
         // Parse the parameters
         for (int i {1}; i < argc - 3; i++) {
             std::string arg{argv[i]};
             if (arg.starts_with("--memory="))
-                MEMORY_LIMIT_MB = std::stoul(arg.substr(9));
+                parseCLIArgument(arg, 9, MEMORY_LIMIT_MB);
             else if (arg.starts_with("--time="))
-                TIME_LIMIT_SEC = std::stof(arg.substr(7));
+                parseCLIArgument(arg, 7, TIME_LIMIT_SEC);
             else if (arg.starts_with("--nprocs="))
-                N_PROCS = std::stoul(arg.substr(9));
+                parseCLIArgument(arg, 9, N_PROCS);
             else {
                 std::cerr << "Invalid argument: " << arg << "\n";
                 std::exit(1);
