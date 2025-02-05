@@ -1,17 +1,16 @@
-#include <chrono>
-#include <cmath>
-#include <cstdlib>
 #include <sched.h>
 #include <sys/resource.h>
 #include <fcntl.h>
 #include <sys/wait.h>
 #include <sys/time.h>
 #include <sys/stat.h>
-#include <linux/prctl.h> 
 #include <sys/prctl.h>
 #include <sys/mount.h>
 #include <sys/capability.h>
 
+#include <chrono>
+#include <cmath>
+#include <cstdlib>
 #include <csignal>
 #include <filesystem>
 #include <fstream>
@@ -41,12 +40,37 @@ class CodeJudge {
             }
         }
 
-        // Helper to set memory limit using c function
-        static void setMemoryLimit(unsigned long memoryLimit) {
-            struct rlimit memLimit;
-            memLimit.rlim_cur = memLimit.rlim_max = 1024 * 1024 * memoryLimit;
-            if (setrlimit(RLIMIT_AS, &memLimit) != 0) {
+        // Helper to set resource limits
+        static void setResourceLimits(
+            unsigned long memoryLimit, unsigned long nprocs,
+            float cpuTime = 50, unsigned long fSize = 10
+        ) {
+            // Set memory limit for the process
+            struct rlimit limit;
+            limit.rlim_cur = limit.rlim_max = 1024 * 1024 * memoryLimit;
+            if (setrlimit(RLIMIT_AS, &limit) != 0 || setrlimit(RLIMIT_STACK, &limit) != 0 || setrlimit(RLIMIT_DATA, &limit) != 0) {
                 std::cerr << "Failed to set memory limit.\n";
+                std::exit(1);
+            }
+
+            // Set file size limit for the process
+            limit.rlim_cur = limit.rlim_max = 1024 * 1024 * fSize;
+            if (setrlimit(RLIMIT_FSIZE, &limit) != 0) {
+                std::cerr << "Failed to set file size limit.\n";
+                std::exit(1);
+            }
+
+            // Set a limit to number of child processes
+            limit.rlim_cur = limit.rlim_max = nprocs;
+            if (setrlimit(RLIMIT_NPROC, &limit) != 0) {
+                std::cerr << "Failed to set proc limit.\n";
+                std::exit(1);
+            }
+
+            // Limit CPU time
+            limit.rlim_cur = limit.rlim_max = static_cast<rlim_t>(cpuTime);
+            if (setrlimit(RLIMIT_CPU, &limit) != 0) {
+                std::cerr << "Failed to set proc limit.\n";
                 std::exit(1);
             }
         }
@@ -59,34 +83,39 @@ class CodeJudge {
 
             // Setup a thread to monitor elapsed time, send SIGKILL on TLE
             std::thread([timeLimit, sandboxPID](){
-                std::chrono::milliseconds oneMS {std::chrono::milliseconds(1)};
-                std::chrono::time_point startPt {std::chrono::steady_clock::now()};
-                std::chrono::time_point endPt1 {startPt + std::chrono::milliseconds(static_cast<int>(timeLimit * 1000))};
-                std::chrono::time_point endPt2 {endPt1 + std::chrono::milliseconds(500)};
+                // Wait duration & grace duration in MS
+                std::chrono::milliseconds waitDuration {static_cast<int>(timeLimit * 1.05 * 1000)}, graceDuration {250};
 
-                // Soft interupt process
-                while (std::chrono::steady_clock::now() < endPt1)
-                    std::this_thread::sleep_for(oneMS);
-                if (kill(sandboxPID, 0) == 0) { std::cerr << "TLE.\n"; kill(sandboxPID, SIGTERM); }
+                // Wait for specified time limit & soft interrupt
+                std::this_thread::sleep_for(waitDuration);
+                if (kill(sandboxPID, 0) == 0) { 
+                    std::cerr << "TLE.\n"; 
+                    kill(sandboxPID, SIGTERM); 
+                }
 
-                // Force kill if still continuing to execute
-                while (std::chrono::steady_clock::now() < endPt2)
-                    std::this_thread::sleep_for(oneMS);
+                // Wait for a short grace period & force kill if still running
+                std::this_thread::sleep_for(graceDuration);
                 if (kill(sandboxPID, 0) == 0) kill(sandboxPID, SIGKILL);
+
             }).detach();
         }
 
-        static void unshareAndMapRoot(const int unshareFlags) {
+        static void unshareAndMapUID(const int unshareFlags, bool rootUser = true) {
             // Store the UID / GID to be able to map later
             const int uid {static_cast<int>(geteuid())}, gid {static_cast<int>(getegid())};
 
             // Create new namespaces
-            if (unshare(CLONE_NEWUSER | unshareFlags) == -1) { std::cerr << "Failed to create namespaces.\n"; std::exit(1); }
+            if (unshare(CLONE_NEWUSER | unshareFlags) == -1) { 
+                std::cerr << "Failed to create namespaces.\n"; 
+                std::exit(1); 
+            }
 
             // UID / GID Mappings
-            writeFile("/proc/self/uid_map", "0 " + std::to_string(uid) + " 1");
-            writeFile("/proc/self/setgroups", "deny");
-            writeFile("/proc/self/gid_map", "0 " + std::to_string(gid) + " 1");
+            if (rootUser) {
+                writeFile("/proc/self/uid_map", "0 " + std::to_string(uid) + " 1");
+                writeFile("/proc/self/setgroups", "deny");
+                writeFile("/proc/self/gid_map", "0 " + std::to_string(gid) + " 1");
+            }
         }
 
         static void writeFile(const std::string &fpath, const std::string &line) {
@@ -96,23 +125,7 @@ class CodeJudge {
             ofs.close();
         }
 
-        void setupSandbox() {
-            // Mount FS as private
-            if (mount(nullptr, "/", nullptr, MS_PRIVATE | MS_REC, nullptr) == -1) {
-                std::cerr << "Failed to remount root as private.\n"; std::exit(1);
-            }
-
-            // Try umounting and mounting proc
-			if (mount("proc", "/proc", "proc", 0, nullptr) == -1) {
-				std::cerr << "Failed to mount proc filesystem.\n";
-				std::exit(1);
-			}
-
-            // Create a new temp FS
-            if (mount("tmpfs", "/tmp", "tmpfs", 0, nullptr) == -1) {
-                std::cerr << "Failed to create a tmpfs.\n"; std::exit(1);
-            }
-
+        void dropPriviledges() {
             // Only allow selected capabilities
             cap_t caps{cap_get_proc()}; cap_clear(caps);
             cap_value_t allowedCaps[] {};
@@ -125,9 +138,34 @@ class CodeJudge {
                 std::cerr << "Failed to set NO_NEW_PRIVS.\n";
                 std::exit(1);
             }
+
+            // Unshare USER NS, map as nobody
+            unshareAndMapUID(0, false);
+        }
+
+        void setupSandbox() {
+            // Try umounting and mounting proc
+			if (mount("proc", "/proc", "proc", 0, nullptr) == -1) {
+				std::cerr << "Failed to mount proc filesystem.\n";
+				std::exit(1);
+			}
+
+            // Mount FS as private
+            unshareAndMapUID(CLONE_NEWNS);
+            if (mount(nullptr, "/", nullptr, MS_REC | MS_PRIVATE | MS_RDONLY | MS_BIND | MS_REMOUNT, nullptr) == -1) {
+                std::cerr << "Failed to remount root as private.\n"; std::exit(1);
+            }
+
+            // Create a new temp FS
+            if (mount("tmpfs", "/tmp", "tmpfs", 0, nullptr) == -1) {
+                std::cerr << "Failed to create a tmpfs.\n"; std::exit(1);
+            }
         }
 
         void executeBinary() {
+            // Drop the priviledges before running execvp
+            dropPriviledges();
+
             // Get the binaryCmd split into tokens
             std::istringstream cmdStream{binaryCmd};
             std::vector<std::string> argStrs;
@@ -139,9 +177,9 @@ class CodeJudge {
             std::vector<char*> args;
             for (std::string &arg: argStrs)
                 args.push_back(const_cast<char*>(arg.c_str()));
+            args.push_back(NULL);
 
             // Execute the binary command
-            args.push_back(NULL);
             execvp(args[0], args.data());
 
             // If this line is reached, execvp failed
@@ -174,8 +212,9 @@ class CodeJudge {
     private:
         std::string binaryCmd, questionsFile, answersFile;
         std::string tmpActual, tmpError;
-        const unsigned long memoryLimit;
+        const unsigned long memoryLimit; 
         const float timeLimit;
+        const unsigned long nProcs;
 
     public:
         CodeJudge(
@@ -185,7 +224,8 @@ class CodeJudge {
             const std::string &tmpActual, 
             const std::string &tmpError,
             const unsigned long memoryLimit,
-            const float timeLimit
+            const float timeLimit,
+            const unsigned long nProcs
         ):
             binaryCmd(binaryCmd), 
             questionsFile(questionsFile), 
@@ -193,7 +233,8 @@ class CodeJudge {
             tmpActual(std::filesystem::current_path() / tmpActual), 
             tmpError(std::filesystem::current_path() / tmpError),
             memoryLimit(memoryLimit),
-            timeLimit(timeLimit)
+            timeLimit(timeLimit),
+            nProcs(nProcs)
         {}
 
         bool run() {
@@ -202,8 +243,8 @@ class CodeJudge {
             std::ofstream afile{tmpActual, std::ios::trunc}, efile{tmpError, std::ios::trunc};
             if (!afile || !efile) { std::cerr << "Failed to create log files.\n"; std::exit(1); }
 
-            // Unshare User and PID before Fork - Unshare Part 1
-            unshareAndMapRoot(CLONE_NEWPID | CLONE_NEWNS | CLONE_NEWNET);
+            // Unshare User, PID, Mount before Fork - Unshare Part 1
+            unshareAndMapUID(CLONE_NEWPID | CLONE_NEWNS | CLONE_NEWNET);
             int pid {fork()};
             if (pid == -1) { std::cerr << "Unable to fork.\n"; return false; }
 
@@ -213,11 +254,10 @@ class CodeJudge {
                 redirectStream(STDOUT_FILENO, tmpActual, O_WRONLY | O_CREAT | O_TRUNC);
                 redirectStream(STDERR_FILENO, tmpError, O_WRONLY | O_CREAT | O_TRUNC);
 
-                // Setup Memory limits & Sandbox
-                setMemoryLimit(memoryLimit);
+                // Setup RLimits (stack / heap mem, nprocs, cpu time, etc) & Sandbox
+                setResourceLimits(memoryLimit, nProcs);
                 setupSandbox();
 
-                // Binary reads from stdin (piped from file)
                 int sandboxPID {fork()};
                 if (sandboxPID == -1) { std::cerr << "Unable to create sandbox fork.\n"; return false; }
                 else if (sandboxPID == 0) { executeBinary(); std::exit(1); } 
@@ -284,7 +324,7 @@ class CodeJudge {
 int main(int argc, char **argv) {
     if (argc < 4) {
         if (argc == 1) {
-            std::cout << "Usage: cjudge [--memory=256] [--cpus=0.5] <binary_command> <questions_file> <answers_file>\n";
+            std::cout << "Usage: cjudge [--memory=256] [--time=0.5] [--nprocs=10] <binary_command> <questions_file> <answers_file>\n";
             return 0;
         }
         else {
@@ -302,14 +342,17 @@ int main(int argc, char **argv) {
         // Specify memory and time limit
         unsigned long MEMORY_LIMIT_MB {256};
         float TIME_LIMIT_SEC {0.5};
+        unsigned long N_PROCS {10};
 
         // Parse the parameters
         for (int i {1}; i < argc - 3; i++) {
             std::string arg{argv[i]};
             if (arg.starts_with("--memory="))
                 MEMORY_LIMIT_MB = std::stoul(arg.substr(9));
-            else if (arg.starts_with("--cpus="))
+            else if (arg.starts_with("--time="))
                 TIME_LIMIT_SEC = std::stof(arg.substr(7));
+            else if (arg.starts_with("--nprocs="))
+                N_PROCS = std::stoul(arg.substr(9));
             else {
                 std::cerr << "Invalid argument: " << arg << "\n";
                 std::exit(1);
@@ -333,7 +376,8 @@ int main(int argc, char **argv) {
             actualOutput, 
             actualError, 
             MEMORY_LIMIT_MB, 
-            TIME_LIMIT_SEC
+            TIME_LIMIT_SEC,
+            N_PROCS
         };
 
         // Execute the judge with provided inputs
