@@ -6,11 +6,12 @@ CXXFLAGS = -std=c++23 -Wall -Wextra
 DEBUG_FLAGS = -ggdb
 RELEASE_FLAGS = -O2
 
-# Additional configuration for minesweeper
+# Additional configurations
 MINESWEEPER_CONFIGS = -L/home/kael/cpplib/lib -I/home/kael/cpplib/include -lftxui-component -lftxui-dom -lftxui-screen
+CJUDGE_CONFIGS = -lcap
 
 # Find source files
-SOURCES = minesweeper.cpp barcode.cpp brainfuck.cpp
+SOURCES = minesweeper.cpp barcode.cpp brainfuck.cpp cjudge.cpp
 
 # Output for both debug and release
 DEBUG_OUTPUTS = $(patsubst %.cpp, build/%.debug, $(SOURCES))
@@ -37,7 +38,14 @@ $(BUILD_DIR)/minesweeper.debug: minesweeper.cpp | $(BUILD_DIR)
 $(BUILD_DIR)/minesweeper.out: minesweeper.cpp | $(BUILD_DIR)
 	$(CXX) $< $(CXXFLAGS) $(RELEASE_FLAGS) $(MINESWEEPER_CONFIGS) -o $@
 
-# General rule for other .cpp files without FTXUI dependencies
+# Compile cjudge.cpp with capabilities dependencies
+$(BUILD_DIR)/cjudge.debug: cjudge.cpp | $(BUILD_DIR)
+	$(CXX) $< $(CXXFLAGS) $(DEBUG_FLAGS) $(CJUDGE_CONFIGS) -o $@
+
+$(BUILD_DIR)/cjudge.out: cjudge.cpp | $(BUILD_DIR)
+	$(CXX) $< $(CXXFLAGS) $(RELEASE_FLAGS) $(CJUDGE_CONFIGS) -o $@
+
+# General rule for other .cpp files without extra dependencies
 $(BUILD_DIR)/%.debug: %.cpp | $(BUILD_DIR)
 	$(CXX) $< $(CXXFLAGS) $(DEBUG_FLAGS) -o $@
 
