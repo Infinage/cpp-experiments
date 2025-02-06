@@ -2,6 +2,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include <sstream>
 #include <csignal>
 #include <filesystem>
 #include <iostream>
@@ -11,8 +12,14 @@
 
 /*
  * TODO:
- * 1. Reset ctrl C signal handler after execute
- * 2. Execute commands like "echo 'hello world'"
+ * 0. cd without any arguments or with a tilde switches to user home
+ * 1. Clear screen
+ * 2. Piping commands: "<", ">", "|"
+ * 3. Running in background
+ * 3. How do these commands work: clear, more
+ * 4. What will csh do if executed csh binary? Nesting bash inside bash
+ * 5. Shell history, arrow keys to navigate history
+ * 6. Prompt with colors, current working directory. How sig_noop would handle it?
  */
 
 namespace fs = std::filesystem;
@@ -21,12 +28,29 @@ static pid_t execid {-1};
 class Shell {
 private:
     std::vector<std::string> paths{"/bin"};
+    std::string currDirectory, homeDirectory;
     std::unordered_map<std::string, std::string> commands;
 
 private:
-    /*
-     * Check if current user running shell has exec permissions
-     */
+
+    /* NOOP Signal Handler, prints "csh> " */
+    static void SIG_NOOP (int) { 
+        std::cout << "\ncsh> "; 
+        std::cout.flush(); 
+    }
+
+    /* Split an string into a vector of strings, delimited by whitespace */
+    static std::vector<std::string> split(const std::string &str) {
+        std::istringstream iss {str};  
+        std::vector<std::string> splits;
+        std::string piece;
+        while (iss >> piece) 
+            splits.push_back(piece);
+
+        return splits;
+    }
+
+    /* Check if current user running shell has exec permissions */
     bool checkExecPerm(const fs::directory_entry &dir) const {
         fs::perms filePerms {fs::status(dir).permissions()};
         unsigned int uid {getuid()}, gid {getgid()};
@@ -59,10 +83,8 @@ private:
         }
     }
 
-    /*
-     * Execute the binary 
-     */
-    void execute(std::string &command) {
+    /* Execute the binary */
+    void execute(std::vector<std::string> &cmds_) {
         int pipefd[2];
         if (pipe(pipefd) == -1) { std::cerr << "Unable to open a pipe.\n"; return; }
 
@@ -80,11 +102,18 @@ private:
             close(pipefd[1]);
             if (!redirectStatus) { std::exit(1); };
 
+            // Convert cmds to a vector of char*
+            std::vector<char *> cmds;
+            for (std::string& str: cmds_)
+                cmds.push_back(str.data());
+            cmds.push_back(nullptr);
+
             // Execute command
             char **environ {};
-            execle(commands.at(command).c_str(), command.c_str(), nullptr, environ);
+            chdir(currDirectory.c_str());
+            execvpe(commands.at(cmds[0]).c_str(), cmds.data(), environ);
             std::exit(1);
-        } 
+        }
 
         else {
             // Install signal interupt
@@ -107,31 +136,53 @@ private:
             // Wait for child process completion
             int status;
             waitpid(execid, &status, 0);
-            if (WEXITSTATUS(status) != 0) 
-                std::cerr << "Failed to execute: " << command << "\n";
+            if (WEXITSTATUS(status) != 0)
+                std::cerr << "Failed to execute.\n";
+
+            // Remove the signal handler
+            std::signal(SIGINT, SIG_NOOP);
         }
     }
 
 public:
-    Shell() { populateCommandsFromPath(); }
+    Shell(): currDirectory(fs::current_path()) 
+    { 
+        populateCommandsFromPath(); 
+    }
 
+    /* Start shell loop */
     void run() {
+        // On SIGINT, do nothing
+        std::signal(SIGINT, SIG_NOOP);
+
         while(1) {
             std::string line;
             std::cout << "csh> ";
             std::getline(std::cin, line);
-
-            if (line == "exit" || !std::cin.good()) 
+            std::vector<std::string> cmds{split(line)};
+            if (cmds.empty()) {
+                if (std::cin.eof()) { std::cout << "\n"; break; }
+            } else if (cmds[0] == "exit") {
                 break;
-            else if (commands.find(line) == commands.end())
-                std::cerr << line << ": command not in path.\n";
-            else
-                execute(line);
+            } else if (cmds[0] == "cd") {
+                if (cmds.size() > 2) {
+                    std::cerr << "cd: too many arguments.\n";
+                } else if (cmds.size() == 1 || cmds[1] == "~") {
+                    std::cerr << "cd: switching to home is currently unsupported.\n";
+                } else {
+                    if (fs::is_directory(cmds[1])) 
+                        currDirectory = cmds[1];
+                }
+            } else if (commands.find(cmds[0]) == commands.end()) {
+                std::cerr << "Command not in path: " << cmds[0] << "\n";
+            } else {
+                execute(cmds);
+            }
         }
     }
 };
 
-int main(int argc, char **argv) {
+int main(int argc, char**) {
     if (argc != 1) {
         std::cerr << "Sorry, execution of scripts is currently unsupported.\n";
         return 1;
