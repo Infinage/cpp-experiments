@@ -1,7 +1,6 @@
 #pragma once
 
 #include <fstream>
-#include <functional>
 #include <iostream>
 #include <stdexcept>
 #include <string>
@@ -54,32 +53,29 @@ namespace CSVUtil {
         return true;
     }
 
+    // Helper to output a single CSV field as a string
+    inline std::string writeCSVField(const std::string& field, const char delim = ',') {
+        std::string result;
+        bool splChars {false};
+        for (const char &ch: field) {
+            if (ch == '"') result += '"';
+            result += ch;
+            splChars |= (
+                ch == '"' || ch == delim || ch == '\n'
+             || ch == '\r' || ch == '\f'
+            );
+        }
+
+        // Enclose inside quotes if any of spl char exist
+        if (splChars) result = '"' + result + '"';
+        return result;
+    }
+
     // Output a single CSV line as a string
     inline std::string writeCSVLine(const std::vector<std::string> &row, const char delim = ',') {
-
-        // Helper to output a single CSV field as a string
-        std::function<std::string(const std::string&)> writeCSVField {
-            [&delim] (const std::string& field) -> std::string {
-                std::string result;
-                bool splChars {false};
-                for (const char &ch: field) {
-                    if (ch == '"') result += '"';
-                    result += ch;
-                    splChars |= (
-                        ch == '"' || ch == delim || ch == '\n'
-                     || ch == '\r' || ch == '\f'
-                    );
-                }
-
-                // Enclose inside quotes if any of spl char exist
-                if (splChars) result = '"' + result + '"';
-                return result;
-            }
-        };
-
         std::string result;
         for (const std::string &field: row)
-            result += writeCSVField(field) + ',';
+            result += writeCSVField(field, delim) + ',';
 
         if (!result.empty()) result.pop_back();
         return result;

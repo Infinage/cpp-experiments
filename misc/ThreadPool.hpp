@@ -1,3 +1,5 @@
+#pragma once
+
 #include <atomic>
 #include <condition_variable>
 #include <mutex>
@@ -16,7 +18,7 @@ class ThreadPool {
         std::atomic<bool> exitCondition = false;
 
     public:
-        ThreadPool(std::size_t N_WORKERS): N_WORKERS(N_WORKERS) {
+        ThreadPool(const std::size_t N_WORKERS): N_WORKERS(N_WORKERS) {
             for (std::size_t i {0}; i < this->N_WORKERS; i++) {
                 workers.push_back(std::thread([this]{
                     for (;;) {
