@@ -1,57 +1,100 @@
 #pragma once
 
 #include <fstream>
+#include <functional>
 #include <iostream>
 #include <stdexcept>
 #include <string>
 #include <vector>
 
 namespace CSVUtil {
-    // Count the no. of cols, returns 0 if line is incomplete
-    inline std::size_t countCols(const std::string &line, const char delim = ',') {
-        bool insideStr {false};
-        std::size_t cols {1};
-        for (const char &ch: line) {
-            if (!insideStr && ch == delim) cols++;
-            else if (ch == '"') insideStr = !insideStr;
-        }
-        return insideStr? 0: cols;
-    }
-
-    // Parse a single CSV line into a vector of strings (assumes that the line is 'complete')
-    inline std::vector<std::string> parseCSVLine(const std::string &line, const char delim = ',') {
+    // Parse a single CSV line into a vector of strings, returns empty is line is incomplete
+    inline std::vector<std::string> parseCSVLine(const std::string &line, const char delim = ',', const char quoteChar = '"') {
         std::vector<std::string> result;
         bool insideStr {false};
-        std::string acc; std::size_t idx {0}, N {line.size()};
-        while (idx < N) {
+        std::string acc; std::size_t N {line.size()};
+        for (std::size_t idx {0}; idx < N; idx++) {
+            // Delim is considered only if we are not inside a quoted field
             if (!insideStr && line[idx] == delim) {
-                result.push_back(acc);
+                result.emplace_back(acc);
                 acc.clear();
-            } else if (line[idx] == '"') {
-                if (insideStr && idx + 1 < N && line[idx + 1] == '"') {
-                    acc += '"'; idx++;
-                } else insideStr = !insideStr;
-            } else {
-                acc += line[idx];
+            } 
+
+            // Start quote IFF it is present at the beginning for a field
+            else if (!insideStr && line[idx] == quoteChar && (idx == 0 || line[idx - 1] == delim)) {
+                insideStr = true;
+            } 
+
+            // Might be the end of a quoted field or could be simply escaped
+            else if (insideStr && line[idx] == quoteChar) {
+                if (idx + 1 < N && line[idx + 1] != delim && line[idx + 1] != quoteChar) {
+                    throw std::runtime_error("Not a valid CSV: " + line);
+                } else if (idx + 1 < N && line[idx + 1] == quoteChar) {
+                    acc += quoteChar; idx++;
+                } else {
+                    insideStr = false;
+                }
             }
 
-            idx++;
+            else {
+                acc += line[idx];
+            }
         }
 
-        result.push_back(acc);
+        result.emplace_back(acc);
+        if (insideStr) result.clear();
+
         return result;
     }
 
-    // Print out the rows / cols in a CSV file
+    inline bool safeGetline(std::istream &is, std::string &line) {
+        if (!std::getline(is, line)) return false;
+        if (!line.empty() && line.back() == '\r') 
+            line.pop_back();
+        return true;
+    }
+
+    // Output a single CSV line as a string
+    inline std::string writeCSVLine(const std::vector<std::string> &row, const char delim = ',') {
+
+        // Helper to output a single CSV field as a string
+        std::function<std::string(const std::string&)> writeCSVField {
+            [&delim] (const std::string& field) -> std::string {
+                std::string result;
+                bool splChars {false};
+                for (const char &ch: field) {
+                    if (ch == '"') result += '"';
+                    result += ch;
+                    splChars |= (
+                        ch == '"' || ch == delim || ch == '\n'
+                     || ch == '\r' || ch == '\f'
+                    );
+                }
+
+                // Enclose inside quotes if any of spl char exist
+                if (splChars) result = '"' + result + '"';
+                return result;
+            }
+        };
+
+        std::string result;
+        for (const std::string &field: row)
+            result += writeCSVField(field) + ',';
+
+        if (!result.empty()) result.pop_back();
+        return result;
+    }
+
+    // Returns the rows / cols in a CSV file
     inline std::pair<std::size_t, std::size_t> stat(const std::string &fname) {
         std::size_t rows {0}, cols {0};
         std::ifstream ifs {fname};
         if (!ifs) std::cerr << "'" << fname << "' is not a valid file.\n";
         else {
             std::string line, acc;
-            while (std::getline(ifs, line)) {
+            while (safeGetline(ifs, line)) {
                 acc += line;
-                std::size_t currCols {countCols(acc)};
+                std::size_t currCols {parseCSVLine(acc).size()};
                 if (!currCols) acc += "\n";
                 else {
                     if (cols > 0 && cols != currCols) {
@@ -66,7 +109,6 @@ namespace CSVUtil {
             }
         }
 
-        // Print out the stats
         return {rows, cols};
     }
 
@@ -128,16 +170,20 @@ namespace CSVUtil {
             bool nextCSVLine() const {
                 std::string acc, line; 
                 currentRow.clear();
-                while (std::getline(csvStream, acc)) {
+                while (safeGetline(csvStream, acc)) {
                     line += acc;
-                    std::size_t currCols {countCols(line)};
-                    if (!currCols) {
-                        line += "\n"; 
-                    } else if (cols > 0 && currCols != cols) {
-                        throw std::runtime_error("CSV file column count doesn't match.\n");
+                    std::vector<std::string> row {parseCSVLine(line)};
+                    if (row.empty()) {
+                        line += '\n'; 
+                    } else if (cols > 0 && row.size() != cols) {
+                        throw std::runtime_error(
+                            "CSV file column count doesn't match.\n"
+                            "Expected: " + std::to_string(cols) + "; "
+                            "Found: " + std::to_string(row.size()) + "\n"
+                        );
                     } else {
-                        currentRow = parseCSVLine(line);
-                        cols = currCols;
+                        currentRow = row;
+                        cols = row.size();
                         break;
                     }
                 }
