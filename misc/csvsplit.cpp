@@ -22,7 +22,7 @@ class RecordCountStrategy: public SplitStrategy {
     public:
         RecordCountStrategy(const std::size_t counts): maxCounts(counts) {}
         std::size_t getBucket(const std::vector<std::string>&) override {
-            if (currBucketCount == maxCounts) {
+            if (currBucketCount >= maxCounts) {
                 currBucketCount = 0; 
                 currBucket++; 
             } 
@@ -39,7 +39,7 @@ class SplitSizeStrategy: public SplitStrategy {
     public:
         SplitSizeStrategy(const std::size_t size): maxSize(size) {}
         std::size_t getBucket(const std::vector<std::string> &row) override {
-            if (currBucketSize == maxSize) {
+            if (currBucketSize >= maxSize * 1024 * 1024) {
                 currBucketSize = 0; 
                 currBucket++; 
             }
@@ -56,7 +56,7 @@ class SplitSizeStrategy: public SplitStrategy {
 
 class HashColumnStrategy: public SplitStrategy {
     const std::size_t colIdx, bucketSize;
-    const std::hash<std::string> hasher;
+    const std::hash<std::string> hasher{};
 
     public:
         HashColumnStrategy(const std::size_t colIdx, std::size_t bucketSize): 
@@ -71,7 +71,7 @@ class GroupColumnStrategy: public SplitStrategy {
     const std::size_t colIdx, groupSize;
     std::unordered_map<std::string, std::size_t> field2BucketMapping;
     std::unordered_map<std::size_t, std::size_t> bucketCounts;
-    std::size_t currBucket;
+    std::size_t currBucket{0};
 
     public:
         GroupColumnStrategy(const std::size_t colIdx, std::size_t groupSize): 
@@ -174,31 +174,33 @@ int main(int argc, char **argv) {
     std::unique_ptr<SplitStrategy> strategy;
     std::string ifile {argv[argc - 1]};
 
-    if (std::strcmp(argv[1], "records") == 0 && argc == 4) {
+    if (argc == 4 && std::strcmp(argv[1], "rows") == 0) {
         std::size_t counts;
         parseCLIArgument(argv[2], counts);
         strategy = std::make_unique<RecordCountStrategy>(counts);
     }
 
-    else if (std::strcmp(argv[1], "size") == 0 && argc == 4) {
+    else if (argc == 4 && std::strcmp(argv[1], "size") == 0) {
         std::size_t size;
         parseCLIArgument(argv[2], size);
         strategy = std::make_unique<SplitSizeStrategy>(size);
     }
 
-    else if (std::strcmp(argv[1], "hash") == 0 && argc == 5) {
+    else if (argc == 5 && std::strcmp(argv[1], "hash") == 0) {
         std::size_t colIdx, bucketSize;
         parseCLIArgument(argv[2], colIdx);
         parseCLIArgument(argv[3], bucketSize);
         assertColIdxWithinBounds(ifile, colIdx);
+        if (bucketSize == 0) { std::cerr << "Bucket Size must be greater than 0.\n"; std::exit(1); }
         strategy = std::make_unique<HashColumnStrategy>(colIdx, bucketSize);
     }
 
-    else if (std::strcmp(argv[1], "group") == 0 && argc == 5) {
+    else if (argc == 5 && std::strcmp(argv[1], "group") == 0) {
         std::size_t colIdx, groupSize;
         parseCLIArgument(argv[2], colIdx);
         parseCLIArgument(argv[3], groupSize);
         assertColIdxWithinBounds(ifile, colIdx);
+        if (groupSize == 0) { std::cerr << "Group Size must be greater than 0.\n"; std::exit(1); }
         strategy = std::make_unique<GroupColumnStrategy>(colIdx, groupSize);
     }
 
@@ -207,7 +209,7 @@ int main(int argc, char **argv) {
             "Usage: csvsplit <mode> [options] <file>\n"
             "\n"
             "Modes:\n"
-            "  records <count> <file>   - Split CSV into chunks of at most <count> records each.\n"
+            "  rows <count> <file>   - Split CSV into chunks of at most <count> records each.\n"
             "  size <size> <file>       - Split CSV into chunks of approximately <size> (Size in MB).\n"
             "  hash <colIdx> <buckets> <file>\n"
             "                           - Hash column <colIdx> and distribute into <buckets> files.\n"
@@ -216,9 +218,9 @@ int main(int argc, char **argv) {
             "                           - If <groupSize> is 1, creates one file per unique value.\n"
             "\n"
             "Performance Notes:\n"
-            "  - 'records' and 'size' split sequentially and are the most efficient.\n"
+            "  - 'rows' and 'size' split sequentially and are the most efficient.\n"
             "  - 'hash' is slightly less efficient but works well for large datasets.\n"
-            "  - 'group' is the least efficient and not recommended for very large CSVs.\n";
+            "  - 'group' is the least efficient and not recommended for very large CSVs.\n\n";
 
         return 0;
     } 
