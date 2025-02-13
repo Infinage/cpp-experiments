@@ -2,30 +2,36 @@
 #include "ThreadPool.hpp"
 
 #include <charconv>
+#include <cmath>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <functional>
 #include <numeric>
-
-// TODO: Add header to merged file
+#include <unordered_set>
 
 class SplitStrategy {
     public:
         virtual std::size_t getBucket(const std::vector<std::string>&) = 0;
         virtual ~SplitStrategy() = default;
+        virtual std::size_t totalBuckets() const = 0;
 };
 
 class RecordCountStrategy: public SplitStrategy {
     const std::size_t maxCounts;
     std::size_t currBucket {0}, currBucketCount {0};
+    std::vector<std::size_t> &pruneBuckets;
 
     public:
-        RecordCountStrategy(const std::size_t counts): maxCounts(counts) {}
+        RecordCountStrategy(const std::size_t counts, std::vector<std::size_t> &pruneBuckets): 
+            maxCounts(counts), pruneBuckets(pruneBuckets) {}
+
+        std::size_t totalBuckets() const override { return currBucket + 1; }
+
         std::size_t getBucket(const std::vector<std::string>&) override {
             if (currBucketCount >= maxCounts) {
-                currBucketCount = 0; 
-                currBucket++; 
+                currBucketCount = 0;
+                pruneBuckets.push_back(currBucket++);
             } 
 
             currBucketCount++;
@@ -36,20 +42,26 @@ class RecordCountStrategy: public SplitStrategy {
 class SplitSizeStrategy: public SplitStrategy {
     const std::size_t maxSize;
     std::size_t currBucket {0}, currBucketSize {0};
+    std::vector<std::size_t> &pruneBuckets;
 
     public:
-        SplitSizeStrategy(const std::size_t size): maxSize(size) {}
+        SplitSizeStrategy(const std::size_t size, std::vector<std::size_t> &pruneBuckets): 
+            maxSize(size), pruneBuckets(pruneBuckets) {}
+
+        std::size_t totalBuckets() const override { return currBucket + 1; }
+
         std::size_t getBucket(const std::vector<std::string> &row) override {
             if (currBucketSize >= maxSize * 1024 * 1024) {
                 currBucketSize = 0; 
-                currBucket++; 
+                pruneBuckets.push_back(currBucket++);
             }
 
             std::size_t currSize {std::accumulate(row.cbegin(), row.cend(), 0UL, 
                 [](std::size_t acc, const std::string &field) { 
-                    return field.size() + acc; 
+                    return field.size() + acc + 1;
                 }
             )};
+
             currBucketSize += currSize;
             return currBucket;
         }
@@ -58,13 +70,18 @@ class SplitSizeStrategy: public SplitStrategy {
 class HashColumnStrategy: public SplitStrategy {
     const std::size_t colIdx, bucketSize;
     const std::hash<std::string> hasher{};
+    std::unordered_set<std::size_t> buckets;
 
     public:
         HashColumnStrategy(const std::size_t colIdx, std::size_t bucketSize): 
             colIdx(colIdx), bucketSize(bucketSize) {}
 
+        std::size_t totalBuckets() const override { return buckets.size(); }
+
         std::size_t getBucket(const std::vector<std::string> &row) override {
-            return hasher(row[colIdx]) % bucketSize; 
+            std::size_t bucket {hasher(row[colIdx]) % bucketSize};
+            buckets.insert(bucket);
+            return bucket;
         }
 };
 
@@ -77,6 +94,8 @@ class GroupColumnStrategy: public SplitStrategy {
     public:
         GroupColumnStrategy(const std::size_t colIdx, std::size_t groupSize): 
             colIdx(colIdx), groupSize(groupSize) {}
+
+        std::size_t totalBuckets() const override { return currBucket + 1; }
 
         std::size_t getBucket(const std::vector<std::string> &row) override {
             const std::string &field {row[colIdx]};
@@ -104,22 +123,26 @@ class CSVSplit {
         const CSVUtil::CSVReader readHandle;
         const std::size_t N_COLS;
         const std::string CSVHeader;
+        std::vector<std::size_t> &pruneBuckets;
 
     private:
         // Write & flush
         void flushBuffer(std::size_t bucket, std::unordered_map<std::size_t, std::ostringstream> &buffers) {
-            outputHandles[bucket] << buffers[bucket].str();
-            outputHandles[bucket].flush();
-            buffers[bucket].str("");
-            buffers[bucket].clear();
+            if (buffers[bucket].tellp() > 0) {
+                outputHandles[bucket] << buffers[bucket].str();
+                outputHandles[bucket].flush();
+                buffers[bucket].str("");
+                buffers[bucket].clear();
+            }
         }
 
     public:
-        CSVSplit (const std::string &ifname, std::unique_ptr<SplitStrategy> strategy): 
+        CSVSplit (const std::string &ifname, std::unique_ptr<SplitStrategy> strategy, std::vector<std::size_t> &pruneBuckets): 
             strategy(std::move(strategy)), ifname(ifname),
             readHandle(CSVUtil::CSVReader{ifname}), 
             N_COLS((*readHandle.begin()).size()), 
-            CSVHeader({CSVUtil::writeCSVLine(*readHandle.begin()) + "\n"})
+            CSVHeader({CSVUtil::extractHeader(ifname) + "\n"}),
+            pruneBuckets(pruneBuckets)
         {}
 
         // Splits a CSV file based on provided column & hash function into N buckets
@@ -129,6 +152,8 @@ class CSVSplit {
             for (const std::vector<std::string> &row: readHandle) {
                 if (counts++) {
                     std::size_t bucket {strategy->getBucket(row)};
+
+                    // Create handle for the bucket if new
                     if (outputHandles.find(bucket) == outputHandles.end()) {
                         outputHandles[bucket] = std::ofstream{std::to_string(bucket) + ".csv"};
                         outputHandles[bucket] << CSVHeader;
@@ -138,6 +163,15 @@ class CSVSplit {
                     buffers[bucket] << CSVUtil::writeCSVLine(row) + '\n';
                     if (buffers[bucket].tellp() >= static_cast<long>(1024 * 1024))
                         flushBuffer(bucket, buffers);
+
+                    // Prune any handles no longer needed (updated by SplitStrategy)
+                    while (!pruneBuckets.empty()) {
+                        std::size_t pruneBucket {pruneBuckets.back()};
+                        flushBuffer(pruneBucket, buffers);
+                        buffers.erase(pruneBucket); 
+                        outputHandles.erase(pruneBucket);
+                        pruneBuckets.pop_back(); 
+                    }
                 }
             }
 
@@ -146,12 +180,14 @@ class CSVSplit {
                 flushBuffer(kv.first, buffers); 
 
             std::cout << "Read CSV records: " << counts << "\n"
-                      << "Files created: " << outputHandles.size() << "\n";
+                      << "Files created: " << strategy->totalBuckets() << "\n";
         }
 };
 
 class CSVMerge {
     private:
+        const std::string csvHeader;
+
         // Write & flush if threshold is hit
         static void writeBuffer(
                 const std::string &csvRow, std::ostringstream &buffer, 
@@ -166,9 +202,10 @@ class CSVMerge {
             }
         }
 
-    public:
         void mergeSync(const std::vector<std::string> &files) {
             std::ofstream ofile {"merged-sync.csv"}; std::ostringstream buffer;
+            ofile << csvHeader;
+            ofile.flush();
             std::size_t fileCounts{0}, recCounts{0};
             for (const std::string &fname: files) {
                 fileCounts++;
@@ -193,6 +230,7 @@ class CSVMerge {
 
         void mergeAsync(const std::vector<std::string> &files) {
             std::ofstream ofile {"merged-async.csv"};
+            ofile << csvHeader; ofile.flush();
             std::mutex ofileMutex;
             std::size_t fileCounts{0};
             std::atomic_size_t recCounts{0};
@@ -211,7 +249,6 @@ class CSVMerge {
 
                     // Final write (dont care about thresholds, write empty and just flush)
                     writeBuffer("", buffer, ofile, 0, &ofileMutex);
-
                     recCounts += counts;
                 });
             }
@@ -222,33 +259,33 @@ class CSVMerge {
             std::cout << "Read CSV Files: " << fileCounts << "\n"
                       << "Records written: " << recCounts << "\n";
         }
+
+    public:
+        CSVMerge(const std::string &header): csvHeader(header + "\n") {}
+        void mergeFiles(const std::vector<std::string> &files, bool sync) {
+            if (sync) mergeSync(files);
+            else mergeAsync(files);
+        }
 };
 
 template<typename T>
 void parseCLIArgument(const std::string &arg, T &placeholder) {
     std::from_chars_result parseResult {std::from_chars(arg.c_str(), arg.c_str() + arg.size(), placeholder)};
     if (parseResult.ec != std::errc() || parseResult.ptr != arg.c_str() + arg.size()) {
-        std::cerr << "Invalid value passed to argument: " << arg.c_str() << "\n";
+        std::cerr << "Error: Invalid value passed to argument: " << arg.c_str() << "\n";
         std::exit(1);
     }
 }
 
-void assertColIdxWithinBounds(const std::string &fname, const std::size_t colIdx) {
-    std::ifstream ifs {fname};
-    std::string header;
-    std::getline(ifs, header);
-    std::size_t colCount {CSVUtil::parseCSVLine(header).size()};
-    if (colIdx >= colCount) {
-        std::cerr << "Requested Col#: " << colIdx << " out of bounds. Actual column count: " << colCount << "\n";
-        std::exit(1);
-    }
-}
-
-std::vector<std::string> getFileList(int argc, char **argv, int start) {
+const std::vector<std::string> getFileList(int argc, char **argv, int start, const std::string &firstFileHeader) {
     std::vector<std::string> files;
     for (int i {start}; i < argc; i++) {
-        if (!std::filesystem::is_regular_file(argv[i])) {
-            std::cerr << "File: " << argv[i] << " is not a valid file.\n";
+        std::string fname {argv[i]};
+        if (!std::filesystem::is_regular_file(fname)) {
+            std::cerr << "Error: File: " << argv[i] << " is not a valid file.\n";
+            std::exit(1);
+        } else if (CSVUtil::extractHeader(fname) != firstFileHeader) {
+            std::cerr << "Error: File: " << argv[i] << " header doesn't match with the first file.\n";
             std::exit(1);
         }
         files.push_back(argv[i]);
@@ -270,7 +307,7 @@ int main(int argc, char **argv) {
         "                           - If <groupSize> is 1, creates one file per unique value.\n\n"
         "  revert <sync|async> <file1> <file2> <file3> ...\n"
         "                           - Merge multiple CSVs back into a single file.\n"
-        "                           - 'sync' maintains order (file1 → file2 → file3 → ...).\n"
+        "                           - 'sync' maintains order (file1 -> file2 -> file3 -> ...).\n"
         "                           - 'async' merges in parallel without order guarantees.\n"
         "\n"
         "Notes:\n"
@@ -281,66 +318,75 @@ int main(int argc, char **argv) {
         "  - 'revert' restores split files back into one CSV, with 'sync' preserving order of inputs.\n\n"
     };
 
-    if (argc >= 4 && std::strcmp(argv[1], "revert") == 0) {
+    try {
+        if (argc >= 4 && std::strcmp(argv[1], "revert") == 0) {
 
-        // Parse the list of files, ensure they exist
-        std::vector<std::string> files {getFileList(argc, argv, 3)};
-        CSVMerge merge;
-        if (std::strcmp(argv[2], "sync") == 0)
-            merge.mergeSync(files);
-        else if (std::strcmp(argv[2], "async") == 0)
-            merge.mergeAsync(files);
-        else {
-            std::cout << "Error: Revert must be provided with either sync or async, "
-                      << argv[2] << " was provided.\n";
-            return 1;
+            // Parse the list of files, ensure they exist & validate the headers match
+            const std::string csvHeader {CSVUtil::extractHeader(argv[3])};
+            std::vector<std::string> files {getFileList(argc, argv, 3, csvHeader)};
+            CSVMerge merge{csvHeader};
+            if (std::strcmp(argv[2], "sync") != 0 && std::strcmp(argv[2], "async") != 0) {
+                std::cerr << "Error: Revert must be provided with either sync or async, "
+                          << argv[2] << " was provided.\n";
+                return 1;
+            } 
+
+            merge.mergeFiles(files, std::strcmp(argv[2], "sync") == 0);
+
+        } else {
+
+            // Define the strategy based on the CLI inputs
+            std::unique_ptr<SplitStrategy> strategy;
+            std::vector<std::size_t> pruneBuckets;
+            std::string ifile {argv[argc - 1]};
+
+            if (argc == 4 && std::strcmp(argv[1], "rows") == 0) {
+                std::size_t counts;
+                parseCLIArgument(argv[2], counts);
+                strategy = std::make_unique<RecordCountStrategy>(counts, pruneBuckets);
+            }
+
+            else if (argc == 4 && std::strcmp(argv[1], "size") == 0) {
+                std::size_t size;
+                parseCLIArgument(argv[2], size);
+                strategy = std::make_unique<SplitSizeStrategy>(size, pruneBuckets);
+            }
+
+            else if (argc == 5 && std::strcmp(argv[1], "hash") == 0) {
+                std::size_t colIdx, bucketSize;
+                parseCLIArgument(argv[2], colIdx);
+                parseCLIArgument(argv[3], bucketSize);
+                const std::size_t colCounts {CSVUtil::parseCSVLine(CSVUtil::extractHeader(ifile)).size()};
+                if (colIdx >= colCounts) { std::cerr << "Error: Requested Col#: " << colIdx << " out of bounds. Actual column count: " << colCounts << "\n"; std::exit(1); }
+                if (bucketSize == 0) { std::cerr << "Error: Bucket Size must be greater than 0.\n"; std::exit(1); }
+                strategy = std::make_unique<HashColumnStrategy>(colIdx, bucketSize);
+            }
+
+            else if (argc == 5 && std::strcmp(argv[1], "group") == 0) {
+                std::size_t colIdx, groupSize;
+                parseCLIArgument(argv[2], colIdx);
+                parseCLIArgument(argv[3], groupSize);
+                const std::size_t colCounts {CSVUtil::parseCSVLine(CSVUtil::extractHeader(ifile)).size()};
+                if (colIdx >= colCounts) { std::cerr << "Error: Requested Col#: " << colIdx << " out of bounds. Actual column count: " << colCounts << "\n"; std::exit(1); }
+                if (groupSize == 0) { std::cerr << "Error: Group Size must be greater than 0.\n"; std::exit(1); }
+                strategy = std::make_unique<GroupColumnStrategy>(colIdx, groupSize);
+            }
+
+            else {
+                std::cout << HELP_MESSAGE;
+                return 0;
+            }
+
+            // Create spliter and split CSV
+            CSVSplit split{ifile, std::move(strategy), pruneBuckets};
+            split.splitFile();
         }
 
-    } else {
+        return 0;
+    } 
 
-        // Define the strategy based on the CLI inputs
-        std::unique_ptr<SplitStrategy> strategy;
-        std::string ifile {argv[argc - 1]};
-
-        if (argc == 4 && std::strcmp(argv[1], "rows") == 0) {
-            std::size_t counts;
-            parseCLIArgument(argv[2], counts);
-            strategy = std::make_unique<RecordCountStrategy>(counts);
-        }
-
-        else if (argc == 4 && std::strcmp(argv[1], "size") == 0) {
-            std::size_t size;
-            parseCLIArgument(argv[2], size);
-            strategy = std::make_unique<SplitSizeStrategy>(size);
-        }
-
-        else if (argc == 5 && std::strcmp(argv[1], "hash") == 0) {
-            std::size_t colIdx, bucketSize;
-            parseCLIArgument(argv[2], colIdx);
-            parseCLIArgument(argv[3], bucketSize);
-            assertColIdxWithinBounds(ifile, colIdx);
-            if (bucketSize == 0) { std::cerr << "Bucket Size must be greater than 0.\n"; std::exit(1); }
-            strategy = std::make_unique<HashColumnStrategy>(colIdx, bucketSize);
-        }
-
-        else if (argc == 5 && std::strcmp(argv[1], "group") == 0) {
-            std::size_t colIdx, groupSize;
-            parseCLIArgument(argv[2], colIdx);
-            parseCLIArgument(argv[3], groupSize);
-            assertColIdxWithinBounds(ifile, colIdx);
-            if (groupSize == 0) { std::cerr << "Group Size must be greater than 0.\n"; std::exit(1); }
-            strategy = std::make_unique<GroupColumnStrategy>(colIdx, groupSize);
-        }
-
-        else {
-            std::cout << HELP_MESSAGE;
-            return 0;
-        }
-
-        // Create spliter and split CSV
-        CSVSplit split{ifile, std::move(strategy)};
-        split.splitFile();
+    catch (std::exception &ex) {
+        std::cerr << "Error: " << ex.what() << "\n";
+        return 1;
     }
-
-    return 0;
 }

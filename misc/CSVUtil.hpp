@@ -7,6 +7,15 @@
 #include <vector>
 
 namespace CSVUtil {
+    // Extract the first line from a CSV File
+    inline const std::string extractHeader(const std::string &fname) {
+        std::ifstream ifs {fname};
+        if (!ifs) throw std::runtime_error("Couldn't open file: " + fname);
+        std::string header;
+        std::getline(ifs, header);
+        return header;
+    }
+
     // Parse a single CSV line into a vector of strings, returns empty is line is incomplete
     inline std::vector<std::string> parseCSVLine(const std::string &line, const char delim = ',', const char quoteChar = '"') {
         std::vector<std::string> result;
