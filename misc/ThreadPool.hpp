@@ -18,6 +18,7 @@ class ThreadPool {
         std::atomic<bool> exitCondition = false;
 
     public:
+        ~ThreadPool() { join(); }
         ThreadPool(const std::size_t N_WORKERS): N_WORKERS(N_WORKERS) {
             for (std::size_t i {0}; i < this->N_WORKERS; i++) {
                 workers.push_back(std::thread([this]{
@@ -36,11 +37,14 @@ class ThreadPool {
             }
         }
 
-        ~ThreadPool() {
-            exitCondition = true;
-            cv.notify_all();
-            for (std::thread &worker: workers)
-                worker.join();
+        // If not already joined
+        void join() {
+            if (!exitCondition) {
+                exitCondition = true;
+                cv.notify_all();
+                for (std::thread &worker: workers)
+                    worker.join();
+            }
         }
 
         void enqueue(F &&task) {
