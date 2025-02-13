@@ -3,6 +3,7 @@
 
 #include <charconv>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -117,13 +118,16 @@ class CSVSplit {
         // Map of open file handles
         std::unordered_map<std::size_t, std::ofstream> outputHandles;
 
-        // Variables defined at constructor
-        std::unique_ptr<SplitStrategy> strategy;
+        // Variables set via constructor
         const std::string ifname;
+        const std::filesystem::path outDir;
+        std::unique_ptr<SplitStrategy> strategy;
+        std::vector<std::size_t> &pruneBuckets;
+
+        // Variables created at constructor
         const CSVUtil::CSVReader readHandle;
         const std::size_t N_COLS;
         const std::string CSVHeader;
-        std::vector<std::size_t> &pruneBuckets;
 
     private:
         // Write & flush
@@ -137,12 +141,13 @@ class CSVSplit {
         }
 
     public:
-        CSVSplit (const std::string &ifname, std::unique_ptr<SplitStrategy> strategy, std::vector<std::size_t> &pruneBuckets): 
-            strategy(std::move(strategy)), ifname(ifname),
+        CSVSplit (const std::string &ifname, const std::string &outDir, std::unique_ptr<SplitStrategy> strategy, std::vector<std::size_t> &pruneBuckets): 
+            ifname(ifname), outDir(outDir),
+            strategy(std::move(strategy)), 
+            pruneBuckets(pruneBuckets),
             readHandle(CSVUtil::CSVReader{ifname}), 
             N_COLS((*readHandle.begin()).size()), 
-            CSVHeader({CSVUtil::extractHeader(ifname) + "\n"}),
-            pruneBuckets(pruneBuckets)
+            CSVHeader({CSVUtil::extractHeader(ifname) + "\n"})
         {}
 
         // Splits a CSV file based on provided column & hash function into N buckets
@@ -155,7 +160,8 @@ class CSVSplit {
 
                     // Create handle for the bucket if new
                     if (outputHandles.find(bucket) == outputHandles.end()) {
-                        outputHandles[bucket] = std::ofstream{std::to_string(bucket) + ".csv"};
+                        std::string ofname {"split-" + std::to_string(bucket + 1) + ".csv"};
+                        outputHandles[bucket] = std::ofstream{outDir / ofname};
                         outputHandles[bucket] << CSVHeader;
                     }
 
@@ -187,6 +193,7 @@ class CSVSplit {
 class CSVMerge {
     private:
         const std::string csvHeader;
+        const std::filesystem::path outDir;
 
         // Write & flush if threshold is hit
         static void writeBuffer(
@@ -203,7 +210,7 @@ class CSVMerge {
         }
 
         void mergeSync(const std::vector<std::string> &files) {
-            std::ofstream ofile {"merged-sync.csv"}; std::ostringstream buffer;
+            std::ofstream ofile {outDir / "merged-sync.csv"}; std::ostringstream buffer;
             ofile << csvHeader;
             ofile.flush();
             std::size_t fileCounts{0}, recCounts{0};
@@ -229,7 +236,7 @@ class CSVMerge {
         }
 
         void mergeAsync(const std::vector<std::string> &files) {
-            std::ofstream ofile {"merged-async.csv"};
+            std::ofstream ofile {outDir / "merged-async.csv"};
             ofile << csvHeader; ofile.flush();
             std::mutex ofileMutex;
             std::size_t fileCounts{0};
@@ -261,7 +268,9 @@ class CSVMerge {
         }
 
     public:
-        CSVMerge(const std::string &header): csvHeader(header + "\n") {}
+        CSVMerge(const std::string &header, const std::string &outDir): 
+            csvHeader(header + "\n"), outDir(outDir) {}
+
         void mergeFiles(const std::vector<std::string> &files, bool sync) {
             if (sync) mergeSync(files);
             else mergeAsync(files);
@@ -310,21 +319,38 @@ int main(int argc, char **argv) {
         "                           - 'sync' maintains order (file1 -> file2 -> file3 -> ...).\n"
         "                           - 'async' merges in parallel without order guarantees.\n"
         "\n"
+        "Output Directory:\n"
+        "  - The output directory can be set using the environment variable 'CSVOUT'.\n"
+        "  - If 'CSVOUT' is not set, outputs are created in the directory where 'csvsplit' is run.\n"
+        "\n"
         "Notes:\n"
         "  - This tool assumes the CSV has a header, which is copied across all splits (& ignored when merging splits).\n"
         "  - 'rows' and 'size' split sequentially and are the most efficient.\n"
         "  - 'hash' is slightly less efficient but works well for large datasets.\n"
         "  - 'group' is the least efficient and not recommended for very large CSVs.\n"
-        "  - 'revert' restores split files back into one CSV, with 'sync' preserving order of inputs.\n\n"
+        "  - 'revert' restores split files back into one CSV, with 'sync' preserving order of inputs.\n"
     };
 
     try {
+
+        // Get the output dir from env variable
+        char * envVal {std::getenv("CSVOUT")};
+        std::string outDir {envVal? std::string(envVal): std::filesystem::current_path().string()};
+
+        // Create output path if doesn't exist
+        if (std::filesystem::exists(outDir) && !std::filesystem::is_directory(outDir)) {
+            std::cerr << "Output Directory in path is not valid.\n";
+            return 1;
+        } else if (!std::filesystem::exists(outDir)) {
+            std::filesystem::create_directories(outDir);
+        }
+
         if (argc >= 4 && std::strcmp(argv[1], "revert") == 0) {
 
             // Parse the list of files, ensure they exist & validate the headers match
             const std::string csvHeader {CSVUtil::extractHeader(argv[3])};
             std::vector<std::string> files {getFileList(argc, argv, 3, csvHeader)};
-            CSVMerge merge{csvHeader};
+            CSVMerge merge{csvHeader, outDir};
             if (std::strcmp(argv[2], "sync") != 0 && std::strcmp(argv[2], "async") != 0) {
                 std::cerr << "Error: Revert must be provided with either sync or async, "
                           << argv[2] << " was provided.\n";
@@ -378,7 +404,7 @@ int main(int argc, char **argv) {
             }
 
             // Create spliter and split CSV
-            CSVSplit split{ifile, std::move(strategy), pruneBuckets};
+            CSVSplit split{ifile, outDir, std::move(strategy), pruneBuckets};
             split.splitFile();
         }
 
