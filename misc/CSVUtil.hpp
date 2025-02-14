@@ -90,33 +90,6 @@ namespace CSVUtil {
         return result;
     }
 
-    // Returns the rows / cols in a CSV file
-    inline std::pair<std::size_t, std::size_t> stat(const std::string &fname) {
-        std::size_t rows {0}, cols {0};
-        std::ifstream ifs {fname};
-        if (!ifs) std::cerr << "'" << fname << "' is not a valid file.\n";
-        else {
-            std::string line, acc;
-            while (safeGetline(ifs, line)) {
-                acc += line;
-                std::size_t currCols {parseCSVLine(acc).size()};
-                if (!currCols) acc += "\n";
-                else {
-                    if (cols > 0 && cols != currCols) {
-                        std::cerr << "Count of columns doesn't match with the first row."
-                            << "Expected: " << cols << "; Found: " << currCols << "\n";
-                        break;
-                    } 
-
-                    cols = currCols;
-                    rows++; acc.clear();
-                }
-            }
-        }
-
-        return {rows, cols};
-    }
-
     /*
      * @class CSVReader
      * 

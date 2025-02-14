@@ -71,6 +71,45 @@ cjudge [--memory=256] [--time=0.5] [--nprocs=1] <binary_command> <questions_file
 - Supports executing arbitrary binaries securely.  
 - Runs as **non-root** to enforce resource limits.
 
+## CSVSplit CLI Tool  
+
+A fast and efficient tool for splitting, hashing, and merging CSV files.  
+
+### **Usage**  
+```bash
+csvsplit <mode> <options> <file>  
+```
+
+### **Modes**  
+- `rows <count> <file>`  
+  Split CSV into chunks of at most `<count>` rows each.  
+- `size <size> <file>`  
+  Split CSV into chunks of approximately `<size>` MB.  
+- `hash <colIdx> <buckets> <file>`  
+  Hash column `<colIdx>` and distribute into `<buckets>` files.  
+- `group <colIdx> <groupSize> <file>`  
+  Assign unique values of `<colIdx>` into groups of `<groupSize>`.  
+  If `<groupSize>` is 1, creates one file per unique value.  
+- `revert <sync|async> <file1> <file2> ...`  
+  Merge multiple CSV files back into one.  
+  - `sync` maintains order.  
+  - `async` merges in parallel without order guarantees.  
+- `stat <file1> <file2> ...`  
+  Asynchronously compute statistics for CSV files:  
+  ```
+  Lines    Rows    Columns    Size    Filename
+  ```
+
+### **Output Directory**  
+- The output directory is set using the `CSVOUT` environment variable.  
+- If `CSVOUT` is not set, outputs are created in the current working directory.  
+
+### **Notes**  
+- Assumes the CSV has a header, which is preserved in splits and ignored when merging.  
+- `rows` and `size` are the most efficient modes.  
+- `hash` is slightly less efficient but effective for large datasets.  
+- `group` is the least efficient and not recommended for very large CSVs.  
+
 ## ThreadPool Helper
 
 A thread pool implementation that allows enqueuing tasks to be executed by a pool of worker threads. This is a reusable utility for any project requiring multithreading.

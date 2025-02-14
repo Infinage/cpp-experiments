@@ -277,6 +277,56 @@ class CSVMerge {
         }
 };
 
+class CSVStat {
+    public:
+        static void statFiles(const std::vector<std::string> &files) {
+            // Create a thread pool to add tasks to queue
+            ThreadPool<std::function<void()>> pool(std::thread::hardware_concurrency());
+
+            // Variables to track total stats if there are multiple files
+            std::size_t totalRows {0}, totalCols {0}, totalLines {0}; 
+            double totalSize {0}; std::mutex totalMutex;
+            for (const std::string &fname: files) {
+                pool.enqueue([fname, &totalRows, &totalCols, &totalLines, &totalSize, &totalMutex]() {
+                    std::size_t rows {0}, cols {0}, lineCounts {0};
+                    std::ifstream ifs {fname};
+                    std::string line, acc;
+                    while (CSVUtil::safeGetline(ifs, line)) {
+                        lineCounts++; acc += line;
+                        std::size_t currCols {CSVUtil::parseCSVLine(acc).size()};
+                        if (!currCols) acc += "\n";
+                        else {
+                            if (cols > 0 && cols != currCols) {
+                                std::lock_guard lock(totalMutex);
+                                std::cerr << fname << ": Column counts mismatch at line# " 
+                                          << lineCounts << "; Expected " << cols << ", found " 
+                                          << currCols << "\n";
+                                return;
+                            }
+
+                            // Update for next iteration
+                            cols = currCols; rows++; acc.clear();
+                        }
+                    }
+
+                    // Display the stats 
+                    double fSize {static_cast<double>(std::filesystem::file_size(fname)) / (1024 * 1024.)};
+                    std::lock_guard lock(totalMutex);
+                    totalRows += rows; totalCols += cols; 
+                    totalLines += lineCounts; totalSize += fSize;
+                    std::cout << lineCounts << '\t' << rows << '\t' << cols << '\t' << fSize << '\t' << fname << '\n';
+                });
+            }
+
+            // Wait for all threads to join
+            pool.join();
+
+            // If more than one file, print total stats
+            if (files.size() > 1)
+                std::cout << totalLines << '\t' << totalRows << '\t' << totalCols << '\t' << totalSize << "\ttotal\n";
+        }
+};
+
 template<typename T>
 void parseCLIArgument(const std::string &arg, T &placeholder) {
     std::from_chars_result parseResult {std::from_chars(arg.c_str(), arg.c_str() + arg.size(), placeholder)};
@@ -286,14 +336,15 @@ void parseCLIArgument(const std::string &arg, T &placeholder) {
     }
 }
 
-const std::vector<std::string> getFileList(int argc, char **argv, int start, const std::string &firstFileHeader) {
+// Validate and return a vector of files, validates the CSV header if provided else header validation is skipped
+const std::vector<std::string> getFileList(int argc, char **argv, int start, const std::string &firstFileHeader = "") {
     std::vector<std::string> files;
     for (int i {start}; i < argc; i++) {
         std::string fname {argv[i]};
         if (!std::filesystem::is_regular_file(fname)) {
             std::cerr << "Error: File: " << argv[i] << " is not a valid file.\n";
             std::exit(1);
-        } else if (CSVUtil::extractHeader(fname) != firstFileHeader) {
+        } else if (!firstFileHeader.empty() && CSVUtil::extractHeader(fname) != firstFileHeader) {
             std::cerr << "Error: File: " << argv[i] << " header doesn't match with the first file.\n";
             std::exit(1);
         }
@@ -307,6 +358,9 @@ int main(int argc, char **argv) {
         "Usage: csvsplit <mode> <options> <file>\n"
         "\n"
         "Modes:\n"
+        "  stat <file1> <file2> ...\n"
+        "                           - Asynchronously gathers CSV file statistics.\n"
+        "                           - Outputs: <lines> <rows> <columns> <file_size> <filename>\n\n"
         "  rows <count> <file>      - Split CSV into chunks of at most <count> records each.\n\n"
         "  size <size> <file>       - Split CSV into chunks of approximately <size> MB.\n\n"
         "  hash <colIdx> <buckets> <file>\n"
@@ -324,11 +378,10 @@ int main(int argc, char **argv) {
         "  - If 'CSVOUT' is not set, outputs are created in the directory where 'csvsplit' is run.\n"
         "\n"
         "Notes:\n"
-        "  - This tool assumes the CSV has a header, which is copied across all splits (& ignored when merging splits).\n"
+        "  - Assumes CSVs have headers, which are preserved in splits and ignored when merging.\n"
         "  - 'rows' and 'size' split sequentially and are the most efficient.\n"
         "  - 'hash' is slightly less efficient but works well for large datasets.\n"
         "  - 'group' is the least efficient and not recommended for very large CSVs.\n"
-        "  - 'revert' restores split files back into one CSV, with 'sync' preserving order of inputs.\n"
     };
 
     try {
@@ -345,7 +398,13 @@ int main(int argc, char **argv) {
             std::filesystem::create_directories(outDir);
         }
 
-        if (argc >= 4 && std::strcmp(argv[1], "revert") == 0) {
+        if (argc >= 3 && std::strcmp(argv[1], "stat") == 0) {
+            // Stat the input file(s)
+            CSVStat::statFiles(getFileList(argc, argv, 2));
+
+        }
+
+        else if (argc >= 4 && std::strcmp(argv[1], "revert") == 0) {
 
             // Parse the list of files, ensure they exist & validate the headers match
             const std::string csvHeader {CSVUtil::extractHeader(argv[3])};
