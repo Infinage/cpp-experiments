@@ -1,9 +1,12 @@
-#include <queue>
+#include <cstdio>
+#include <deque>
+#include <fstream>
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
 #include <pwd.h>
 
+#include <queue>
 #include <csignal>
 #include <filesystem>
 #include <iostream>
@@ -14,7 +17,6 @@
 
 /*
  * TODO:
- *  0. Propagate SIGINT to all child processes
  *  2. Piping commands: "<", ">", "|"
  *  3. Support &&, ||
  *  4. cd somewhere inside - echo hello && cd ~
@@ -30,14 +32,58 @@
 
 namespace fs = std::filesystem;
 
+class History {
+    const unsigned int MAX_HISTORY {500};
+    std::deque<std::string> history;
+    const fs::path historyPath;
+
+    public:
+        ~History() { writeHistory(); }
+        History(const fs::path &homeDir): historyPath(homeDir / ".csh_history") {
+            populateHistory();
+        }
+
+        std::string operator[] (const std::size_t &idx) const {
+            return idx >= history.size()? history.back(): history[idx];
+        }
+
+        std::size_t size() { return history.size(); }
+        std::size_t capacity() { return MAX_HISTORY; }
+
+        void add(const std::string &command) {
+            history.push_back(command);
+            if (history.size() > MAX_HISTORY) 
+                history.pop_front();
+        }
+
+        /* Populate history from `.csh_history` on object instantiation */
+        void populateHistory() {
+            history.clear();
+            std::ifstream ifs {historyPath};
+            std::string command;
+            while (std::getline(ifs, command))
+                add(command);
+        }
+
+        /* Write history to `.csh_history` */
+        void writeHistory() {
+            std::ofstream ofs {historyPath};
+            for (const std::string &command: history)
+                ofs << command << "\n";
+        }
+};
+
 class Shell {
 private:
     static const std::unordered_set<char> WHITESPACES;
     static std::queue<pid_t> execIds;
-    const std::unordered_set<std::string> shellCommands{"cd", "exit"};
+    enum KEYS: short {KEY_UP=72, KEY_DOWN=80, KEY_LEFT=75, KEY_RIGHT=77};
+
+    const std::unordered_set<std::string> shellCommands{"cd", "exit", "history"};
     std::vector<std::string> paths{"/bin"};
-    std::string currDirectory, homeDirectory;
+    fs::path currDirectory, homeDirectory;
     std::unordered_map<std::string, std::string> commands;
+    History history;
 
 private:
     /* NOOP Signal Handler, prints "csh> " */
@@ -116,7 +162,7 @@ private:
                 return {};
             } else {
                 if (result.empty()) result.push_back({});
-                result.back().push_back(piece.at(0) == '~'? homeDirectory + piece.substr(1): piece);
+                result.back().push_back(piece.at(0) == '~'? (homeDirectory / piece.substr(1)).string(): piece);
             }
         }
 
@@ -139,7 +185,7 @@ private:
             return true;
         } else {
             fs::path changePath {fs::path(cmds[1])};
-            fs::path targetPath {changePath.is_absolute()? changePath: fs::path(currDirectory) / changePath};
+            fs::path targetPath {changePath.is_absolute()? changePath: currDirectory / changePath};
             if (!fs::is_directory(targetPath)) {
                 std::cerr << "cd: " << targetPath << ": No such directory.\n";
                 return false;
@@ -148,6 +194,13 @@ private:
                 return true;
             }
         }
+    }
+
+    /* Handle history shell command */
+    bool handleHistory() {
+        for (std::size_t i {0}; i < history.size(); i++)
+            std::cout << "  " << i << "  " << history[i] << "\n";
+        return history.size();
     }
 
     /* Check if current user running shell has exec permissions */
@@ -184,12 +237,12 @@ private:
     }
 
     /* Get the home directory of the user */
-    void setHomeDirectory() {
+    std::string getHomeDirectory() {
         const char* enVal {std::getenv("HOME")};
-        if (enVal != NULL) homeDirectory = enVal;
+        if (enVal != NULL) return enVal;
         else {
             struct passwd *pwd {getpwuid(getuid())}; 
-            if (pwd) homeDirectory = pwd->pw_dir;
+            if (pwd) return pwd->pw_dir;
             else {
                 std::cerr << "Error setting home directory.\n";
                 std::exit(1);
@@ -202,6 +255,8 @@ private:
             return handleChangeDirectory(cmds);
         else if (cmds[0] == "exit") 
             return handleExit();
+        else if (cmds[0] == "history") 
+            return handleHistory();
         else 
             return false;
     }
@@ -362,10 +417,12 @@ private:
     }
 
 public:
-    Shell(): currDirectory(fs::current_path()) 
+    Shell(): 
+        currDirectory(fs::current_path()), 
+        homeDirectory(getHomeDirectory()), 
+        history(History(homeDirectory))
     { 
         populateCommandsFromPath(); 
-        setHomeDirectory();
     }
 
     /* Start shell loop */
@@ -388,6 +445,9 @@ public:
             if (cmdsList.empty()) {
                 if (std::cin.eof()) { std::cout << "\n"; break; }
             } else {
+                // Add the command to history
+                history.add(acc);
+
                 // Install signal interupt and remove post execution
                 std::signal(SIGINT, SIG_CKILL);
                 if (cmdsList.size() == 1) execute(cmdsList[0]);
