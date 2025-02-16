@@ -1,9 +1,9 @@
+#include <queue>
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
 #include <pwd.h>
 
-#include <sstream>
 #include <csignal>
 #include <filesystem>
 #include <iostream>
@@ -29,14 +29,15 @@
  */
 
 namespace fs = std::filesystem;
-static pid_t execid {-1};
 
 class Shell {
 private:
+    static const std::unordered_set<char> WHITESPACES;
+    static std::queue<pid_t> execIds;
+    const std::unordered_set<std::string> shellCommands{"cd", "exit"};
     std::vector<std::string> paths{"/bin"};
     std::string currDirectory, homeDirectory;
     std::unordered_map<std::string, std::string> commands;
-    std::unordered_set<std::string> shellCommands{"cd", "exit"};
 
 private:
     /* NOOP Signal Handler, prints "csh> " */
@@ -48,21 +49,78 @@ private:
     /* SIGINT Handler, kill the executing process */
     static void SIG_CKILL (int) {
         std::cout << "\n";
-        kill(execid, SIGKILL);
+        while (!execIds.empty()) {
+            kill(execIds.front(), SIGKILL);
+            execIds.pop();
+        }
+    }
+
+    /* Check if line is complete */
+    static bool checkLinePending(const std::string &line) {
+        char insideString {0}, prevCh {0};
+        for (const char &ch: line) {
+            if (prevCh != '\\' && (ch == '\'' || ch == '"' || ch == '`')) {
+                if (insideString == 0) insideString = ch;
+                else if (insideString == ch) insideString = 0;
+            }
+            prevCh = ch;
+        }
+
+        // Is it stil pending?
+        return insideString != 0 || prevCh == '\\';
     }
 
     /* Split an string into a vector of strings, delimited by whitespace */
-    std::vector<std::string> split(const std::string &str) const {
-        std::istringstream iss {str};  
+    static std::vector<std::string> split(const std::string &str) {
         std::vector<std::string> splits;
-        std::string piece;
-        while (iss >> piece) {
-            if (piece.at(0) == '~')
-                piece = homeDirectory + piece.substr(1);
-            splits.push_back(piece);
+        char insideString {0}, prevCh {0};
+        std::string acc; 
+        for (const char &ch: str) {
+            bool isWhiteSpace {WHITESPACES.find(ch) != WHITESPACES.end()};
+            if (prevCh != '\\' && (ch == '\'' || ch == '"' || ch == '`')) {
+                if (!insideString) insideString = ch;
+                else if (insideString == ch) insideString = 0;
+                else acc += ch;
+            } else if (insideString || !isWhiteSpace) {
+                if (!insideString && prevCh == '\\') 
+                    acc.pop_back();
+                acc += ch;
+            } else if (!acc.empty()) {
+                splits.push_back(acc);
+                acc.clear();
+            }
+            prevCh = ch;
         }
 
+        // Insert last word
+        if (!acc.empty())
+            splits.push_back(acc);
+
         return splits;
+    }
+
+    /* Parse splits into edible commands for downstream processing */
+    std::vector<std::vector<std::string>> parseSplits(const std::vector<std::string> &splits) const {
+        std::vector<std::vector<std::string>> result{};
+        for (std::size_t i {0}; i < splits.size(); i++) {
+            const std::string &piece {splits[i]};
+            if (piece == "|") {
+                if (!result.empty() && !result.back().empty()) 
+                    result.push_back({});
+                else {
+                    std::cerr << "Invalid command input passed.\n";
+                    return {};
+                }
+            } else if (piece == "&&" || piece == "||" || (i > 0 && splits[i - 1].back() == ';')) {
+                std::cerr << "Execution of multiple commands is currently not supported.\n";
+                return {};
+            } else {
+                if (result.empty()) result.push_back({});
+                result.back().push_back(piece.at(0) == '~'? homeDirectory + piece.substr(1): piece);
+            }
+        }
+
+        return result;
     }
 
     /* Handle exit shell command */
@@ -72,7 +130,7 @@ private:
     }
 
     /* Handle cd shell command */
-    bool handleChangeDirectory(std::vector<std::string> &cmds) {
+    bool handleChangeDirectory(const std::vector<std::string> &cmds) {
         if (cmds.size() > 2) {
             std::cerr << "cd: too many arguments.\n";
             return false;
@@ -80,11 +138,13 @@ private:
             currDirectory = homeDirectory;
             return true;
         } else {
-            if (!fs::is_directory(cmds[1])) {
-                std::cerr << "cd: " << cmds[1] << ": No such directory.\n";
+            fs::path changePath {fs::path(cmds[1])};
+            fs::path targetPath {changePath.is_absolute()? changePath: fs::path(currDirectory) / changePath};
+            if (!fs::is_directory(targetPath)) {
+                std::cerr << "cd: " << targetPath << ": No such directory.\n";
                 return false;
             } else {
-                currDirectory = cmds[1];
+                currDirectory = targetPath.string();
                 return true;
             }
         }
@@ -137,7 +197,7 @@ private:
         }
     }
 
-    bool handleShellCommand(std::vector<std::string> &cmds) {
+    bool handleShellCommand(const std::vector<std::string> &cmds) {
         if (cmds[0] == "cd") 
             return handleChangeDirectory(cmds);
         else if (cmds[0] == "exit") 
@@ -146,65 +206,159 @@ private:
             return false;
     }
 
-    /* Execute the binary */
-    bool execute(std::vector<std::string> &cmds_) {
+    void exec(const std::vector<std::string> &cmds_) {
+        // Convert cmds to a vector of char*
+        std::vector<std::string> cmdsTmp{cmds_};
+        std::vector<char *> cmds;
+        for (std::string &str: cmdsTmp)
+            cmds.push_back(str.data());
+        cmds.push_back(nullptr);
+
+        // Execute command
+        char *environ[] { (char *)"TERM=xterm", nullptr };
+        chdir(currDirectory.c_str());
+        execvpe(commands.at(cmds[0]).c_str(), cmds.data(), environ);
+        std::exit(1);
+    }
+
+    /* Execute a single instruction (without pipe) */
+    bool execute(const std::vector<std::string> &cmds_) {
+        // Command not found
         if (commands.find(cmds_[0]) == commands.end() && shellCommands.find(cmds_[0]) == shellCommands.end()) {
             std::cerr << "Command not in path: " << cmds_[0] << "\n";
             return false;
-        } else if (shellCommands.find(cmds_[0]) != shellCommands.end()) {
-            return handleShellCommand(cmds_);
-        } else {
-            int pipefd[2];
-            if (pipe(pipefd) == -1) { std::cerr << "Unable to open a pipe.\n"; return false; }
+        }
 
-            execid = fork();  
+        // Shell builtin command
+        else if (shellCommands.find(cmds_[0]) != shellCommands.end()) {
+            return handleShellCommand(cmds_);
+        } 
+
+        // Actual command to binary that may or may not require piping
+        else {
+            int execForkPipe[2];
+            if (pipe(execForkPipe) == -1) { std::cerr << "Unable to open a pipe.\n"; return false; }
+
+            pid_t execid = fork();
             if (execid == -1) { std::cerr << "Unable to fork.\n"; return false; }
 
             else if (execid == 0) {
-                // Close read end
-                close(pipefd[0]);
-
-                // Redirect output stdin, stderr to write end
+                // Duplicate exec pipe to the main process
                 bool redirectStatus {true};
-                redirectStatus &= dup2(pipefd[1], STDERR_FILENO) != -1;
-                redirectStatus &= dup2(pipefd[1], STDOUT_FILENO) != -1;
-                close(pipefd[1]);
-                if (!redirectStatus) { std::cerr << "Unable to pipe.\n"; return false; };
+                redirectStatus &= dup2(execForkPipe[1], STDERR_FILENO) != -1;
+                redirectStatus &= dup2(execForkPipe[1], STDOUT_FILENO) != -1;
+                close(execForkPipe[0]); close(execForkPipe[1]); 
+                if (!redirectStatus) { std::cerr << "Unable to pipe to main process.\n"; std::exit(1); };
 
-                // Convert cmds to a vector of char*
-                std::vector<char *> cmds;
-                for (std::string& str: cmds_)
-                    cmds.push_back(str.data());
-                cmds.push_back(nullptr);
-
-                // Execute command
-                char *environ[] { (char *)"TERM=xterm", nullptr };
-                chdir(currDirectory.c_str());
-                execvpe(commands.at(cmds[0]).c_str(), cmds.data(), environ);
+                // Execute the command
+                exec(cmds_);
                 return false;
             }
 
             else {
-                // Close write end
-                close(pipefd[1]);
+                // Push to static list of pids to kill on SIGINT
+                execIds.push(execid);
+
+                // Close write end from execvp fork process
+                close(execForkPipe[1]);
 
                 // Read from pipe
                 char buffer[1024];
                 ssize_t bytesRead;
-                while ((bytesRead = read(pipefd[0], buffer, sizeof(buffer) - 1)) > 0) {
+                while ((bytesRead = read(execForkPipe[0], buffer, sizeof(buffer) - 1)) > 0) {
                     buffer[bytesRead] = '\0';
                     std::cout << buffer; 
                 }
 
                 // Close read end
-                close(pipefd[0]);
+                close(execForkPipe[0]);
 
                 // Wait for child process completion
                 int status;
                 waitpid(execid, &status, 0);
+                execIds.pop();
                 return WEXITSTATUS(status) == 0;
             }
         }
+    }
+
+    /* Execute a list of commands, piping inputs / outputs */
+    bool executePipe(const std::vector<std::vector<std::string>> &cmds_) {
+        // Child process to log error into errPipe, we keep track of prevPipe as well for next command
+        int errPipe[2], prevOutPipe[2];
+        if (pipe(errPipe) == -1) { std::cerr << "Unable to open a pipe.\n"; return false; }
+        for (std::size_t i {0}; i < cmds_.size(); i++) {
+            const std::vector<std::string> &cmds {cmds_[i]};
+            int currOutPipe[2];
+            if (pipe(currOutPipe) == -1) { std::cerr << "Unable to open a pipe.\n"; return false; }
+            pid_t pid {fork()};
+            if (pid == 0) {
+                bool redirectStatus {true};
+                if (i > 0) {
+                    redirectStatus &= dup2(prevOutPipe[0], STDIN_FILENO) != -1;
+                    close(prevOutPipe[0]); close(prevOutPipe[1]); 
+                }
+                close(errPipe[0]); close(currOutPipe[0]);
+                redirectStatus &= dup2(errPipe[1], STDERR_FILENO) != -1;
+                redirectStatus &= dup2(currOutPipe[1], STDOUT_FILENO) != -1;
+                close(errPipe[1]); close(currOutPipe[1]);
+                if (!redirectStatus) { std::cerr << "Unable to pipe to main process.\n"; std::exit(1); };
+
+                // Command not found
+                if (commands.find(cmds[0]) == commands.end() && shellCommands.find(cmds[0]) == shellCommands.end()) {
+                    std::cerr << "Command not in path: " << cmds[0] << "\n";
+                    std::exit(1);
+                }
+
+                // Shell builtin command
+                else if (shellCommands.find(cmds[0]) != shellCommands.end()) {
+                    bool status {handleShellCommand(cmds)};
+                    std::exit(status? 0: 1);
+                } 
+
+                // Fork and execute
+                else {
+                    exec(cmds);
+                    std::exit(1);
+                }
+
+            } else {
+                execIds.push(pid);
+                if (i > 0) { close(prevOutPipe[0]); close(prevOutPipe[1]); }
+                std::copy(std::begin(currOutPipe), std::end(currOutPipe), std::begin(prevOutPipe));
+            }
+        }
+
+        // Temp variables to read from STDOUT / STDERR
+        char buffer[1024];
+        ssize_t bytesRead;
+
+        // Read from err pipe
+        close(errPipe[1]);
+        while ((bytesRead = read(errPipe[0], buffer, sizeof(buffer) - 1)) > 0) {
+            buffer[bytesRead] = '\0';
+            std::cerr << buffer; 
+        }
+        close(errPipe[0]);
+
+        // Read from out pipe
+        close(prevOutPipe[1]);
+        while ((bytesRead = read(prevOutPipe[0], buffer, sizeof(buffer) - 1)) > 0) {
+            buffer[bytesRead] = '\0';
+            std::cout << buffer; 
+        }
+        close(prevOutPipe[0]);
+
+        // Wait for all the subshells to complete 
+        bool status {true};
+        while (!execIds.empty()) {
+            int pidStatus;
+            waitpid(execIds.front(), &pidStatus, 0);
+            status &= WIFEXITED(pidStatus) && WEXITSTATUS(pidStatus) == 0;
+            execIds.pop();
+        }
+
+        return status;
     }
 
 public:
@@ -219,21 +373,34 @@ public:
         // On SIGINT, do nothing
         std::signal(SIGINT, SIG_CNOOP);
         while(1) {
-            std::string line;
+            std::string acc;
             std::cout << "csh> ";
-            std::getline(std::cin, line);
-            std::vector<std::string> cmds{split(line)};
-            if (cmds.empty()) {
+
+            // Read until the input complete
+            do {
+                std::string line;
+                std::getline(std::cin, line);
+                acc += line;
+            } while (!std::cin.eof() && checkLinePending(acc));
+
+            // Split into tokens
+            std::vector<std::vector<std::string>> cmdsList{parseSplits(split(acc))};
+            if (cmdsList.empty()) {
                 if (std::cin.eof()) { std::cout << "\n"; break; }
             } else {
                 // Install signal interupt and remove post execution
                 std::signal(SIGINT, SIG_CKILL);
-                execute(cmds);
+                if (cmdsList.size() == 1) execute(cmdsList[0]);
+                else executePipe(cmdsList);
                 std::signal(SIGINT, SIG_CNOOP);
-            }
+            }        
         }
     }
 };
+
+// Define static variables
+const std::unordered_set<char> Shell::WHITESPACES {' ', '\t', '\v', '\f', '\r', '\n'};
+std::queue<pid_t> Shell::execIds {};
 
 int main(int argc, char**) {
     if (argc != 1) {
