@@ -1,3 +1,4 @@
+#include <cctype>
 #include <cstdio>
 #include <deque>
 #include <fstream>
@@ -5,6 +6,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 #include <pwd.h>
+#include <termios.h>
 
 #include <queue>
 #include <csignal>
@@ -33,71 +35,73 @@
 namespace fs = std::filesystem;
 
 class History {
+private:
     const unsigned int MAX_HISTORY {500};
     std::deque<std::string> history;
     const fs::path historyPath;
 
-    public:
-        ~History() { writeHistory(); }
-        History(const fs::path &homeDir): historyPath(homeDir / ".csh_history") {
-            populateHistory();
-        }
-
-        std::string operator[] (const std::size_t &idx) const {
-            return idx >= history.size()? history.back(): history[idx];
-        }
-
-        std::size_t size() { return history.size(); }
-        std::size_t capacity() { return MAX_HISTORY; }
-
-        void add(const std::string &command) {
-            history.push_back(command);
-            if (history.size() > MAX_HISTORY) 
-                history.pop_front();
-        }
-
-        /* Populate history from `.csh_history` on object instantiation */
-        void populateHistory() {
-            history.clear();
-            std::ifstream ifs {historyPath};
-            std::string command;
-            while (std::getline(ifs, command))
-                add(command);
-        }
-
-        /* Write history to `.csh_history` */
-        void writeHistory() {
-            std::ofstream ofs {historyPath};
-            for (const std::string &command: history)
-                ofs << command << "\n";
-        }
-};
-
-class Shell {
-private:
-    static const std::unordered_set<char> WHITESPACES;
-    static std::queue<pid_t> execIds;
-    enum KEYS: short {KEY_UP=72, KEY_DOWN=80, KEY_LEFT=75, KEY_RIGHT=77};
-
-    const std::unordered_set<std::string> shellCommands{"cd", "exit", "history"};
-    std::vector<std::string> paths{"/bin"};
-    fs::path currDirectory, homeDirectory;
-    std::unordered_map<std::string, std::string> commands;
-    History history;
-
-private:
-    /* NOOP Signal Handler, prints "csh> " */
-    static void SIG_CNOOP (int) { 
-        std::cout << "\ncsh> "; 
-        std::cout.flush(); 
+public:
+    ~History() { writeHistory(); }
+    History(const fs::path &homeDir): historyPath(homeDir / ".csh_history") {
+        populateHistory();
     }
 
-    /* SIGINT Handler, kill the executing process */
-    static void SIG_CKILL (int) {
-        std::cout << "\n";
-        while (!execIds.empty()) {
-            kill(execIds.front(), SIGKILL);
-            execIds.pop();
+    std::string operator[] (const std::size_t &idx) const {
+        return idx >= history.size()? history.back(): history[idx];
+    }
+
+    std::size_t size() { return history.size(); }
+    std::size_t capacity() { return MAX_HISTORY; }
+
+    void add(const std::string &command) {
+        history.push_back(command);
+        if (history.size() > MAX_HISTORY) 
+            history.pop_front();
+    }
+
+    /* Populate history from `.csh_history` on object instantiation */
+    void populateHistory() {
+        history.clear();
+        std::ifstream ifs {historyPath};
+        std::string command;
+        while (std::getline(ifs, command))
+            add(command);
+    }
+
+    /* Write history to `.csh_history` */
+    void writeHistory() {
+        std::ofstream ofs {historyPath};
+        for (const std::string &command: history)
+            ofs << command << "\n";
+    }
+};
+
+class UnbufferedIO {
+private:
+    struct termios orig_term;
+    History &history;
+
+    void enableRawMode() {
+        if (tcgetattr(STDIN_FILENO, &orig_term) == -1) {
+            std::cerr << "Failed to retrieve terminal settings.\n";
+            std::exit(1);
+        }
+
+        struct termios new_term {orig_term};
+        new_term.c_lflag &= static_cast<tcflag_t>(~(ECHO | ICANON));
+        new_term.c_cc[VMIN] = 0;
+        new_term.c_cc[VTIME] = 0;
+
+        if (tcsetattr(STDIN_FILENO, TCSANOW, &new_term) == -1) {
+            std::cerr << "Failed to modify terminal settings.\n";
+            std::exit(1);
+        }
+    }
+
+    void disableRawMode() {
+        if (tcsetattr(STDIN_FILENO, TCSANOW, &orig_term) == -1) {
+            std::cerr << "Failed to revert terminal settings.\n";
+            std::exit(1);
         }
     }
 
@@ -114,6 +118,54 @@ private:
 
         // Is it stil pending?
         return insideString != 0 || prevCh == '\\';
+    }
+
+
+public:
+    UnbufferedIO(History &history): history(history) {}
+    std::string readLine() {
+        enableRawMode();
+        std::string acc;
+        while (1) {
+            char ch;
+            if (read(0, &ch, 1) > 0) {
+              std::cout << ch << std::flush;
+              acc += ch;
+            }
+            if (ch == '\n' && !checkLinePending(acc))
+                break;
+        }
+        disableRawMode();
+        return acc;
+    }
+};
+
+class Shell {
+private:
+    static const std::unordered_set<char> WHITESPACES;
+    static std::queue<pid_t> execIds;
+
+    const std::unordered_set<std::string> shellCommands{"cd", "exit", "history"};
+    std::vector<std::string> paths{"/bin"};
+    fs::path currDirectory, homeDirectory;
+    std::unordered_map<std::string, std::string> commands;
+    History history;
+    UnbufferedIO uio;
+
+private:
+    /* NOOP Signal Handler, prints "csh> " */
+    static void SIG_CNOOP (int) { 
+        std::cout << "\ncsh> "; 
+        std::cout.flush(); 
+    }
+
+    /* SIGINT Handler, kill the executing process */
+    static void SIG_CKILL (int) {
+        std::cout << "\n";
+        while (!execIds.empty()) {
+            kill(execIds.front(), SIGKILL);
+            execIds.pop();
+        }
     }
 
     /* Split an string into a vector of strings, delimited by whitespace */
@@ -420,7 +472,8 @@ public:
     Shell(): 
         currDirectory(fs::current_path()), 
         homeDirectory(getHomeDirectory()), 
-        history(History(homeDirectory))
+        history(History(homeDirectory)),
+        uio(history)
     { 
         populateCommandsFromPath(); 
     }
@@ -429,24 +482,18 @@ public:
     void run() {
         // On SIGINT, do nothing
         std::signal(SIGINT, SIG_CNOOP);
-        while(1) {
-            std::string acc;
-            std::cout << "csh> ";
 
-            // Read until the input complete
-            do {
-                std::string line;
-                std::getline(std::cin, line);
-                acc += line;
-            } while (!std::cin.eof() && checkLinePending(acc));
+        while(1) {
+            std::cout << "csh> " << std::flush;
+            std::string line {uio.readLine()};
 
             // Split into tokens
-            std::vector<std::vector<std::string>> cmdsList{parseSplits(split(acc))};
+            std::vector<std::vector<std::string>> cmdsList{parseSplits(split(line))};
             if (cmdsList.empty()) {
                 if (std::cin.eof()) { std::cout << "\n"; break; }
             } else {
                 // Add the command to history
-                history.add(acc);
+                history.add(line);
 
                 // Install signal interupt and remove post execution
                 std::signal(SIGINT, SIG_CKILL);
