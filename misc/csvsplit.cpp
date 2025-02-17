@@ -8,12 +8,11 @@
 #include <filesystem>
 #include <fstream>
 #include <functional>
-#include <numeric>
 #include <unordered_set>
 
 class SplitStrategy {
     public:
-        virtual std::size_t getBucket(const std::vector<std::string>&) = 0;
+        virtual std::size_t getBucket(const CSVUtil::CSVRecord&) = 0;
         virtual ~SplitStrategy() = default;
         virtual std::size_t totalBuckets() const = 0;
 };
@@ -29,7 +28,7 @@ class RecordCountStrategy: public SplitStrategy {
 
         std::size_t totalBuckets() const override { return currBucket + 1; }
 
-        std::size_t getBucket(const std::vector<std::string>&) override {
+        std::size_t getBucket(const CSVUtil::CSVRecord&) override {
             if (currBucketCount >= maxCounts) {
                 currBucketCount = 0;
                 pruneBuckets.push_back(currBucket++);
@@ -51,19 +50,13 @@ class SplitSizeStrategy: public SplitStrategy {
 
         std::size_t totalBuckets() const override { return currBucket + 1; }
 
-        std::size_t getBucket(const std::vector<std::string> &row) override {
+        std::size_t getBucket(const CSVUtil::CSVRecord &row) override {
             if (currBucketSize >= maxSize * 1024 * 1024) {
                 currBucketSize = 0; 
                 pruneBuckets.push_back(currBucket++);
             }
 
-            std::size_t currSize {std::accumulate(row.cbegin(), row.cend(), 0UL, 
-                [](std::size_t acc, const std::string &field) { 
-                    return field.size() + acc + 1;
-                }
-            )};
-
-            currBucketSize += currSize;
+            currBucketSize += row.memory();
             return currBucket;
         }
 };
@@ -79,7 +72,7 @@ class HashColumnStrategy: public SplitStrategy {
 
         std::size_t totalBuckets() const override { return buckets.size(); }
 
-        std::size_t getBucket(const std::vector<std::string> &row) override {
+        std::size_t getBucket(const CSVUtil::CSVRecord &row) override {
             std::size_t bucket {hasher(row[colIdx]) % bucketSize};
             buckets.insert(bucket);
             return bucket;
@@ -98,7 +91,7 @@ class GroupColumnStrategy: public SplitStrategy {
 
         std::size_t totalBuckets() const override { return currBucket + 1; }
 
-        std::size_t getBucket(const std::vector<std::string> &row) override {
+        std::size_t getBucket(const CSVUtil::CSVRecord &row) override {
             const std::string &field {row[colIdx]};
             if (field2BucketMapping.find(field) != field2BucketMapping.end()) {
                 return field2BucketMapping[field];
@@ -154,7 +147,7 @@ class CSVSplit {
         void splitFile() {
             std::size_t counts {0};
             std::unordered_map<std::size_t, std::ostringstream> buffers;
-            for (const std::vector<std::string> &row: readHandle) {
+            for (const CSVUtil::CSVRecord &row: readHandle) {
                 if (counts++) {
                     std::size_t bucket {strategy->getBucket(row)};
 
@@ -166,7 +159,7 @@ class CSVSplit {
                     }
 
                     // Buffer until there is 1 MB worth data
-                    buffers[bucket] << CSVUtil::writeCSVLine(row) + '\n';
+                    buffers[bucket] << row << '\n';
                     if (buffers[bucket].tellp() >= static_cast<long>(1024 * 1024))
                         flushBuffer(bucket, buffers);
 
@@ -197,11 +190,11 @@ class CSVMerge {
 
         // Write & flush if threshold is hit
         static void writeBuffer(
-                const std::string &csvRow, std::ostringstream &buffer, 
+                const CSVUtil::CSVRecord &csvRow, std::ostringstream &buffer, 
                 std::ofstream &ofile, std::size_t thresh, 
                 std::mutex *mutex = nullptr
         ) {
-            buffer << csvRow;
+            if (!csvRow.empty()) buffer << csvRow << '\n';
             if (buffer.tellp() >= static_cast<long>(thresh)) {
                 if (mutex) { std::lock_guard lock(*mutex); ofile << buffer.str(); ofile.flush(); }
                 else { ofile << buffer.str(); ofile.flush(); }
@@ -210,18 +203,16 @@ class CSVMerge {
         }
 
         void mergeSync(const std::vector<std::string> &files) {
-            std::ofstream ofile {outDir / "merged-sync.csv"}; std::ostringstream buffer;
+            std::ofstream ofile {outDir / "merged-sync.csv"}; 
+            std::ostringstream buffer;
             ofile << csvHeader;
             ofile.flush();
             std::size_t fileCounts{0}, recCounts{0};
             for (const std::string &fname: files) {
                 fileCounts++;
                 std::size_t counts {0};
-                for (const std::vector<std::string> &row: CSVUtil::CSVReader{fname}) {
-                    if (counts++) {
-                        std::string csvRow {CSVUtil::writeCSVLine(row) + '\n'}; 
-                        writeBuffer(csvRow, buffer, ofile, 1024 * 1024);
-                    }
+                for (const CSVUtil::CSVRecord &row: CSVUtil::CSVReader{fname}) {
+                    if (counts++) writeBuffer(row, buffer, ofile, 1024 * 1024);
                 }
 
                 // Update for each file
@@ -229,7 +220,7 @@ class CSVMerge {
             }
 
             // Final write (dont care about thresholds, write empty and just flush)
-            writeBuffer("", buffer, ofile, 0);
+            writeBuffer(CSVUtil::CSVRecord{}, buffer, ofile, 0);
 
             std::cout << "Read CSV Files: " << fileCounts << "\n"
                       << "Records written: " << recCounts << "\n";
@@ -247,15 +238,12 @@ class CSVMerge {
                 pool.enqueue([fname, &recCounts, &ofile, &ofileMutex]() {
                     std::ostringstream buffer;
                     std::size_t counts {0};
-                    for (const std::vector<std::string> &row: CSVUtil::CSVReader{fname}) {
-                        if (counts++) {
-                            std::string csvRow {CSVUtil::writeCSVLine(row) + '\n'}; 
-                            writeBuffer(csvRow, buffer, ofile, 1024 * 1024, &ofileMutex);
-                        }
+                    for (const CSVUtil::CSVRecord &row: CSVUtil::CSVReader{fname}) {
+                        if (counts++) writeBuffer(row, buffer, ofile, 1024 * 1024, &ofileMutex);
                     }
 
                     // Final write (dont care about thresholds, write empty and just flush)
-                    writeBuffer("", buffer, ofile, 0, &ofileMutex);
+                    writeBuffer(CSVUtil::CSVRecord{}, buffer, ofile, 0, &ofileMutex);
                     recCounts += counts;
                 });
             }

@@ -7,12 +7,20 @@
 #include <vector>
 
 namespace CSVUtil {
+    // Helper to remove '/r' when reading lines
+    inline bool safeGetline(std::istream &is, std::string &line) {
+        if (!std::getline(is, line)) return false;
+        if (!line.empty() && line.back() == '\r') 
+            line.pop_back();
+        return true;
+    }
+
     // Extract the first line from a CSV File
     inline const std::string extractHeader(const std::string &fname) {
         std::ifstream ifs {fname};
         if (!ifs) throw std::runtime_error("Couldn't open file: " + fname);
         std::string header;
-        std::getline(ifs, header);
+        safeGetline(ifs, header);
         return header;
     }
 
@@ -55,13 +63,6 @@ namespace CSVUtil {
         return result;
     }
 
-    inline bool safeGetline(std::istream &is, std::string &line) {
-        if (!std::getline(is, line)) return false;
-        if (!line.empty() && line.back() == '\r') 
-            line.pop_back();
-        return true;
-    }
-
     // Helper to output a single CSV field as a string
     inline std::string writeCSVField(const std::string& field, const char delim = ',') {
         std::string result;
@@ -90,16 +91,82 @@ namespace CSVUtil {
         return result;
     }
 
+    class CSVRecord {
+        private:
+            mutable std::string serialized;
+            mutable std::vector<std::string> records;
+            mutable bool modified {false};
+
+            class Proxy {
+                private:
+                    CSVRecord &record;
+                    std::size_t idx;
+
+                public:
+                    Proxy(CSVRecord &record, std::size_t idx): record(record), idx(idx) {}
+                    Proxy &operator= (const std::string &val) { 
+                        record.records[idx] = val; 
+                        record.modified = true; 
+                        return *this; 
+                    }
+
+                    operator std::string &() const {
+                        return record.records[idx];
+                    }
+            };
+
+        public:
+            explicit CSVRecord() {}
+
+            explicit CSVRecord(const std::string &serialized, const std::vector<std::string> &records = {}): 
+                serialized(serialized), 
+                records(records.empty()? parseCSVLine(serialized): records) 
+            {}
+
+            explicit CSVRecord(const std::vector<std::string> &records):
+                serialized(writeCSVLine(records)), records(records)
+            {}
+
+            bool empty() const { return serialized.empty(); }
+            std::size_t memory() const { return serialized.size() + 1; }
+            std::size_t size() const { return records.size(); }
+            const std::string &to_string() const { 
+                if (modified) { serialized = writeCSVLine(records); modified = false; }
+                return serialized; 
+            }
+
+            std::vector<std::string>::const_iterator begin() const { return records.cbegin(); }
+            std::vector<std::string>::const_iterator end() const { return records.cend(); }
+
+            Proxy operator[] (std::size_t idx) {
+                if (idx >= records.size()) 
+                    throw std::runtime_error("Index out of bounds: " + std::to_string(idx));
+                return Proxy{*this, idx};
+            }
+
+            const std::string &operator[](std::size_t idx) const {
+                if (idx >= records.size()) 
+                    throw std::runtime_error("Index out of bounds: " + std::to_string(idx));
+                return records[idx];
+            }
+    };
+
+    // Overload stream operators
+    inline std::ostream &operator<< (std::ostream &os, const CSVRecord &record) {
+        os << record.to_string(); 
+        return os;
+    }
+
     /*
      * @class CSVReader
      * 
      * This class reads a CSV file and provides an iterator-based interface 
-     * for processing rows. Each row is returned as a `std::vector<std::string>`.
+     * for processing rows. Each row is returned as a `CSVRecord`.
      *
      * Example usage:
      * @code
      *   CSVUtil::CSVReader reader{argv[1]};
-     *   for (const std::vector<std::string> &row: reader) {
+     *   for (const CSVRecord &row: reader) {
      *       for (const std::string &field: row)
      *           std::cout << field << ",";
      *       std::cout << "\n";
@@ -111,7 +178,7 @@ namespace CSVUtil {
             const std::string fname;
             mutable std::size_t cols;
             mutable std::ifstream csvStream;
-            mutable std::vector<std::string> currentRow;
+            mutable CSVRecord currentRow;
 
         public:
             class CSVIterator {
@@ -128,9 +195,8 @@ namespace CSVUtil {
                         return *this;
                     }
 
-                    const std::vector<std::string> &operator*() const {
-                        return reader->currentRow;
-                    }
+                    const CSVRecord &operator*() const { return reader->currentRow; }
+                    CSVRecord &operator*() { return reader->currentRow; }
 
                     bool operator!=(const CSVIterator &other) const {
                         return end != other.end;
@@ -147,7 +213,7 @@ namespace CSVUtil {
             // Get a single CSV line & store it the result into `currentRow`
             bool nextCSVLine() const {
                 std::string acc, line; 
-                currentRow.clear();
+                currentRow = CSVRecord{};
                 while (safeGetline(csvStream, acc)) {
                     line += acc;
                     std::vector<std::string> row {parseCSVLine(line)};
@@ -160,7 +226,7 @@ namespace CSVUtil {
                             "Found: " + std::to_string(row.size()) + "\n"
                         );
                     } else {
-                        currentRow = row;
+                        currentRow = CSVRecord{line, row};
                         cols = row.size();
                         break;
                     }
