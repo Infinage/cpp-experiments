@@ -19,21 +19,19 @@
 
 /*
  * TODO:
- *  1. Support left, right, del keys
- *  2. Piping commands: "<", ">", "|"
+ *  1. Wrap around in history if command spans multiple lines
+ *  2. When retreiving from history wrap backspace around
  *  3. Support &&, ||
- *  4. cd somewhere inside - echo hello && cd ~
  *  5. How does redirection like >&2 work? For ex: "find / -maxdepth 2 | wc -l" will output to stderr
- *  6. Does it support reading from stdin like "--"
  *  7. Running in background; support fg, bg
  *  8. Support operators like: $() or ``
  *  9. How do these commands work: more, vim
  * 10. What will csh do if executed csh binary? Nesting bash inside bash
- * 11. Shell history, arrow keys to navigate history
  * 12. Prompt with colors, current working directory. How sig_noop would handle it?
  */
 
 namespace fs = std::filesystem;
+constexpr const char* SHELL_PROMPT {"csh> "};
 
 class History {
 private:
@@ -126,13 +124,15 @@ public:
     UnbufferedIO(History &history): history(history) {}
     std::string readLine() {
         enableRawMode();
-        std::size_t maxIdx {history.size()}, chIdx {0};
-        std::size_t currIdx {maxIdx}; 
-        std::string curr, buffer; char ch;
+        std::size_t maxIdx {history.size()}, histIdx {history.size()};
+        std::string curr, buffer; char ch; std::size_t bufferIdx {0};
+        std::string piece; // To handle multiple lines continued
         while (read(0, &ch, 1) > 0) {
             if (ch == 4 || ch == '\n') {
                 std::cout << '\n';
-                if (checkLinePending(buffer)) {
+                if (checkLinePending(piece + buffer)) {
+                    piece += buffer + '\n'; buffer.clear();
+                    bufferIdx = 0;
                     std::cout << "> " << std::flush;
                 } else {
                     if (ch == 4 && buffer.empty()) 
@@ -140,7 +140,7 @@ public:
                     break;
                 }
             } else if (ch == 3) {
-                std::cout << "^C\ncsh> " << std::flush; 
+                std::cout << "^C\n" << SHELL_PROMPT << std::flush; 
                 buffer.clear();
             } else if (ch == '\x1b') {
                     char seq[3];
@@ -149,43 +149,73 @@ public:
 
                     // Up arrow
                     if (seq[0] == '[' && seq[1] == 'A') {
-                        if (currIdx == 0) std::cout << '\a';
-                        else --currIdx;
-                        buffer = history[currIdx];
-                        std::cout << "\r\x1b[2Kcsh> " << buffer << std::flush;
+                        if (histIdx == 0) std::cout << '\a' << std::flush;
+                        else {
+                            --histIdx;
+                            buffer = history[histIdx];
+                            bufferIdx = buffer.size();
+                            std::cout << "\r\x1b[2K" << SHELL_PROMPT << buffer << std::flush;
+                        }
                     } 
 
                     // Down arrow
                     else if (seq[0] == '[' && seq[1] == 'B') {
-                        if (currIdx == maxIdx) std::cout << '\a';
-                        else ++currIdx;
-                        buffer = currIdx == maxIdx? curr: history[currIdx];
-                        std::cout << "\r\x1b[2Kcsh> " << buffer << std::flush;
-                    } 
-
-                    // Left arrow
-                    else if (seq[0] == '[' && seq[1] == 'C') {
-
+                        if (histIdx == maxIdx) std::cout << '\a' << std::flush;
+                        else {
+                            ++histIdx;
+                            buffer = histIdx == maxIdx? curr: history[histIdx];
+                            bufferIdx = buffer.size();
+                            std::cout << "\r\x1b[2K" << SHELL_PROMPT << buffer << std::flush;
+                        }
                     } 
 
                     // Right arrow
-                    else if (seq[0] == '[' && seq[1] == 'D') {
+                    else if (seq[0] == '[' && seq[1] == 'C') {
+                        if (bufferIdx >= buffer.size()) std::cout << '\a' << std::flush;
+                        else {
+                            bufferIdx++;
+                            std::cout << "\033[C" << std::flush;
+                        }
+                    } 
 
+                    // Left arrow
+                    else if (seq[0] == '[' && seq[1] == 'D') {
+                        if (bufferIdx == 0) std::cout << '\a' << std::flush;
+                        else {
+                            bufferIdx--;
+                            std::cout << "\033[D" << std::flush;
+                        }
+                    }
+
+                    // Del key
+                    else if (seq[0] == '[' && seq[1] == '3' && read(STDIN_FILENO, &seq[2], 1) == 1 && seq[2] == '~') {
+                        if (bufferIdx >= buffer.size()) std::cout << '\a' << std::flush;
+                        else {
+                            buffer.erase(bufferIdx, 1);
+                            std::cout << " \b" << buffer.substr(bufferIdx) + ' '
+                                      << std::string(buffer.size() - bufferIdx + 1, '\b') 
+                                      << std::flush;
+                        }
                     }
             }  else if (ch == 127) {
-                if (buffer.empty()) std::cout << '\a' << std::flush;
+                if (bufferIdx == 0) std::cout << '\a' << std::flush;
                 else {
-                    std::cout << "\b \b" << std::flush;
-                    buffer.pop_back();
+                    bufferIdx--;
+                    buffer.erase(bufferIdx, 1);
+                    std::cout << "\b \b" << buffer.substr(bufferIdx) << ' ' 
+                              << std::string(buffer.size() - bufferIdx + 1, '\b') 
+                              << std::flush;
                 }
             } else if (std::isprint(ch)) {
-                buffer += ch;
+                buffer.insert(buffer.begin() + static_cast<long>(bufferIdx++), ch);
                 curr = buffer;
-                std::cout << ch << std::flush;
+                std::cout << ch << buffer.substr(bufferIdx) 
+                          << std::string(buffer.size() - bufferIdx, '\b') 
+                          << std::flush;
             }
         }
         disableRawMode();
-        return buffer;
+        return piece + buffer;
     }
 };
 
@@ -204,7 +234,7 @@ private:
 private:
     /* NOOP Signal Handler, prints "csh> " */
     static void SIG_CNOOP (int) { 
-        std::cout << "\ncsh> "; 
+        std::cout << "\n" << SHELL_PROMPT; 
         std::cout.flush(); 
     }
 
@@ -530,7 +560,7 @@ public:
     /* Start shell loop */
     void run() {
         while(1) {
-            std::cout << "csh> " << std::flush;
+            std::cout << SHELL_PROMPT << std::flush;
             std::string line {uio.readLine()};
 
             // Split into tokens
