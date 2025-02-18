@@ -19,6 +19,7 @@
 
 /*
  * TODO:
+ *  1. Support left, right, del keys
  *  2. Piping commands: "<", ">", "|"
  *  3. Support &&, ||
  *  4. cd somewhere inside - echo hello && cd ~
@@ -88,8 +89,8 @@ private:
         }
 
         struct termios new_term {orig_term};
-        new_term.c_lflag &= static_cast<tcflag_t>(~(ECHO | ICANON));
-        new_term.c_cc[VMIN] = 0;
+        new_term.c_lflag &= static_cast<tcflag_t>(~(ECHO | ICANON | ISIG));
+        new_term.c_cc[VMIN] = 1;
         new_term.c_cc[VTIME] = 0;
 
         if (tcsetattr(STDIN_FILENO, TCSANOW, &new_term) == -1) {
@@ -125,18 +126,66 @@ public:
     UnbufferedIO(History &history): history(history) {}
     std::string readLine() {
         enableRawMode();
-        std::string acc;
-        while (1) {
-            char ch;
-            if (read(0, &ch, 1) > 0) {
-              std::cout << ch << std::flush;
-              acc += ch;
+        std::size_t maxIdx {history.size()}, chIdx {0};
+        std::size_t currIdx {maxIdx}; 
+        std::string curr, buffer; char ch;
+        while (read(0, &ch, 1) > 0) {
+            if (ch == 4 || ch == '\n') {
+                std::cout << '\n';
+                if (checkLinePending(buffer)) {
+                    std::cout << "> " << std::flush;
+                } else {
+                    if (ch == 4 && buffer.empty()) 
+                        buffer = "exit";
+                    break;
+                }
+            } else if (ch == 3) {
+                std::cout << "^C\ncsh> " << std::flush; 
+                buffer.clear();
+            } else if (ch == '\x1b') {
+                    char seq[3];
+                    if (read(STDIN_FILENO, &seq[0], 1) != 1 || read(STDIN_FILENO, &seq[1], 1) != 1) 
+                        continue;
+
+                    // Up arrow
+                    if (seq[0] == '[' && seq[1] == 'A') {
+                        if (currIdx == 0) std::cout << '\a';
+                        else --currIdx;
+                        buffer = history[currIdx];
+                        std::cout << "\r\x1b[2Kcsh> " << buffer << std::flush;
+                    } 
+
+                    // Down arrow
+                    else if (seq[0] == '[' && seq[1] == 'B') {
+                        if (currIdx == maxIdx) std::cout << '\a';
+                        else ++currIdx;
+                        buffer = currIdx == maxIdx? curr: history[currIdx];
+                        std::cout << "\r\x1b[2Kcsh> " << buffer << std::flush;
+                    } 
+
+                    // Left arrow
+                    else if (seq[0] == '[' && seq[1] == 'C') {
+
+                    } 
+
+                    // Right arrow
+                    else if (seq[0] == '[' && seq[1] == 'D') {
+
+                    }
+            }  else if (ch == 127) {
+                if (buffer.empty()) std::cout << '\a' << std::flush;
+                else {
+                    std::cout << "\b \b" << std::flush;
+                    buffer.pop_back();
+                }
+            } else if (std::isprint(ch)) {
+                buffer += ch;
+                curr = buffer;
+                std::cout << ch << std::flush;
             }
-            if (ch == '\n' && !checkLinePending(acc))
-                break;
         }
         disableRawMode();
-        return acc;
+        return buffer;
     }
 };
 
@@ -480,9 +529,6 @@ public:
 
     /* Start shell loop */
     void run() {
-        // On SIGINT, do nothing
-        std::signal(SIGINT, SIG_CNOOP);
-
         while(1) {
             std::cout << "csh> " << std::flush;
             std::string line {uio.readLine()};
@@ -499,7 +545,7 @@ public:
                 std::signal(SIGINT, SIG_CKILL);
                 if (cmdsList.size() == 1) execute(cmdsList[0]);
                 else executePipe(cmdsList);
-                std::signal(SIGINT, SIG_CNOOP);
+                std::signal(SIGINT, SIG_DFL);
             }        
         }
     }
