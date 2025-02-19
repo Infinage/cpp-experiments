@@ -1,13 +1,10 @@
-#include <cctype>
-#include <cstdio>
-#include <deque>
-#include <fstream>
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
 #include <pwd.h>
 #include <termios.h>
 
+#include <fstream>
 #include <queue>
 #include <csignal>
 #include <filesystem>
@@ -18,16 +15,22 @@
 #include <vector>
 
 /*
- * TODO:
- *  1. Wrap around in history if command spans multiple lines
- *  2. When retreiving from history wrap backspace around
- *  3. Support &&, ||
- *  5. How does redirection like >&2 work? For ex: "find / -maxdepth 2 | wc -l" will output to stderr
- *  7. Running in background; support fg, bg
- *  8. Support operators like: $() or ``
- *  9. How do these commands work: more, vim
- * 10. What will csh do if executed csh binary? Nesting bash inside bash
- * 12. Prompt with colors, current working directory. How sig_noop would handle it?
+ * Supported functionalities:
+ * 1. Shell commands: cd, exit, history
+ * 2. Binaries: auto picks all executables from "/bin"
+ * 3. Simple pipes, without redirections
+ * 4. History is auto picked from '~/.csh_history'
+ * 5. Home is auto picked from env variable, strings starting with '~' are auto substituted
+ * 6. Arrow keys for navigating history
+ * 7. Interupt binary, EOF with ctrl + D
+ *
+ *  Unsupported functionalities: 
+ *  1. Support binary from current directory
+ *  2. Support &&, ||; Redirections like >&2.
+ *  3. Running in background; support fg, bg
+ *  4. Support operators like: $() or ``
+ *  5. Executing scripts
+ *  6. Tab completions
  */
 
 namespace fs = std::filesystem;
@@ -126,22 +129,18 @@ public:
         enableRawMode();
         std::size_t maxIdx {history.size()}, histIdx {history.size()};
         std::string curr, buffer; char ch; std::size_t bufferIdx {0};
-        std::string piece; // To handle multiple lines continued
         while (read(0, &ch, 1) > 0) {
             if (ch == 4 || ch == '\n') {
                 std::cout << '\n';
-                if (checkLinePending(piece + buffer)) {
-                    piece += buffer + '\n'; buffer.clear();
-                    bufferIdx = 0;
-                    std::cout << "> " << std::flush;
-                } else {
-                    if (ch == 4 && buffer.empty()) 
-                        buffer = "exit";
-                    break;
+                if (checkLinePending(buffer)) {
+                    std::cerr << "Sorry, multi line commands are not supported.\n" << std::flush;
+                    buffer.clear();
                 }
+                if (ch == 4 && buffer.empty()) buffer = "exit";
+                break;
             } else if (ch == 3) {
                 std::cout << "^C\n" << SHELL_PROMPT << std::flush; 
-                buffer.clear();
+                buffer.clear(); bufferIdx = 0;
             } else if (ch == '\x1b') {
                     char seq[3];
                     if (read(STDIN_FILENO, &seq[0], 1) != 1 || read(STDIN_FILENO, &seq[1], 1) != 1) 
@@ -215,7 +214,7 @@ public:
             }
         }
         disableRawMode();
-        return piece + buffer;
+        return buffer;
     }
 };
 
@@ -224,7 +223,7 @@ private:
     static const std::unordered_set<char> WHITESPACES;
     static std::queue<pid_t> execIds;
 
-    const std::unordered_set<std::string> shellCommands{"cd", "exit", "history"};
+    const std::unordered_set<std::string> shellCommands{"cd", "exit", "history", "help"};
     std::vector<std::string> paths{"/bin"};
     fs::path currDirectory, homeDirectory;
     std::unordered_map<std::string, std::string> commands;
@@ -293,7 +292,9 @@ private:
                 return {};
             } else {
                 if (result.empty()) result.push_back({});
-                result.back().push_back(piece.at(0) == '~'? (homeDirectory / piece.substr(1)).string(): piece);
+                if (piece.size() == 1 && piece.at(0) == '~') result.back().push_back(homeDirectory);
+                else if (piece.size() >= 2 && piece.substr(0, 2) == "~/") result.back().push_back(homeDirectory / piece.substr(2));
+                else result.back().push_back(piece);
             }
         }
 
@@ -301,7 +302,8 @@ private:
     }
 
     /* Handle exit shell command */
-    static bool handleExit() {
+    bool handleExit() {
+        history.writeHistory();
         std::cout << "exit\n";
         std::exit(0);
     }
@@ -332,6 +334,20 @@ private:
         for (std::size_t i {0}; i < history.size(); i++)
             std::cout << "  " << i << "  " << history[i] << "\n";
         return history.size();
+    }
+
+    /* Handle help shell command */
+    bool handleHelp(bool topicsRequested) {
+        if (topicsRequested) std::cout << "Help topics not supported: Please use `man` instead.\n";
+        else std::cout << "\n"
+           "   ██████╗███████╗██╗  ██╗" << "\n"
+           "  ██╔════╝██╔════╝██║  ██║" << "\n"
+           "  ██║     ███████╗███████║" << "\n"
+           "  ██║     ╚════██║██╔══██║" << "\n"
+           "  ╚██████╗███████║██║  ██║" << "\n"
+           "   ╚═════╝╚══════╝╚═╝  ╚═╝" << "\n"
+            << "\nCSH Lite, version 1.0.1-release\n";
+        return true;
     }
 
     /* Check if current user running shell has exec permissions */
@@ -382,14 +398,11 @@ private:
     }
 
     bool handleShellCommand(const std::vector<std::string> &cmds) {
-        if (cmds[0] == "cd") 
-            return handleChangeDirectory(cmds);
-        else if (cmds[0] == "exit") 
-            return handleExit();
-        else if (cmds[0] == "history") 
-            return handleHistory();
-        else 
-            return false;
+        if      (cmds[0] ==      "cd") return handleChangeDirectory(cmds);
+        else if (cmds[0] ==    "exit") return handleExit();
+        else if (cmds[0] == "history") return handleHistory();
+        else if (cmds[0] ==    "help") return handleHelp(cmds.size() > 1);
+        else                           return false;
     }
 
     void exec(const std::vector<std::string> &cmds_) {
@@ -402,7 +415,7 @@ private:
 
         // Execute command
         char *environ[] { (char *)"TERM=xterm", nullptr };
-        chdir(currDirectory.c_str());
+        fs::current_path(currDirectory);
         execvpe(commands.at(cmds[0]).c_str(), cmds.data(), environ);
         std::exit(1);
     }
@@ -449,8 +462,7 @@ private:
                 close(execForkPipe[1]);
 
                 // Read from pipe
-                char buffer[1024];
-                ssize_t bytesRead;
+                char buffer[1024]; ssize_t bytesRead;
                 while ((bytesRead = read(execForkPipe[0], buffer, sizeof(buffer) - 1)) > 0) {
                     buffer[bytesRead] = '\0';
                     std::cout << buffer; 
@@ -516,8 +528,7 @@ private:
         }
 
         // Temp variables to read from STDOUT / STDERR
-        char buffer[1024];
-        ssize_t bytesRead;
+        char buffer[1024]; ssize_t bytesRead;
 
         // Read from err pipe
         close(errPipe[1]);
@@ -589,9 +600,7 @@ int main(int argc, char**) {
     if (argc != 1) {
         std::cerr << "Sorry, execution of scripts is currently unsupported.\n";
         return 1;
-    } 
-
-    else {
+    } else { 
         Shell sh;
         sh.run();
         return 0;
