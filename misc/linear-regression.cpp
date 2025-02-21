@@ -1,3 +1,4 @@
+#include <cmath>
 #include <functional>
 #include <iostream>
 #include <ostream>
@@ -6,281 +7,366 @@
 #include <type_traits>
 #include <vector>
 
-namespace MLUtils {
-    template <typename T>
-    std::ostream &operator<< (std::ostream &oss, const std::vector<T> &vec) {
-        oss << "[ ";
-        for (const T &val: vec)
-            oss << val << ' ';
-        oss << ']';
-        return oss;
-    }
+namespace CPPLearn {
 
-    template <typename T>
-    std::vector<std::vector<T>> transpose(const std::vector<std::vector<T>> &matrix) {
-        std::size_t rows {matrix.size()}, cols {matrix[0].size()};
-        std::vector<std::vector<T>> result(cols, std::vector<T>(rows));
-        for (std::size_t row {0}; row < rows; row++)
-            for (std::size_t col {0}; col < cols; col++)
-                result[col][row] = matrix[row][col];
-        return result;
-    }
-
-    template <typename T> requires std::is_arithmetic_v<T>
-    std::vector<std::vector<T>> dot(
-        const std::vector<std::vector<T>> &mat1, 
-        const std::vector<std::vector<T>> &mat2
-    ) {
-        std::size_t rows {mat1.size()}, cols {mat2[0].size()}, inner {mat2.size()};
-
-        if (mat1[0].size() != inner) 
-            throw std::runtime_error("The dimensions are not aligned, cannot do a product.");
-
-        std::vector<std::vector<T>> result(rows, std::vector<T>(cols));
-        for (std::size_t i {0}; i < rows; i++)
-            for (std::size_t k {0}; k < inner; k++)
-                for (std::size_t j {0}; j < cols; j++)
-                    result[i][j] += mat1[i][k] * mat2[k][j];
-
-        return result;
-    }
-
-    std::vector<std::vector<double>> randn(const std::size_t rows, const std::size_t cols, std::size_t seed) {
-        std::mt19937 random_gen {seed};
-        std::uniform_real_distribution<double> dist{-1, 1};
-        std::vector<std::vector<double>> result(rows, std::vector<double>(cols));
-        for (std::size_t row {0}; row < rows; row++)
-            for (std::size_t col {0}; col < cols; col++)
-                result[row][col] = dist(random_gen);
-        return result;
-    }
+    namespace Core {
+        /* ------------ Aggregate Ops - Matrix ------------ */
+        template<typename T, typename Op> requires std::is_arithmetic_v<T>
+        void apply_Op(const std::vector<std::vector<T>> &mat, Op op) {
+            for (const std::vector<T> &row: mat) 
+                for (const T &val: row) op(val);
+        }
+        template <typename T> requires std::is_arithmetic_v<T>
+        T sum(const std::vector<std::vector<T>> &mat) {
+            T result {0.};
+            apply_Op(mat, [&result](T val) { result += val; });
+            return result;
+        }
+        template <typename T> requires std::is_arithmetic_v<T>
+        T mean(const std::vector<std::vector<T>> &mat) {
+            return sum(mat) / static_cast<T>(mat.size() * mat[0].size());
+        }
+        /* ------------ Aggregate Ops - Matrix ------------ */
 
 
-    /* ------------ Aggregate Ops - Matrix ------------ */
-    template<typename T, typename Op> requires std::is_arithmetic_v<T>
-    void apply_Op(const std::vector<std::vector<T>> &mat, Op op) {
-        for (const std::vector<T> &row: mat) 
-            for (const T &val: row) op(val);
-    }
-    template <typename T> requires std::is_arithmetic_v<T>
-    T sum(const std::vector<std::vector<T>> &mat) {
-        T result {0.};
-        apply_Op(mat, [&result](T val) { result += val; });
-        return result;
-    }
-    template <typename T> requires std::is_arithmetic_v<T>
-    T mean(const std::vector<std::vector<T>> &mat) {
-        return sum(mat) / static_cast<T>(mat.size() * mat[0].size());
-    }
-    /* ------------ Aggregate Ops - Matrix ------------ */
-
-
-    /* ------------ Aggregate Ops - Vec ------------ */
-    template<typename T, typename Op> requires std::is_arithmetic_v<T>
-    void apply_Op(const std::vector<T> &vec, Op op) {
-        for (const T &val: vec) op(val);
-    }
-    template <typename T> requires std::is_arithmetic_v<T>
-    T sum(const std::vector<T> &vec) {
-        T result {0.};
-        apply_Op(vec, [&result](T val) { result += val; });
-        return result;
-    }
-    template <typename T> requires std::is_arithmetic_v<T>
-    T mean(const std::vector<T> &vec) {
-        return sum(vec) / static_cast<T>(vec.size());
-    }
-    /* ------------ Aggregate Ops - Vec ------------ */
-
-
-    /* ------------ Element wise operations - matrix1, matrix2 ------------ */
-    template <typename T, typename Op> requires std::is_arithmetic_v<T>
-    std::vector<std::vector<T>> elementwise_Op(
-        const std::vector<std::vector<T>> &m1, 
-        const std::vector<std::vector<T>> &m2,
-        Op op
-    ) {
-        std::size_t rows {m1.size()}, cols {m1[0].size()};
-        if (rows != m2.size() || cols != m2[0].size())
-            throw std::runtime_error("Dimensions do not match.");
-
-        std::vector<std::vector<T>> result(rows, std::vector<T>(cols));
-        for (std::size_t row {0}; row < rows; row++)
-            for (std::size_t col {0}; col < cols; col++)
-                result[row][col] = op(m1[row][col], m2[row][col]);
-
-        return result;
-    }
-    template <typename T> requires std::is_arithmetic_v<T>
-    std::vector<std::vector<T>> operator-(const std::vector<std::vector<T>> &m1, const std::vector<std::vector<T>> &m2) {
-        return elementwise_Op(m1, m2, std::minus<T>());
-    }
-    template <typename T> requires std::is_arithmetic_v<T>
-    std::vector<std::vector<T>> operator+(const std::vector<std::vector<T>> &m1, const std::vector<std::vector<T>> &m2) {
-        return elementwise_Op(m1, m2, std::plus<T>());
-    }
-    /* ------------ Element wise operations - matrix1, matrix2 ------------ */
-
-
-    /* ------------ Element wise operations - vector1, vector2 ------------ */
-    template <typename T, typename Op> requires std::is_arithmetic_v<T>
-    std::vector<T> elementwise_Op(
-        const std::vector<T> &v1, 
-        const std::vector<T> &v2,
-        Op op
-    ) {
-        std::size_t N {v1.size()};
-        if (N != v2.size())
-            throw std::runtime_error("Dimensions do not match.");
-
-        std::vector<T> result(N);
-        for (std::size_t i {0}; i < N; i++)
-                result[i] = op(v1[i], v2[i]);
-
-        return result;
-    }
-    template <typename T> requires std::is_arithmetic_v<T>
-    std::vector<T> operator-(const std::vector<T> &v1, const std::vector<T> &v2) {
-        return elementwise_Op(v1, v2, std::minus<T>());
-    }
-    template <typename T> requires std::is_arithmetic_v<T>
-    std::vector<T> operator+(const std::vector<T> &v1, const std::vector<T> &v2) {
-        return elementwise_Op(v1, v2, std::plus<T>());
-    }
-    /* ------------ Element wise operations - vector1, vector2 ------------ */
-
-
-    /* ------------ Broadcast operations - matrix, vector ------------ */
-    template <typename T1, typename T2, typename Op> requires std::is_arithmetic_v<T1> && std::is_arithmetic_v<T2>
-    std::vector<std::vector<T1>> broadcast_Op(const std::vector<std::vector<T1>> &mat, const std::vector<T2> vec, Op op) {
-        std::size_t rows {mat.size()}, cols {mat[0].size()};
-        if (rows != vec.size()) throw std::runtime_error("Dimension mismatch, cannot broadcast.");
-        std::vector<std::vector<T1>> result(rows, std::vector<T1>(cols));
-        for (std::size_t row {0}; row < rows; row++)
-            for (std::size_t col {0}; col < cols; col++)
-                result[row][col] = op(mat[row][col], vec[col]);
-
-        return result;
-    }
-    template <typename T1, typename T2> requires std::is_arithmetic_v<T1> && std::is_arithmetic_v<T2>
-    std::vector<std::vector<T1>> operator+(const std::vector<std::vector<T1>> &mat, const std::vector<T2> vec) {
-        return broadcast_Op(mat, vec, std::plus<T1>{});
-    }
-    template <typename T1, typename T2> requires std::is_arithmetic_v<T1> && std::is_arithmetic_v<T2>
-    std::vector<std::vector<T1>> operator-(const std::vector<std::vector<T1>> &mat, const std::vector<T2> vec) {
-        return broadcast_Op(mat, vec, std::minus<T1>{});
-    }
-    /* ------------ Broadcast operations - matrix, vector ------------ */
-
-
-    /* ------------ Broadcast operations - matrix, constant ------------ */
-    template <typename T1, typename T2, typename Op> requires std::is_arithmetic_v<T1> && std::is_arithmetic_v<T2>
-    std::vector<std::vector<T1>> broadcast_Op(const std::vector<std::vector<T1>> &mat, const T2 val, Op op) {
-        std::size_t rows {mat.size()}, cols {mat[0].size()};
-        std::vector<std::vector<T1>> result(rows, std::vector<T1>(cols));
-        for (std::size_t row {0}; row < rows; row++)
-            for (std::size_t col {0}; col < cols; col++)
-                result[row][col] = op(mat[row][col], val);
-
-        return result;
-    }
-    template <typename T1, typename T2> requires std::is_arithmetic_v<T1> && std::is_arithmetic_v<T2>
-    std::vector<std::vector<T1>> operator+(const std::vector<std::vector<T1>> &mat, const T2 val) {
-        return broadcast_Op(mat, val, std::plus<T1>{});
-    }
-    template <typename T1, typename T2> requires std::is_arithmetic_v<T1> && std::is_arithmetic_v<T2>
-    std::vector<std::vector<T1>> operator-(const std::vector<std::vector<T1>> &mat, const T2 val) {
-        return broadcast_Op(mat, val, std::minus<T1>{});
-    }
-    template <typename T1, typename T2> requires std::is_arithmetic_v<T1> && std::is_arithmetic_v<T2>
-    std::vector<std::vector<T1>> operator*(const std::vector<std::vector<T1>> &mat, const T2 val) {
-        return broadcast_Op(mat, val, std::multiplies<T1>{});
-    }
-    template <typename T1, typename T2> requires std::is_arithmetic_v<T1> && std::is_arithmetic_v<T2>
-    std::vector<std::vector<T1>> operator/(const std::vector<std::vector<T1>> &mat, const T2 val) {
-        if (val == 0) throw std::runtime_error("Cannot divide by zero.");
-        return broadcast_Op(mat, val, std::divides<T1>{});
-    }
-    /* ------------ Broadcast operations - matrix, constant ------------ */
-
-
-    /* ------------ Broadcast operations - vector, constant ------------ */
-    template <typename T1, typename T2, typename Op> requires std::is_arithmetic_v<T1> && std::is_arithmetic_v<T2>
-    std::vector<T1> broadcast_Op(const std::vector<T1> &vec, const T2 val, Op op) {
-        std::size_t N {vec.size()};
-        std::vector<T1> result(N);
-        for (std::size_t i {0}; i < N; i++)
-            result[i] = op(vec[i], val);
-
-        return result;
-    }
-    template <typename T1, typename T2> requires std::is_arithmetic_v<T1> && std::is_arithmetic_v<T2>
-    std::vector<T1> operator+(const std::vector<T1> &vec, const T2 val) {
-        return broadcast_Op(vec, val, std::plus<T1>{});
-    }
-    template <typename T1, typename T2> requires std::is_arithmetic_v<T1> && std::is_arithmetic_v<T2>
-    std::vector<T1> operator-(const std::vector<T1> &vec, const T2 val) {
-        return broadcast_Op(vec, val, std::minus<T1>{});
-    }
-    template <typename T1, typename T2> requires std::is_arithmetic_v<T1> && std::is_arithmetic_v<T2>
-    std::vector<T1> operator*(const std::vector<T1> &vec, const T2 val) {
-        return broadcast_Op(vec, val, std::multiplies<T1>{});
-    }
-    template <typename T1, typename T2> requires std::is_arithmetic_v<T1> && std::is_arithmetic_v<T2>
-    std::vector<T1> operator/(const std::vector<T1> &vec, const T2 val) {
-        if (val == 0) throw std::runtime_error("Cannot divide by zero.");
-        return broadcast_Op(vec, val, std::divides<T1>{});
-    }
-    /* ------------ Broadcast operations - vector, constant ------------ */
-
-    class LinearRegression {
-        std::size_t iterations;
-        double learningRate;
-        std::size_t seed;
-        std::vector<std::vector<double>> weights;
-        std::vector<double> bias;
-        bool weightsInitialized {false};
-
-        public:
-            LinearRegression(std::size_t iters, double lr, std::size_t seed = 42): 
-                iterations(iters), learningRate(lr), seed(seed)
-            {}
-
-            LinearRegression& fit(std::vector<std::vector<double>> &X, std::vector<std::vector<double>> &y) {
-                std::size_t nSamples {X.size()}, nFeats {X[0].size()}, nTargets {y[0].size()};
-                if (nSamples != y.size()) throw std::runtime_error("No. of samples do not match.");
-                weights = randn(nFeats, nTargets, seed);
-                bias = std::vector<double>(nTargets, 0);
-                weightsInitialized = true;
-
-                for (std::size_t iter {0}; iter < iterations; iter++) {
-                    std::vector<std::vector<double>> yPreds {predict(X)};
-                    std::vector<std::vector<double>> dW {dot(transpose(X), y - yPreds) * -2 / nSamples};
-
-                    std::vector<double> dB(y[0].size(), 0.0);
-					for (const auto &row : (y - yPreds))
-						for (std::size_t j = 0; j < dB.size(); j++)
-							dB[j] += row[j];
-					dB = dB * -2.0 / static_cast<double>(nSamples);
-
-                    weights = weights - (dW * learningRate);
-                    bias = bias - (dB * learningRate);
+        /* ------------ Reduction Ops - Matrix ------------ */
+        template <typename T, typename Op> requires std::is_arithmetic_v<T>
+        std::vector<T> reduce_Op(const std::vector<std::vector<T>> &mat, const T initVal, Op op, short axis = 1) {
+            std::size_t rows {mat.size()}, cols {mat[0].size()};
+            std::vector<T> result(axis == 0? cols: rows, initVal);
+            for (std::size_t row {0}; row < rows; row++) {
+                for (std::size_t col {0}; col < cols; col++) {
+                    if (axis == 0) 
+                        result[col] = op(result[col], mat[row][col]);
+                    else 
+                        result[row] = op(result[row], mat[row][col]);
                 }
-
-                return *this;
             }
+            return result;
+        }
+        template <typename T> requires std::is_arithmetic_v<T>
+        std::vector<T> sum(const std::vector<std::vector<T>> &mat, short axis) {
+            return reduce_Op(mat, static_cast<T>(0), std::plus<>{}, axis);
+        }
+        template <typename T> requires std::is_arithmetic_v<T>
+        std::vector<T> mean(const std::vector<std::vector<T>> &mat, short axis) {
+            return sum(mat, axis) / (axis == 0 ? mat.size() : mat[0].size());
+        }
+        /* ------------ Reduction Ops - Matrix ------------ */
 
-            std::vector<std::vector<double>> predict(const std::vector<std::vector<double>> &X) {
-                if (!weightsInitialized) throw std::runtime_error("Model not fit yet.");
-                return dot(X, weights) + bias;
+
+        /* ------------ Aggregate Ops - Vec ------------ */
+        template<typename T, typename Op> requires std::is_arithmetic_v<T>
+        void apply_Op(const std::vector<T> &vec, Op op) {
+            for (const T &val: vec) op(val);
+        }
+        template <typename T> requires std::is_arithmetic_v<T>
+        T sum(const std::vector<T> &vec) {
+            T result {0.};
+            apply_Op(vec, [&result](T val) { result += val; });
+            return result;
+        }
+        template <typename T> requires std::is_arithmetic_v<T>
+        T mean(const std::vector<T> &vec) {
+            return sum(vec) / static_cast<T>(vec.size());
+        }
+        /* ------------ Aggregate Ops - Vec ------------ */
+
+
+        // Element wise operations - matrix1, matrix2
+        template <typename T, typename Op> requires std::is_arithmetic_v<T>
+        std::vector<std::vector<T>> elementwise_Op(
+            const std::vector<std::vector<T>> &m1, 
+            const std::vector<std::vector<T>> &m2,
+            Op op
+        ) {
+            std::size_t rows {m1.size()}, cols {m1[0].size()};
+            if (rows != m2.size() || cols != m2[0].size())
+                throw std::runtime_error("Dimensions do not match.");
+
+            std::vector<std::vector<T>> result(rows, std::vector<T>(cols));
+            for (std::size_t row {0}; row < rows; row++)
+                for (std::size_t col {0}; col < cols; col++)
+                    result[row][col] = op(m1[row][col], m2[row][col]);
+
+            return result;
+        }
+
+        // Element wise operations - vector1, vector2
+        template <typename T, typename Op> requires std::is_arithmetic_v<T>
+        std::vector<T> elementwise_Op(
+            const std::vector<T> &v1, 
+            const std::vector<T> &v2,
+            Op op
+        ) {
+            std::size_t N {v1.size()};
+            if (N != v2.size())
+                throw std::runtime_error("Dimensions do not match.");
+
+            std::vector<T> result(N);
+            for (std::size_t i {0}; i < N; i++)
+                    result[i] = op(v1[i], v2[i]);
+
+            return result;
+        }
+
+        // Broadcast operations - matrix, vector
+        template <typename T1, typename T2, typename Op> requires std::is_arithmetic_v<T1> && std::is_arithmetic_v<T2>
+        std::vector<std::vector<T1>> broadcast_Op(const std::vector<std::vector<T1>> &mat, const std::vector<T2> vec, Op op) {
+            std::size_t rows {mat.size()}, cols {mat[0].size()};
+            if (vec.size() != cols) throw std::runtime_error("Dimension mismatch, cannot broadcast.");
+            std::vector<std::vector<T1>> result(rows, std::vector<T1>(cols));
+            for (std::size_t row {0}; row < rows; row++)
+                for (std::size_t col {0}; col < cols; col++)
+                    result[row][col] = op(mat[row][col], vec[col]);
+
+            return result;
+        }
+
+        // Broadcast operations - matrix, constant
+        template <typename T1, typename T2, typename Op> requires std::is_arithmetic_v<T1> && std::is_arithmetic_v<T2>
+        std::vector<std::vector<T1>> broadcast_Op(const std::vector<std::vector<T1>> &mat, const T2 val, Op op) {
+            std::size_t rows {mat.size()}, cols {mat[0].size()};
+            std::vector<std::vector<T1>> result(rows, std::vector<T1>(cols));
+            for (std::size_t row {0}; row < rows; row++)
+                for (std::size_t col {0}; col < cols; col++)
+                    result[row][col] = op(mat[row][col], val);
+
+            return result;
+        }
+
+        // Broadcast operations - vector, constant
+        template <typename T1, typename T2, typename Op> requires std::is_arithmetic_v<T1> && std::is_arithmetic_v<T2>
+        std::vector<T1> broadcast_Op(const std::vector<T1> &vec, const T2 val, Op op) {
+            std::size_t N {vec.size()};
+            std::vector<T1> result(N);
+            for (std::size_t i {0}; i < N; i++)
+                result[i] = op(vec[i], val);
+
+            return result;
+        }
+
+
+        /* ------------ Core Utils ------------ */
+        template <typename T>
+        std::vector<std::vector<T>> transpose(const std::vector<std::vector<T>> &matrix) {
+            std::size_t rows {matrix.size()}, cols {matrix[0].size()};
+            std::vector<std::vector<T>> result(cols, std::vector<T>(rows));
+            for (std::size_t row {0}; row < rows; row++)
+                for (std::size_t col {0}; col < cols; col++)
+                    result[col][row] = matrix[row][col];
+            return result;
+        }
+
+        template <typename T> requires std::is_arithmetic_v<T>
+        std::vector<std::vector<T>> dot(
+            const std::vector<std::vector<T>> &mat1, 
+            const std::vector<std::vector<T>> &mat2
+        ) {
+            std::size_t rows {mat1.size()}, cols {mat2[0].size()}, inner {mat2.size()};
+
+            if (mat1[0].size() != inner) 
+                throw std::runtime_error("The dimensions are not aligned, cannot do a product.");
+
+            std::vector<std::vector<T>> result(rows, std::vector<T>(cols));
+            for (std::size_t i {0}; i < rows; i++)
+                for (std::size_t k {0}; k < inner; k++)
+                    for (std::size_t j {0}; j < cols; j++)
+                        result[i][j] += mat1[i][k] * mat2[k][j];
+
+            return result;
+        }
+
+        std::vector<std::vector<double>> randn(const std::size_t rows, const std::size_t cols, std::size_t seed) {
+            std::mt19937 random_gen {seed};
+            std::uniform_real_distribution<double> dist{-1, 1};
+            std::vector<std::vector<double>> result(rows, std::vector<double>(cols));
+            for (std::size_t row {0}; row < rows; row++)
+                for (std::size_t col {0}; col < cols; col++)
+                    result[row][col] = dist(random_gen);
+            return result;
+        }
+        /* ------------ Core Utils ------------ */
+    }
+
+    namespace Overloads {
+
+        /* ------------ Print utils ------------ */
+        template <typename T>
+        std::ostream &operator<<(std::ostream &oss, const std::vector<T> &vec) {
+            oss << "[ ";
+            for (const T &val: vec)
+                oss << val << ' ';
+            oss << ']';
+            return oss;
+        }
+
+        template <typename T>
+        std::ostream &operator<<(std::ostream &oss, const std::vector<std::vector<T>> &vec) {
+            std::size_t N {vec.size()};
+            oss << "[ ";
+            for (std::size_t i {0}; i < N; i++) {
+                oss << vec[i];
+                oss << (i < N - 1? "\n": " ]");
             }
-    };
+            return oss;
+        }
+        /* ------------ Print utils ------------ */
+
+
+        /* ------------ Mat, Mat operator overrides ------------ */
+        template <typename T> requires std::is_arithmetic_v<T>
+        std::vector<std::vector<T>> operator-(const std::vector<std::vector<T>> &m1, const std::vector<std::vector<T>> &m2) {
+            return Core::elementwise_Op(m1, m2, std::minus<>());
+        }
+        template <typename T> requires std::is_arithmetic_v<T>
+        std::vector<std::vector<T>> operator+(const std::vector<std::vector<T>> &m1, const std::vector<std::vector<T>> &m2) {
+            return Core::elementwise_Op(m1, m2, std::plus<>());
+        }
+        /* ------------ Mat, Mat operator overrides ------------ */
+
+
+        /* ------------ Vec, Vec operator overrides ------------ */
+        template <typename T> requires std::is_arithmetic_v<T>
+        std::vector<T> operator-(const std::vector<T> &v1, const std::vector<T> &v2) {
+            return Core::elementwise_Op(v1, v2, std::minus<>());
+        }
+        template <typename T> requires std::is_arithmetic_v<T>
+        std::vector<T> operator+(const std::vector<T> &v1, const std::vector<T> &v2) {
+            return Core::elementwise_Op(v1, v2, std::plus<>());
+        }
+        /* ------------ Vec, Vec operator overrides ------------ */
+        
+
+        /* ------------ Mat, Vec operator overrides ------------ */
+        template <typename T1, typename T2> requires std::is_arithmetic_v<T1> && std::is_arithmetic_v<T2>
+        std::vector<std::vector<T1>> operator+(const std::vector<std::vector<T1>> &mat, const std::vector<T2> vec) {
+            return Core::broadcast_Op(mat, vec, std::plus<>{});
+        }
+        template <typename T1, typename T2> requires std::is_arithmetic_v<T1> && std::is_arithmetic_v<T2>
+        std::vector<std::vector<T1>> operator-(const std::vector<std::vector<T1>> &mat, const std::vector<T2> vec) {
+            return Core::broadcast_Op(mat, vec, std::minus<>{});
+        }
+        /* ------------ Mat, Vec operator overrides ------------ */
+
+
+        /* ------------ Mat, Const operator overrides ------------ */
+        template <typename T1, typename T2> requires std::is_arithmetic_v<T1> && std::is_arithmetic_v<T2>
+        std::vector<std::vector<T1>> operator+(const std::vector<std::vector<T1>> &mat, const T2 val) {
+            return Core::broadcast_Op(mat, val, std::plus<>{});
+        }
+        template <typename T1, typename T2> requires std::is_arithmetic_v<T1> && std::is_arithmetic_v<T2>
+        std::vector<std::vector<T1>> operator-(const std::vector<std::vector<T1>> &mat, const T2 val) {
+            return Core::broadcast_Op(mat, val, std::minus<>{});
+        }
+        template <typename T1, typename T2> requires std::is_arithmetic_v<T1> && std::is_arithmetic_v<T2>
+        std::vector<std::vector<T1>> operator*(const std::vector<std::vector<T1>> &mat, const T2 val) {
+            return Core::broadcast_Op(mat, val, std::multiplies<>{});
+        }
+        template <typename T1, typename T2> requires std::is_arithmetic_v<T1> && std::is_arithmetic_v<T2>
+        std::vector<std::vector<T1>> operator/(const std::vector<std::vector<T1>> &mat, const T2 val) {
+            if (val == 0) throw std::runtime_error("Cannot divide by zero.");
+            return Core::broadcast_Op(mat, val, std::divides<>{});
+        }
+        template <typename T1, typename T2> requires std::is_arithmetic_v<T1> && std::is_arithmetic_v<T2>
+        std::vector<std::vector<T1>> operator^(const std::vector<std::vector<T1>> &mat, const T2 val) {
+            return Core::broadcast_Op(mat, val, [](const T1 element, const T2 val) { return std::pow(element, val); });
+        }
+        /* ------------ Mat, Const operator overrides ------------ */
+
+
+        /* ------------ Vec, Const operator overrides ------------ */
+        template <typename T1, typename T2> requires std::is_arithmetic_v<T1> && std::is_arithmetic_v<T2>
+        std::vector<T1> operator+(const std::vector<T1> &vec, const T2 val) {
+            return Core::broadcast_Op(vec, val, std::plus<>{});
+        }
+        template <typename T1, typename T2> requires std::is_arithmetic_v<T1> && std::is_arithmetic_v<T2>
+        std::vector<T1> operator-(const std::vector<T1> &vec, const T2 val) {
+            return Core::broadcast_Op(vec, val, std::minus<>{});
+        }
+        template <typename T1, typename T2> requires std::is_arithmetic_v<T1> && std::is_arithmetic_v<T2>
+        std::vector<T1> operator*(const std::vector<T1> &vec, const T2 val) {
+            return Core::broadcast_Op(vec, val, std::multiplies<>{});
+        }
+        template <typename T1, typename T2> requires std::is_arithmetic_v<T1> && std::is_arithmetic_v<T2>
+        std::vector<T1> operator/(const std::vector<T1> &vec, const T2 val) {
+            if (val == 0) throw std::runtime_error("Cannot divide by zero.");
+            return Core::broadcast_Op(vec, val, std::divides<>{});
+        }
+        /* ------------ Vec, Const operator overrides ------------ */
+    }
+
+    namespace Models {
+        namespace impl {
+            using namespace Overloads;
+            class LinearRegression {
+                std::size_t iterations;
+                double learningRate;
+                std::size_t seed;
+                std::vector<std::vector<double>> weights;
+                std::vector<double> bias;
+                bool weightsInitialized {false};
+
+                public:
+                    const std::vector<std::vector<double>> &getWeights() const { return weights; }
+                    const std::vector<double> &getBias() const { return bias; }
+                    LinearRegression(std::size_t iters, double lr, std::size_t seed = 42): 
+                        iterations(iters), learningRate(lr), seed(seed)
+                    {}
+
+                    LinearRegression& fit(
+                        const std::vector<std::vector<double>> &X, 
+                        const std::vector<std::vector<double>> &y
+                    ) {
+                        std::size_t nSamples {X.size()}, nFeats {X[0].size()}, nTargets {y[0].size()};
+                        if (nSamples != y.size()) throw std::runtime_error("No. of samples do not match.");
+                        weights = Core::randn(nFeats, nTargets, seed);
+                        bias = std::vector<double>(nTargets, 0);
+                        weightsInitialized = true;
+
+                        for (std::size_t iter {0}; iter < iterations; iter++) {
+                            std::vector<std::vector<double>> yPreds {predict(X)};
+                            std::vector<std::vector<double>> yDelta {y - yPreds};
+                            std::vector<std::vector<double>> dW {Core::dot(Core::transpose(X), yDelta) * -2. / nSamples};
+                            std::vector<double> dB {Core::sum(yDelta, 0) * -2. / static_cast<double>(nSamples)};
+                            weights = weights - (dW * learningRate);
+                            bias = bias - (dB * learningRate);
+                        }
+
+                        return *this;
+                    }
+
+                    std::vector<std::vector<double>> predict(const std::vector<std::vector<double>> &X) const {
+                        if (!weightsInitialized) throw std::runtime_error("Model not fit yet.");
+                        return Core::dot(X, weights) + bias;
+                    }
+
+                    double score(const std::vector<std::vector<double>> &X, const std::vector<std::vector<double>> &y) const {
+                        std::vector<std::vector<double>> yPreds {predict(X)};
+                        return Core::sum((y - yPreds) ^ 2);
+                    }
+            };
+        }
+
+        // Redirection to prevent namespace pollution on the client end
+        using impl::LinearRegression;
+    }
 }
 
 int main() {
-    using namespace MLUtils;
-    std::vector<std::vector<double>> mat1 {{1,2}, {3,4}}, mat2 {{5,6,7}, {8,9,10}};
-    std::vector<std::vector<double>> result {dot(mat1, mat2)};
-    for (const std::vector<double> &row: result)
-        std::cout << row << '\n';
+    using namespace CPPLearn::Overloads; 
+    using namespace CPPLearn::Models;
+
+
+    std::vector<std::vector<double>> XTrain {{1., 2.}, {3., 4.}, {5., 6.}, {7., 8.}, {9., 10.}, {2., 4.}, {1., 0.}, {-2, -5.}, {-1, -3}};
+    std::vector<std::vector<double>> yTrain {{3}, {7}, {10}, {15}, {20}, {6.2}, {1}, {-6.9}, {-4}};
+
+    std::vector<std::vector<double>> XTest {{9., 5.}, {2., 3.}, {-5, 5}, {-2, 5}};
+    std::vector<std::vector<double>> yTest {{14.}, {5.}, {0.}, {3.}};
+
+    LinearRegression model{1000, 0.001};
+    model.fit(XTrain, yTrain);
+
+    std::cout << "Train Score: " << model.score(XTrain, yTrain) << '\n';
+    std::cout << "Test Score:" << model.score(XTest, yTest) << '\n';
 }
