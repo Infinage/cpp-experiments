@@ -9,6 +9,12 @@
 #include <type_traits>
 #include <vector>
 
+// g++ linear-regression.cpp -shared -o CPPLearn.so -fPIC -std=c++23 -I/usr/include/python3.12 -lpython3.12
+#include <pybind11/pybind11.h>
+#include <pybind11/numpy.h>
+#include <pybind11/stl.h>
+namespace py = pybind11;
+
 namespace CPPLearn {
 
     namespace Core {
@@ -414,18 +420,68 @@ namespace CPPLearn {
         // Redirection to prevent namespace pollution on the client end
         using impl::LinearRegression;
     }
+
+    namespace Utils {
+        std::vector<std::vector<double>> from_numpy2D(py::array_t<double> &array) {
+            py::buffer_info buf {array.request()};
+            if (buf.ndim != 2) throw std::runtime_error("Expected a 2D array.");
+
+            // Convert from the vector of doubles to vector
+            std::size_t rows {static_cast<std::size_t>(buf.shape[0])}, cols {static_cast<std::size_t>(buf.shape[1])};
+            std::vector<std::vector<double>> result(rows, std::vector<double>(cols));
+            double *ptr {static_cast<double *>(buf.ptr)};
+            for (std::size_t i {0}; i < rows; i++)
+                for (std::size_t j {0}; j < cols; j++)
+                    result[i][j] = ptr[i * cols + j];
+
+            return result;
+        }
+    };
 }
 
+PYBIND11_MODULE(CPPLearn, root) {
+    root.doc() = "Scikit Learn with C++";
+    py::module_ models {root.def_submodule("models", "Machine Learning Models")};
+    py::class_<CPPLearn::Models::LinearRegression>(models, "LinearRegression")
+        .def(py::init<const std::size_t>(), py::arg("seed") = 42)
+        .def("save", &CPPLearn::Models::LinearRegression::save, "Saves the trained model to disk as a binary.")
+        .def("load", &CPPLearn::Models::LinearRegression::load, "Loads a trained model from disk.")
+
+        .def_property_readonly("weights", [](CPPLearn::Models::LinearRegression &self) -> py::array_t<double> { 
+            return py::cast(self.getWeights()); 
+        }, "Get the weights of the model.")
+
+        .def_property_readonly("bias", [](CPPLearn::Models::LinearRegression &self) -> py::array_t<double> { 
+            return py::cast(self.getBias()); 
+        }, "Get the bias of the model.")
+                        
+        .def("fit", [](
+            CPPLearn::Models::LinearRegression &self, 
+            py::array_t<double> &XTrain, py::array_t<double> &YTrain, 
+            std::size_t iterations=1000, double learningRate=0.01
+        ) {
+            self.fit(CPPLearn::Utils::from_numpy2D(XTrain), CPPLearn::Utils::from_numpy2D(YTrain), iterations, learningRate);
+        }, "Fit the model against provided set of inputs.")
+
+        .def("predict", [](CPPLearn::Models::LinearRegression &self, py::array_t<double> &XTtest) -> py::array_t<double> {
+            return py::cast(self.predict(CPPLearn::Utils::from_numpy2D(XTtest)));
+        }, "Returns predictions against a set of inputs. Requires that the model be fit already.")
+
+        .def("score", [](CPPLearn::Models::LinearRegression &self, py::array_t<double> &XTest, py::array_t<double> &YTest) {
+            return self.score(CPPLearn::Utils::from_numpy2D(XTest), CPPLearn::Utils::from_numpy2D(YTest));
+        }, "Computes the R2 score of the trained model against provided inputs.");
+}
+
+/*
 int main() {
     using namespace CPPLearn::Overloads; 
     using namespace CPPLearn::Models;
 
-    // TODO: Test multi variable outputs
     std::vector<std::vector<double>> XTrain {{1., 2.}, {3., 4.}, {5., 6.}, {7., 8.}, {9., 10.}, {2., 4.}, {1., 0.}, {-2, -5.}, {-1, -3}};
-    std::vector<std::vector<double>> yTrain {{3}, {7}, {10}, {15}, {20}, {6.2}, {1}, {-6.9}, {-4}};
+    std::vector<std::vector<double>> yTrain {{3, 1.5}, {7, 3.5}, {10, 5.}, {15, 7.5}, {20, 10.}, {6.2, 3.1}, {1, 0.48}, {-6.9, -3.4}, {-4, -2.}};
 
     std::vector<std::vector<double>> XTest {{9., 5.}, {2., 3.}, {-5, 5}, {-2, 5}};
-    std::vector<std::vector<double>> yTest {{14.}, {5.}, {0.}, {3.}};
+    std::vector<std::vector<double>> yTest {{14., 7.}, {5., 2.5}, {0., 0.}, {3., 1.5}};
 
     LinearRegression model{};
     model.fit(XTrain, yTrain);
@@ -434,3 +490,4 @@ int main() {
     std::cout << "Train Score: " << model.score(XTrain, yTrain) << '\n';
     std::cout << "Test Score:" << model.score(XTest, yTest) << '\n';
 }
+*/
