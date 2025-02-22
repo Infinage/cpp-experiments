@@ -9,7 +9,8 @@
 #include <type_traits>
 #include <vector>
 
-// g++ linear-regression.cpp -shared -o CPPLearn.so -fPIC -std=c++23 -I/usr/include/python3.12 -lpython3.12
+// Compilation: g++ linear-regression.cpp -shared -o CPPLearn.so -fPIC -std=c++23 -O2 $(python3-config --includes --ldflags)
+// Typehints: stubgen -p CPPLearn -o .
 #include <pybind11/pybind11.h>
 #include <pybind11/numpy.h>
 #include <pybind11/stl.h>
@@ -100,6 +101,20 @@ namespace CPPLearn {
             return result;
         }
 
+        // Element wise operations inplace - matrix1, matrix2
+        template <typename T, typename Op> requires std::is_arithmetic_v<T>
+        std::vector<std::vector<T>> &elementwise_Op_inplace(std::vector<std::vector<T>> &m1, const std::vector<std::vector<T>> &m2, Op op) {
+            std::size_t rows {m1.size()}, cols {m1[0].size()};
+            if (rows != m2.size() || cols != m2[0].size())
+                throw std::runtime_error("Dimensions do not match.");
+
+            for (std::size_t row {0}; row < rows; row++)
+                for (std::size_t col {0}; col < cols; col++)
+                    m1[row][col] = op(m1[row][col], m2[row][col]);
+            
+            return m1;
+        }
+
         // Element wise operations - vector1, vector2
         template <typename T, typename Op> requires std::is_arithmetic_v<T>
         std::vector<T> elementwise_Op(
@@ -118,9 +133,22 @@ namespace CPPLearn {
             return result;
         }
 
+        // Element wise operations inplace - vector1, vector2
+        template <typename T, typename Op> requires std::is_arithmetic_v<T>
+        std::vector<T> &elementwise_Op_inplace(std::vector<T> &v1, const std::vector<T> &v2, Op op) {
+            std::size_t N {v1.size()};
+            if (N != v2.size())
+                throw std::runtime_error("Dimensions do not match.");
+
+            for (std::size_t i {0}; i < N; i++)
+                v1[i] = op(v1[i], v2[i]);
+
+            return v1;
+        }
+
         // Broadcast operations - matrix, vector
         template <typename T1, typename T2, typename Op> requires std::is_arithmetic_v<T1> && std::is_arithmetic_v<T2>
-        std::vector<std::vector<T1>> broadcast_Op(const std::vector<std::vector<T1>> &mat, const std::vector<T2> vec, Op op) {
+        std::vector<std::vector<T1>> broadcast_Op(const std::vector<std::vector<T1>> &mat, const std::vector<T2> &vec, Op op) {
             std::size_t rows {mat.size()}, cols {mat[0].size()};
             if (vec.size() != cols) throw std::runtime_error("Dimension mismatch, cannot broadcast.");
             std::vector<std::vector<T1>> result(rows, std::vector<T1>(cols));
@@ -177,10 +205,18 @@ namespace CPPLearn {
                 throw std::runtime_error("The dimensions are not aligned, cannot do a product.");
 
             std::vector<std::vector<T>> result(rows, std::vector<T>(cols));
-            for (std::size_t i {0}; i < rows; i++)
-                for (std::size_t k {0}; k < inner; k++)
-                    for (std::size_t j {0}; j < cols; j++)
-                        result[i][j] += mat1[i][k] * mat2[k][j];
+
+            for (std::size_t i {0}; i < rows; i++) {
+                const std::vector<T> &mat1Row {mat1[i]};
+                std::vector<T> &resultRow {result[i]}; 
+                for (std::size_t j {0}; j < cols; j++) {
+                    T acc {static_cast<T>(0)};
+                    for (std::size_t k {0}; k < inner; k++) {
+                        acc += mat1Row[k] * mat2[k][j];
+                    }
+                    resultRow[j] = acc;
+                }
+            }
 
             return result;
         }
@@ -210,11 +246,11 @@ namespace CPPLearn {
         }
 
         template <typename T>
-        std::ostream &operator<<(std::ostream &oss, const std::vector<std::vector<T>> &vec) {
-            std::size_t N {vec.size()};
+        std::ostream &operator<<(std::ostream &oss, const std::vector<std::vector<T>> &mat) {
+            std::size_t N {mat.size()};
             oss << "[ ";
             for (std::size_t i {0}; i < N; i++) {
-                oss << vec[i];
+                oss << mat[i];
                 oss << (i < N - 1? "\n": " ]");
             }
             return oss;
@@ -233,7 +269,6 @@ namespace CPPLearn {
         }
         /* ------------ Mat, Mat operator overrides ------------ */
 
-
         /* ------------ Vec, Vec operator overrides ------------ */
         template <typename T> requires std::is_arithmetic_v<T>
         std::vector<T> operator-(const std::vector<T> &v1, const std::vector<T> &v2) {
@@ -248,11 +283,11 @@ namespace CPPLearn {
 
         /* ------------ Mat, Vec operator overrides ------------ */
         template <typename T1, typename T2> requires std::is_arithmetic_v<T1> && std::is_arithmetic_v<T2>
-        std::vector<std::vector<T1>> operator+(const std::vector<std::vector<T1>> &mat, const std::vector<T2> vec) {
+        std::vector<std::vector<T1>> operator+(const std::vector<std::vector<T1>> &mat, const std::vector<T2> &vec) {
             return Core::broadcast_Op(mat, vec, std::plus<>{});
         }
         template <typename T1, typename T2> requires std::is_arithmetic_v<T1> && std::is_arithmetic_v<T2>
-        std::vector<std::vector<T1>> operator-(const std::vector<std::vector<T1>> &mat, const std::vector<T2> vec) {
+        std::vector<std::vector<T1>> operator-(const std::vector<std::vector<T1>> &mat, const std::vector<T2> &vec) {
             return Core::broadcast_Op(mat, vec, std::minus<>{});
         }
         /* ------------ Mat, Vec operator overrides ------------ */
@@ -320,7 +355,7 @@ namespace CPPLearn {
                     LinearRegression& fit(
                         const std::vector<std::vector<double>> &X, 
                         const std::vector<std::vector<double>> &y,
-                        std::size_t iterations=1000, 
+                        std::size_t iterations=250, 
                         double learningRate=0.01
                     ) {
                         std::size_t nSamples {X.size()}, nFeats {X[0].size()}, nTargets {y[0].size()};
@@ -331,11 +366,12 @@ namespace CPPLearn {
                             bias = std::vector<double>(nTargets, 0);
                         }
 
+                        std::vector<std::vector<double>> xTransposed {Core::transpose(X)};
                         for (std::size_t iter {0}; iter < iterations; iter++) {
                             std::vector<std::vector<double>> yPreds {predict(X)};
                             std::vector<std::vector<double>> yDelta {y - yPreds};
-                            std::vector<std::vector<double>> dW {Core::dot(Core::transpose(X), yDelta) * -2. / nSamples};
-                            std::vector<double> dB {Core::sum(yDelta, 0) * -2. / static_cast<double>(nSamples)};
+                            std::vector<std::vector<double>> dW {Core::dot(xTransposed, yDelta) * (-2. / nSamples)};
+                            std::vector<double> dB {Core::sum(yDelta, 0) * (-2. / nSamples)};
                             weights = weights - (dW * learningRate);
                             bias = bias - (dB * learningRate);
                         }
@@ -422,9 +458,9 @@ namespace CPPLearn {
     }
 
     namespace Utils {
-        std::vector<std::vector<double>> from_numpy2D(py::array_t<double> &array) {
-            py::buffer_info buf {array.request()};
-            if (buf.ndim != 2) throw std::runtime_error("Expected a 2D array.");
+        std::vector<std::vector<double>> from_numpy2D(const py::array_t<double> &array) {
+            const py::buffer_info &buf {array.request()};
+            if (buf.ndim != 2) throw std::runtime_error("Expected a 2D array, got " + std::to_string(buf.ndim) + "D instead.");
 
             // Convert from the vector of doubles to vector
             std::size_t rows {static_cast<std::size_t>(buf.shape[0])}, cols {static_cast<std::size_t>(buf.shape[1])};
@@ -436,16 +472,17 @@ namespace CPPLearn {
 
             return result;
         }
-    };
+    }
 }
 
+/* PYBIND11 Syntax for enabling imports from python */
 PYBIND11_MODULE(CPPLearn, root) {
     root.doc() = "Scikit Learn with C++";
     py::module_ models {root.def_submodule("models", "Machine Learning Models")};
     py::class_<CPPLearn::Models::LinearRegression>(models, "LinearRegression")
         .def(py::init<const std::size_t>(), py::arg("seed") = 42)
-        .def("save", &CPPLearn::Models::LinearRegression::save, "Saves the trained model to disk as a binary.")
-        .def("load", &CPPLearn::Models::LinearRegression::load, "Loads a trained model from disk.")
+        .def("save", &CPPLearn::Models::LinearRegression::save, "Saves the trained model to disk as a binary.", py::arg("fPath") = "model.bin")
+        .def("load", &CPPLearn::Models::LinearRegression::load, "Loads a trained model from disk.", py::arg("fpath") = "model.bin")
 
         .def_property_readonly("weights", [](CPPLearn::Models::LinearRegression &self) -> py::array_t<double> { 
             return py::cast(self.getWeights()); 
@@ -457,37 +494,19 @@ PYBIND11_MODULE(CPPLearn, root) {
                         
         .def("fit", [](
             CPPLearn::Models::LinearRegression &self, 
-            py::array_t<double> &XTrain, py::array_t<double> &YTrain, 
-            std::size_t iterations=1000, double learningRate=0.01
+            const py::array_t<double> &XTrain, const py::array_t<double> &YTrain, 
+            std::size_t iterations, double learningRate
         ) {
-            self.fit(CPPLearn::Utils::from_numpy2D(XTrain), CPPLearn::Utils::from_numpy2D(YTrain), iterations, learningRate);
-        }, "Fit the model against provided set of inputs.")
+            return self.fit(CPPLearn::Utils::from_numpy2D(XTrain), CPPLearn::Utils::from_numpy2D(YTrain), iterations, learningRate);
+        }, "Fit the model against provided set of inputs.",
+        py::arg("XTrain"), py::arg("YTrain"), py::arg("iterations") = 250, py::arg("learningRate") = 0.01
+        )
 
-        .def("predict", [](CPPLearn::Models::LinearRegression &self, py::array_t<double> &XTtest) -> py::array_t<double> {
-            return py::cast(self.predict(CPPLearn::Utils::from_numpy2D(XTtest)));
-        }, "Returns predictions against a set of inputs. Requires that the model be fit already.")
+        .def("predict", [](CPPLearn::Models::LinearRegression &self, py::array_t<double> &XTest) -> py::array_t<double> {
+            return py::cast(self.predict(CPPLearn::Utils::from_numpy2D(XTest)));
+        }, "Returns predictions against a set of inputs. Requires that the model be fit already.", py::arg("XTest"))
 
         .def("score", [](CPPLearn::Models::LinearRegression &self, py::array_t<double> &XTest, py::array_t<double> &YTest) {
             return self.score(CPPLearn::Utils::from_numpy2D(XTest), CPPLearn::Utils::from_numpy2D(YTest));
-        }, "Computes the R2 score of the trained model against provided inputs.");
+        }, "Computes the R2 score of the trained model against provided inputs.", py::arg("XTest"), py::arg("YTest"));
 }
-
-/*
-int main() {
-    using namespace CPPLearn::Overloads; 
-    using namespace CPPLearn::Models;
-
-    std::vector<std::vector<double>> XTrain {{1., 2.}, {3., 4.}, {5., 6.}, {7., 8.}, {9., 10.}, {2., 4.}, {1., 0.}, {-2, -5.}, {-1, -3}};
-    std::vector<std::vector<double>> yTrain {{3, 1.5}, {7, 3.5}, {10, 5.}, {15, 7.5}, {20, 10.}, {6.2, 3.1}, {1, 0.48}, {-6.9, -3.4}, {-4, -2.}};
-
-    std::vector<std::vector<double>> XTest {{9., 5.}, {2., 3.}, {-5, 5}, {-2, 5}};
-    std::vector<std::vector<double>> yTest {{14., 7.}, {5., 2.5}, {0., 0.}, {3., 1.5}};
-
-    LinearRegression model{};
-    model.fit(XTrain, yTrain);
-    model.save("test.bin");
-
-    std::cout << "Train Score: " << model.score(XTrain, yTrain) << '\n';
-    std::cout << "Test Score:" << model.score(XTest, yTest) << '\n';
-}
-*/
