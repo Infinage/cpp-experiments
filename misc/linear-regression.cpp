@@ -1,4 +1,6 @@
 #include <cmath>
+#include <cstring>
+#include <fstream>
 #include <functional>
 #include <iostream>
 #include <ostream>
@@ -300,29 +302,28 @@ namespace CPPLearn {
         namespace impl {
             using namespace Overloads;
             class LinearRegression {
-                std::size_t iterations;
-                double learningRate;
-                std::size_t seed;
+                mutable std::size_t seed;
                 std::vector<std::vector<double>> weights;
                 std::vector<double> bias;
-                bool weightsInitialized {false};
 
                 public:
                     const std::vector<std::vector<double>> &getWeights() const { return weights; }
                     const std::vector<double> &getBias() const { return bias; }
-                    LinearRegression(std::size_t iters, double lr, std::size_t seed = 42): 
-                        iterations(iters), learningRate(lr), seed(seed)
-                    {}
+                    LinearRegression(std::size_t seed = 42): seed(seed) {}
 
                     LinearRegression& fit(
                         const std::vector<std::vector<double>> &X, 
-                        const std::vector<std::vector<double>> &y
+                        const std::vector<std::vector<double>> &y,
+                        std::size_t iterations=1000, 
+                        double learningRate=0.01
                     ) {
                         std::size_t nSamples {X.size()}, nFeats {X[0].size()}, nTargets {y[0].size()};
                         if (nSamples != y.size()) throw std::runtime_error("No. of samples do not match.");
-                        weights = Core::randn(nFeats, nTargets, seed);
-                        bias = std::vector<double>(nTargets, 0);
-                        weightsInitialized = true;
+
+                        if (weights.empty()) {
+                            weights = Core::randn(nFeats, nTargets, seed);
+                            bias = std::vector<double>(nTargets, 0);
+                        }
 
                         for (std::size_t iter {0}; iter < iterations; iter++) {
                             std::vector<std::vector<double>> yPreds {predict(X)};
@@ -337,13 +338,75 @@ namespace CPPLearn {
                     }
 
                     std::vector<std::vector<double>> predict(const std::vector<std::vector<double>> &X) const {
-                        if (!weightsInitialized) throw std::runtime_error("Model not fit yet.");
+                        if (weights.empty()) throw std::runtime_error("Model not fit yet.");
                         return Core::dot(X, weights) + bias;
                     }
 
                     double score(const std::vector<std::vector<double>> &X, const std::vector<std::vector<double>> &y) const {
                         std::vector<std::vector<double>> yPreds {predict(X)};
                         return Core::sum((y - yPreds) ^ 2);
+                    }
+
+                    void save(const std::string &fpath) const {
+                        if (weights.empty()) throw std::runtime_error("Model not fit yet.");
+
+                        std::ofstream ofs {fpath, std::ios::binary | std::ios::out};
+                        if (!ofs) throw std::runtime_error("Cannot open file for saving the model.");
+                        
+                        char HEADER[9] {"CPPLEARN"};
+                        ofs.write(HEADER, 9);
+
+                        std::size_t M {weights.size()}, N {bias.size()};
+                        ofs.write(reinterpret_cast<const char*>(&seed), sizeof(seed));
+                        ofs.write(reinterpret_cast<const char*>(&M), sizeof(M));
+                        ofs.write(reinterpret_cast<const char*>(&N), sizeof(N));
+
+                        // Write out the weights
+                        for (std::size_t i {0}; i < M; i++) {
+                            for (std::size_t j {0}; j < N; j++) {
+                                const double &val {weights[i][j]};
+                                ofs.write(reinterpret_cast<const char*>(&val), sizeof(val));
+                            }
+                        }
+
+                        // Write out the bias
+                        for (std::size_t i {0}; i < N; i++) {
+                            const double &val {bias[i]};
+                            ofs.write(reinterpret_cast<const char*>(&val), sizeof(val));
+                        }
+                    }
+
+                    void load(const std::string &fpath) {
+                        std::ifstream ifs {fpath, std::ios::binary};
+                        if (!ifs) 
+                            throw std::runtime_error("Cannot open file for reading the model.");
+
+                        char HEADER[9];
+                        ifs.read(HEADER, 9);
+                        if (std::strcmp(HEADER, "CPPLEARN") != 0)
+                            throw std::runtime_error("Malformed Binary");
+
+                        std::size_t M, N;
+                        ifs.read(reinterpret_cast<char *>(&seed), sizeof(seed));
+                        ifs.read(reinterpret_cast<char *>(&M), sizeof(M));
+                        ifs.read(reinterpret_cast<char *>(&N), sizeof(N));
+                        if (ifs.fail()) throw std::runtime_error("Corrupted file, unable to read metadata.");
+
+                        // Read the weights
+                        weights.assign(M, std::vector<double>(N));
+                        for (std::size_t i {0}; i < M; i++) {
+                            for (std::size_t j {0}; j < N; j++) {
+                                ifs.read(reinterpret_cast<char *>(&weights[i][j]), sizeof(weights[i][j]));
+                                if (ifs.fail()) throw std::runtime_error("Corrupted file, failed to read the weights.");
+                            }
+                        }
+
+                        // Read the bias
+                        bias.assign(N, 0.);
+                        for (std::size_t j {0}; j < N; j++) {
+                            ifs.read(reinterpret_cast<char *>(&bias[j]), sizeof(bias[j]));
+                            if (ifs.fail()) throw std::runtime_error("Corrupted file, failed to read the bias.");
+                        }
                     }
             };
         }
@@ -357,15 +420,16 @@ int main() {
     using namespace CPPLearn::Overloads; 
     using namespace CPPLearn::Models;
 
-
+    // TODO: Test multi variable outputs
     std::vector<std::vector<double>> XTrain {{1., 2.}, {3., 4.}, {5., 6.}, {7., 8.}, {9., 10.}, {2., 4.}, {1., 0.}, {-2, -5.}, {-1, -3}};
     std::vector<std::vector<double>> yTrain {{3}, {7}, {10}, {15}, {20}, {6.2}, {1}, {-6.9}, {-4}};
 
     std::vector<std::vector<double>> XTest {{9., 5.}, {2., 3.}, {-5, 5}, {-2, 5}};
     std::vector<std::vector<double>> yTest {{14.}, {5.}, {0.}, {3.}};
 
-    LinearRegression model{1000, 0.001};
+    LinearRegression model{};
     model.fit(XTrain, yTrain);
+    model.save("test.bin");
 
     std::cout << "Train Score: " << model.score(XTrain, yTrain) << '\n';
     std::cout << "Test Score:" << model.score(XTest, yTest) << '\n';
