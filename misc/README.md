@@ -110,6 +110,35 @@ csvsplit <mode> <options> <file>
 - `hash` is slightly less efficient but effective for large datasets.  
 - `group` is the least efficient and not recommended for very large CSVs.  
 
+## **Linear Regression - C++ Implementation**  
+
+A simple C++ implementation of linear regression.
+
+### **Features**  
+- Supports **batch gradient descent** for training.  
+- Handles **both single-variable and multi-variable regression**.  
+- Provides **mean squared error (MSE) evaluation**.  
+- Optimized **matrix operations** for speed.
+- Python integration using `pybind11`.  
+
+### **Usage**  
+Compile as a shared library:  
+```bash
+g++ linear-regression.cpp -shared -o CPPLearn.so -fPIC -std=c++23 -O2 $(python3-config --includes --ldflags)
+```
+Use in Python (after compiling):  
+```python
+import CPPLearn
+model = CPPLearn.LinearRegression()
+model.fit(X, y, epochs=1000, learning_rate=0.01)
+predictions = model.predict(X_test)
+```
+
+### **Notes**  
+- Assumes input data is stored as **row-major order matrices**.  
+- Requires `pybind11` for Python bindings.  
+- Uses **constant learning rate**, no adaptive optimizers.  
+
 ## ThreadPool Helper
 
 A thread pool implementation that allows enqueuing tasks to be executed by a pool of worker threads. This is a reusable utility for any project requiring multithreading.

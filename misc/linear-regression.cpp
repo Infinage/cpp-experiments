@@ -21,7 +21,7 @@ namespace CPPLearn {
                 std::vector<T> data;
 
                 template <typename Op>
-                static Vector binaryOp(const Vector<T> &vec1, const Vector<T> &vec2, Op op) {
+                static Vector binaryOp(const Vector<T> &vec1, const Vector<T> &vec2, const Op &op) {
                     std::size_t N {vec1.size()};
                     if (N != vec2.size()) throw std::runtime_error("Dimension mismatch, cannot broadcast.");
                     Vector result {N};
@@ -31,7 +31,7 @@ namespace CPPLearn {
                 }
 
                 template <typename Op>
-                static Vector binaryOp(const Vector<T> &vec, const T &val, Op op) {
+                static Vector binaryOp(const Vector<T> &vec, const T &val, const Op &op) {
                     std::size_t N {vec.size()};
                     Vector result {N};
                     for (std::size_t idx {0}; idx < N; idx++)
@@ -53,7 +53,7 @@ namespace CPPLearn {
                 inline const T &operator[](std::size_t idx) const { return data[idx]; }
 
                 template<typename Op>
-                void apply(Op op) const { 
+                void apply(const Op &op) const { 
                     for (const T &val: data) op(val); 
                 }
 
@@ -88,7 +88,7 @@ namespace CPPLearn {
                 std::vector<T> data;
 
                 template <typename Op>
-                static Matrix binaryOp(const Matrix<T> &mat1, const Matrix<T> &mat2, Op op) {
+                static Matrix binaryOp(const Matrix<T> &mat1, const Matrix<T> &mat2, const Op &op) {
                     if (mat1.rows != mat2.rows || mat1.cols != mat2.cols)
                         throw std::runtime_error("Dimensions do not match.");
                     Matrix result {mat1.rows, mat1.cols};
@@ -99,7 +99,7 @@ namespace CPPLearn {
                 }
 
                 template <typename Op>
-                static Matrix binaryOp(const Matrix<T> &mat, const Vector<T> &vec, Op op) {
+                static Matrix binaryOp(const Matrix<T> &mat, const Vector<T> &vec, const Op &op) {
                     if (vec.size() != mat.cols) throw std::runtime_error("Dimension mismatch, cannot broadcast.");
                     Matrix result {mat.rows, mat.cols};
                     for (std::size_t row {0}; row < mat.rows; row++)
@@ -109,7 +109,7 @@ namespace CPPLearn {
                 }
 
                 template <typename Op>
-                static Matrix binaryOp(const Matrix &mat, const T &val, Op op) {
+                static Matrix binaryOp(const Matrix &mat, const T &val, const Op &op) {
                     Matrix result {mat.rows, mat.cols};
                     for (std::size_t row {0}; row < mat.rows; row++)
                         for (std::size_t col {0}; col < mat.cols; col++)
@@ -156,6 +156,7 @@ namespace CPPLearn {
                 Matrix(const Matrix &mat): data(mat.data), rows(mat.rows), cols(mat.cols) {}
 
                 inline Matrix& operator=(Matrix other) {
+                    if (this == &other) return *this;
                     data = std::move(other.data);
                     rows = other.rows;
                     cols = other.cols;
@@ -173,12 +174,12 @@ namespace CPPLearn {
                 }
 
                 template<typename Op>
-                void apply(Op op) const { 
+                void apply(const Op &op) const { 
                     for (const T &val: data) op(val); 
                 }
 
                 template<typename Op>
-                Vector<T> reduce(const short axis, const T initVal, Op op) const {
+                Vector<T> reduce(const short axis, const T initVal, const Op &op) const {
                     Vector result(axis == 0? cols: rows, initVal);
                     for (std::size_t row {0}; row < rows; row++) {
                         for (std::size_t col {0}; col < cols; col++) {
@@ -197,16 +198,16 @@ namespace CPPLearn {
                     return result;
                 }
 
+                Vector<T> sum(short axis) const {
+                    return reduce(axis, 0, std::plus<>{});
+                }
+
                 T mean() const {
                     return sum() / (rows * cols);
                 }
 
-                Vector<T> sum(short axis) {
-                    return reduce(axis, 0, std::plus<>{});
-                }
-
-                Vector<T> mean(short axis) {
-                    return reduce(axis, 0, std::plus<>{}) / static_cast<T>(axis == 0 ? rows: cols);
+                Vector<T> mean(short axis) const {
+                    return sum(axis) / static_cast<T>(axis == 0 ? rows: cols);
                 }
 
                 static Matrix dot(const Matrix &mat1, const Matrix &mat2) {
@@ -282,7 +283,7 @@ namespace CPPLearn {
 
     namespace Models {
         class LinearRegression {
-            mutable std::size_t seed;
+            std::size_t seed;
             Core::Matrix<double> weights;
             Core::Vector<double> bias;
 
