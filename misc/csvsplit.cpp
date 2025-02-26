@@ -249,7 +249,7 @@ class CSVMerge {
             }
 
             // Wait for all threads to complete
-            pool.join();
+            pool.wait();
 
             std::cout << "Read CSV Files: " << fileCounts << "\n"
                       << "Records written: " << recCounts << "\n";
@@ -307,7 +307,7 @@ class CSVStat {
             }
 
             // Wait for all threads to join
-            pool.join();
+            pool.wait();
 
             // If more than one file, print total stats
             if (files.size() > 1)

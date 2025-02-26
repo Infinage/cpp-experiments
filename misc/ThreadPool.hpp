@@ -17,11 +17,19 @@ class ThreadPool {
         std::vector<State> states;
         std::queue<F> tasks;
         std::mutex taskMutex;
-        std::condition_variable cv;
+        std::condition_variable tasksCV, completedCV;
+        int activeTasks {0};
         std::atomic<bool> exitCondition {false};
 
     public:
-        ~ThreadPool() { join(); }
+        ~ThreadPool() { 
+            exitCondition = true;
+            tasksCV.notify_all();
+            for (std::thread &worker: workers)
+                if (worker.joinable()) 
+                    worker.join();
+        }
+
         ThreadPool(const std::size_t N_WORKERS, const std::function<State()> &initState = {}): 
             N_WORKERS(N_WORKERS)
         {
@@ -30,38 +38,45 @@ class ThreadPool {
                 workers.emplace_back(std::thread([this, i]{
                     for (;;) {
                         std::unique_lock<std::mutex> lock(taskMutex); 
-                        cv.wait(lock, [this]{ return exitCondition || !tasks.empty(); });
+                        tasksCV.wait(lock, [this]{ return exitCondition || !tasks.empty(); });
                         if (tasks.empty() && exitCondition) return;
                         else {
+                            // Pick and execute one task
                             F task{std::move(tasks.front())}; 
                             tasks.pop();
+                            activeTasks++;
                             lock.unlock();
+
+                            // Execute task based on template
                             if constexpr(std::is_same_v<State, std::monostate>)
                                 task();
                             else
                                 task(states[i]);
+
+                            // We have finished one task, notify all waiters
+                            {
+                                std::lock_guard lock(taskMutex);
+                                activeTasks--;
+                            }
+                            completedCV.notify_all();
                         }
                     }
                 }));
             }
         }
 
-        // If not already joined
-        void join() {
-            if (!exitCondition) {
-                exitCondition = true;
-                cv.notify_all();
-                for (std::thread &worker: workers)
-                    if (worker.joinable()) 
-                        worker.join();
-            }
+        // Wait for completion without destroying thread pool
+        void wait() {
+            std::unique_lock lock(taskMutex);
+            completedCV.wait(lock, [this]{ return tasks.empty() && activeTasks == 0; });
         }
 
+        // Enqueue a single task into the queue
         void enqueue(F &&task) {
             {
                 std::lock_guard lock(taskMutex);
                 tasks.push(std::move(task));
             }
-            cv.notify_one();
+            tasksCV.notify_one();
         }
 };
