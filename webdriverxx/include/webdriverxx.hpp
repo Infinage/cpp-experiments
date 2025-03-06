@@ -5,7 +5,9 @@
 
 #include <stdexcept>
 #include <string>
+#include <tuple>
 
+// Note: Braced init doesn't work well, use `= init`
 using json = nlohmann::json;
 
 namespace webdriverxx {
@@ -67,10 +69,7 @@ namespace webdriverxx {
             throw std::runtime_error(response.text);
 
         // Parse response json and unwrap if neccessary
-        json responseJson {json::parse(response.text)};
-        if (responseJson.is_array() && !responseJson.empty()) 
-            responseJson = responseJson[0];
-
+        json responseJson = json::parse(response.text);
         return responseJson["value"]["sessionId"];
     }
 
@@ -113,10 +112,7 @@ namespace webdriverxx {
         if (response.status_code != 200)
             throw std::runtime_error(response.text);
 
-        json responseJson {json::parse(response.text)};
-        if (responseJson.is_array() && !responseJson.empty()) 
-            responseJson = responseJson[0];
-
+        json responseJson = json::parse(response.text);
         return responseJson["value"];
     }
 
@@ -126,10 +122,7 @@ namespace webdriverxx {
         if (response.status_code != 200)
             throw std::runtime_error(response.text);
 
-        json responseJson {json::parse(response.text)};
-        if (responseJson.is_array() && !responseJson.empty()) 
-            responseJson = responseJson[0];
-
+        json responseJson = json::parse(response.text);
         return responseJson["value"];
     }
 
@@ -151,10 +144,7 @@ namespace webdriverxx {
         if (response.status_code != 200)
             throw std::runtime_error(response.text);
 
-        json responseJson {json::parse(response.text)};
-        if (responseJson.is_array() && !responseJson.empty()) 
-            responseJson = responseJson[0];
-
+        json responseJson = json::parse(response.text);
         return responseJson["value"].begin().value();
     }
 
@@ -183,6 +173,33 @@ namespace webdriverxx {
         cpr::Response response {cpr::Post(
             cpr::Url(BASE_URL + "/session/" + sessionId + "/element/" + elementId + "/clear"),
             cpr::Body{"{}"}, 
+            HEADER_ACC_RECV_JSON
+        )};
+        if (response.status_code != 200)
+            throw std::runtime_error(response.text);
+    }
+
+    inline std::tuple<unsigned int, unsigned int, unsigned int> getTimeouts(const std::string &sessionId) {
+        cpr::Response response {cpr::Get(
+            cpr::Url(BASE_URL + "/session/" + sessionId + "/timeouts"),
+            HEADER_ACC_RECV_JSON
+        )};
+        if (response.status_code != 200)
+            throw std::runtime_error(response.text);
+
+        json timeouts = json::parse(response.text)["value"];
+        return {timeouts["script"], timeouts["pageLoad"], timeouts["implicit"]};
+    }
+    
+    inline void setTimeouts(const std::tuple<unsigned int, unsigned int, unsigned int> &timeouts, const std::string &sessionId) {
+        json payload {
+            {"script",   std::get<0>(timeouts)},
+            {"pageLoad", std::get<1>(timeouts)},
+            {"implicit", std::get<2>(timeouts)}
+        };
+        cpr::Response response {cpr::Post(
+            cpr::Url(BASE_URL + "/session/" + sessionId + "/timeouts"),
+            cpr::Body(payload.dump()),
             HEADER_ACC_RECV_JSON
         )};
         if (response.status_code != 200)
