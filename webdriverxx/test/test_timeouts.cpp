@@ -1,10 +1,9 @@
 #include "webdriverxx.hpp"
 
 int main() {
-    const std::string sessionId {webdriverxx::startSession()};
-    webdriverxx::setTimeouts({0, 0, 0}, sessionId);
-    const auto [scriptTO, pageLoadTO, implicitTO] {webdriverxx::getTimeouts(sessionId)};
+    webdriverxx::Driver driver;
+    driver.setTimeouts({0, 0, 0});
+    auto [scriptTO, pageLoadTO, implicitTO] {driver.getTimeouts()};
     int status {scriptTO == 0 && pageLoadTO == 0 && implicitTO == 0};
-    webdriverxx::stopSession(sessionId);
     return !status;
 }

@@ -1,8 +1,5 @@
 ## TODO:
 1. Explicit waits
-3. Object oriented interface abstracting session ID
-    - Element wise operations
-    - Find element inside element
 4. Support multiple browsers
 5. Better error handling
 
@@ -38,13 +35,13 @@
 | POST    | /session/{session id}/element/{element id}/elements             | Find Elements From Element |         |
 | GET     | /session/{session id}/element/active                            | Get Active Element         |         |
 | GET     | /session/{session id}/element/{element id}/selected             | Is Element Selected        |         |
-| GET     | /session/{session id}/element/{element id}/attribute/{name}     | Get Element Attribute      |         |
-| GET     | /session/{session id}/element/{element id}/property/{name}      | Get Element Property       |         |
-| GET     | /session/{session id}/element/{element id}/css/{property name}  | Get Element CSS Value      |         |
-| GET     | /session/{session id}/element/{element id}/text                 | Get Element Text           |         |
-| GET     | /session/{session id}/element/{element id}/name                 | Get Element Tag Name       |         |
+| GET     | /session/{session id}/element/{element id}/attribute/{name}     | Get Element Attribute      | Done    |
+| GET     | /session/{session id}/element/{element id}/property/{name}      | Get Element Property       | Done    |
+| GET     | /session/{session id}/element/{element id}/css/{property name}  | Get Element CSS Value      | Done    |
+| GET     | /session/{session id}/element/{element id}/text                 | Get Element Text           | Done    |
+| GET     | /session/{session id}/element/{element id}/name                 | Get Element Tag Name       | Done    |
 | GET     | /session/{session id}/element/{element id}/rect                 | Get Element Rect           |         |
-| GET     | /session/{session id}/element/{element id}/enabled              | Is Element Enabled         |         |
+| GET     | /session/{session id}/element/{element id}/enabled              | Is Element Enabled         | Done    |
 | POST    | /session/{session id}/element/{element id}/click                | Element Click              | Done    |
 | POST    | /session/{session id}/element/{element id}/clear                | Element Clear              | Done    |
 | POST    | /session/{session id}/element/{element id}/value                | Element Send Keys          | Done    |

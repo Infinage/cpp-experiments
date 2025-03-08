@@ -1,9 +1,8 @@
 #include "webdriverxx.hpp"
 
 int main() {
-    const std::string sessionId {webdriverxx::startSession()};
-    webdriverxx::maximize(sessionId);
-    webdriverxx::minimize(sessionId);
-    webdriverxx::stopSession(sessionId);
+    webdriverxx::Driver driver;
+    driver.maximize();
+    driver.minimize();
     return 0;
 }
