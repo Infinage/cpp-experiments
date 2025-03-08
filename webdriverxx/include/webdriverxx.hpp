@@ -2,7 +2,9 @@
 
 #include "cpr/api.h"
 #include "json.hpp"
+#include "base64.hpp"
 
+#include <fstream>
 #include <stdexcept>
 #include <string>
 #include <tuple>
@@ -106,6 +108,49 @@ namespace webdriverxx {
         );
     }
 
+    inline std::string getCurrentURL(const std::string &sessionId) {
+        cpr::Response response {cpr::Get(
+            cpr::Url(BASE_URL + "/session/" + sessionId + "/url"),
+            HEADER_ACC_RECV_JSON
+        )};
+
+        if (response.status_code != 200)
+            throw std::runtime_error(response.text);
+
+        json responseJson = json::parse(response.text);
+        return responseJson["value"];
+    }
+
+    inline void back(const std::string &sessionId) {
+        cpr::Response response {cpr::Post(
+            cpr::Url(BASE_URL + "/session/" + sessionId + "/back"), 
+            cpr::Body{"{}"}, 
+            HEADER_ACC_RECV_JSON
+        )};
+        if (response.status_code != 200)
+            throw std::runtime_error(response.text);
+    }
+
+    inline void forward(const std::string &sessionId) {
+        cpr::Response response {cpr::Post(
+            cpr::Url(BASE_URL + "/session/" + sessionId + "/forward"), 
+            cpr::Body{"{}"}, 
+            HEADER_ACC_RECV_JSON
+        )};
+        if (response.status_code != 200)
+            throw std::runtime_error(response.text);
+    }
+
+    inline void refresh(const std::string &sessionId) {
+        cpr::Response response {cpr::Post(
+            cpr::Url(BASE_URL + "/session/" + sessionId + "/refresh"), 
+            cpr::Body{"{}"}, 
+            HEADER_ACC_RECV_JSON
+        )};
+        if (response.status_code != 200)
+            throw std::runtime_error(response.text);
+    }
+
     inline std::string getTitle(const std::string &sessionId) {
         cpr::Response response {cpr::Get(cpr::Url(BASE_URL + "/session/" + sessionId + "/title"))};
 
@@ -179,7 +224,7 @@ namespace webdriverxx {
             throw std::runtime_error(response.text);
     }
 
-    inline std::tuple<unsigned int, unsigned int, unsigned int> getTimeouts(const std::string &sessionId) {
+    inline std::tuple<double, double, double> getTimeouts(const std::string &sessionId) {
         cpr::Response response {cpr::Get(
             cpr::Url(BASE_URL + "/session/" + sessionId + "/timeouts"),
             HEADER_ACC_RECV_JSON
@@ -188,15 +233,23 @@ namespace webdriverxx {
             throw std::runtime_error(response.text);
 
         json timeouts = json::parse(response.text)["value"];
-        return {timeouts["script"], timeouts["pageLoad"], timeouts["implicit"]};
+        return {
+            static_cast<double>(timeouts.value("script", 0.))   / 1000., 
+            static_cast<double>(timeouts.value("pageLoad", 0.)) / 1000., 
+            static_cast<double>(timeouts.value("implicit", 0.)) / 1000.
+        };
     }
     
-    inline void setTimeouts(const std::tuple<unsigned int, unsigned int, unsigned int> &timeouts, const std::string &sessionId) {
+    inline void setTimeouts(const std::tuple<double, double, double> &timeouts, const std::string &sessionId) {
         json payload {
-            {"script",   std::get<0>(timeouts)},
-            {"pageLoad", std::get<1>(timeouts)},
-            {"implicit", std::get<2>(timeouts)}
+            {"script",   std::get<0>(timeouts) * 1000},
+            {"pageLoad", std::get<1>(timeouts) * 1000},
+            {"implicit", std::get<2>(timeouts) * 1000}
         };
+
+        if (payload["script"] < 0 || payload["pageLoad"] < 0 || payload["implicit"] < 0)
+            throw std::runtime_error("Timeouts cannot be negative");
+
         cpr::Response response {cpr::Post(
             cpr::Url(BASE_URL + "/session/" + sessionId + "/timeouts"),
             cpr::Body(payload.dump()),
@@ -204,5 +257,33 @@ namespace webdriverxx {
         )};
         if (response.status_code != 200)
             throw std::runtime_error(response.text);
+    }
+
+    inline void save_screenshot(const std::string &ofile, const std::string &sessionId) {
+        cpr::Response response {cpr::Get(
+            cpr::Url(BASE_URL + "/session/" + sessionId + "/screenshot"),
+            HEADER_ACC_RECV_JSON
+        )};
+
+        if (response.status_code != 200)
+            throw std::runtime_error(response.text);
+
+        std::ofstream imageFS {ofile, std::ios::binary};
+        std::string decoded {Base64::base64Decode(json::parse(response.text)["value"])};
+        imageFS.write(decoded.data(), static_cast<long>(decoded.size()));
+    }
+
+    inline void save_screenshot(const std::string &ofile, const std::string &elementId, const std::string &sessionId) {
+        cpr::Response response {cpr::Get(
+            cpr::Url(BASE_URL + "/session/" + sessionId + "/element/" + elementId + "/screenshot"),
+            HEADER_ACC_RECV_JSON
+        )};
+
+        if (response.status_code != 200)
+            throw std::runtime_error(response.text);
+
+        std::ofstream imageFS {ofile, std::ios::binary};
+        std::string decoded {Base64::base64Decode(json::parse(response.text)["value"])};
+        imageFS.write(decoded.data(), static_cast<long>(decoded.size()));
     }
 }
