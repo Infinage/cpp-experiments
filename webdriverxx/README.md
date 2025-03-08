@@ -1,5 +1,6 @@
 ## TODO:
-1. Explicit waits
+1. Cookies, Alerts
+1. Better test cases
 4. Support multiple browsers
 5. Better error handling
 
@@ -9,7 +10,7 @@
 |---------|-----------------------------------------------------------------|----------------------------|---------|
 | POST    | /session                                                        | New Session                | Done    |
 | DELETE  | /session/{session id}                                           | Delete Session             | Done    |
-| GET     | /status                                                         | Status                     | Skipped |
+| GET     | /status                                                         | Status                     | Done    |
 | GET     | /session/{session id}/timeouts                                  | Get Timeouts               | Done    |
 | POST    | /session/{session id}/timeouts                                  | Set Timeouts               | Done    |
 | POST    | /session/{session id}/url                                       | Go                         | Done    |
@@ -18,12 +19,13 @@
 | POST    | /session/{session id}/forward                                   | Forward                    | Done    |
 | POST    | /session/{session id}/refresh                                   | Refresh                    | Done    |
 | GET     | /session/{session id}/title                                     | Get Title                  | Done    |
-| GET     | /session/{session id}/window                                    | Get Window Handle          |         |
-| DELETE  | /session/{session id}/window                                    | Close Window               |         |
-| POST    | /session/{session id}/window                                    | Switch To Window           |         |
-| GET     | /session/{session id}/window/handles                            | Get Window Handles         |         |
-| POST    | /session/{session id}/frame                                     | Switch To Frame            |         |
-| POST    | /session/{session id}/frame/parent                              | Switch To Parent Frame     |         |
+| GET     | /session/{session id}/window                                    | Get Window Handle          | Done    |
+| DELETE  | /session/{session id}/window                                    | Close Window               | Done    |
+| POST    | /session/{session id}/window                                    | Switch To Window           | Done    |
+| GET     | /session/{session id}/window/handles                            | Get Window Handles         | Done    |
+| GET     | /session/{session id}/window/new                                | Create new Window / Tab    | Done    |
+| POST    | /session/{session id}/frame                                     | Switch To Frame            | Done    |
+| POST    | /session/{session id}/frame/parent                              | Switch To Parent Frame     | Done    |
 | GET     | /session/{session id}/window/rect                               | Get Window Rect            |         |
 | POST    | /session/{session id}/window/rect                               | Set Window Rect            |         |
 | POST    | /session/{session id}/window/maximize                           | Maximize Window            | Done    |

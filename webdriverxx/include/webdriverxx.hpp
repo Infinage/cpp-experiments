@@ -10,6 +10,7 @@
 #include <string>
 #include <thread>
 #include <tuple>
+#include <vector>
 
 // Note: Braced init doesn't work well, use `= init`
 using json = nlohmann::json;
@@ -19,6 +20,7 @@ namespace webdriverxx {
     const cpr::Header HEADER_ACC_RECV_JSON {{"Content-Type", "application/json"}, {"Accept", "application/json"}};
 
     enum LOCATION_STRATEGY {CSS, TAGNAME, XPATH};
+    enum WINDOW_TYPE {TAB, WINDOW};
 
     enum class Keys: char16_t {
         Cancel = u'\uE001', Help = u'\uE002', Backspace = u'\uE003', Tab = u'\uE004',
@@ -64,7 +66,7 @@ namespace webdriverxx {
             // Current time
             std::chrono::time_point now {std::chrono::steady_clock::now()};
             long elapsed {(std::chrono::duration_cast<std::chrono::milliseconds>(now - start)).count()};
-            if (timeoutMS > 0 && elapsed >= timeoutMS) break;
+            if (timeoutMS >= 0 && elapsed >= timeoutMS) break;
 
             // Pause before polling again
             std::this_thread::sleep_for(std::chrono::milliseconds(pollIntervalMS));
@@ -75,11 +77,12 @@ namespace webdriverxx {
 
     class Element {
         private:
-            const std::string elementId, elementURL;
+            const std::string elementRef, elementId, elementURL;
+            friend class Driver;
 
         public:
-            Element(const std::string &elementId, const std::string &sessionURL): 
-                elementId(elementId), 
+            Element(const std::string &elementId, const std::string &elementRef, const std::string &sessionURL): 
+                elementRef(elementRef), elementId(elementId),
                 elementURL(sessionURL + "/element/" + elementId) 
             { }
 
@@ -254,11 +257,12 @@ namespace webdriverxx {
 
             Driver(
                 const std::string &binaryPath = "C:\\Program Files\\Mozilla Firefox\\firefox.exe", 
-                const std::string &baseURL = "http://127.0.0.1:4444"
-            ): 
+                const std::string &baseURL = "http://127.0.0.1:4444",
+                const std::string &sessionId = ""
+            ):
                 binaryPath(binaryPath), 
                 baseURL(baseURL), 
-                sessionId(startSession()), 
+                sessionId(sessionId.empty()? startSession(): sessionId), 
                 sessionURL(baseURL + "/session/" + sessionId) 
             { running = true; }
 
@@ -456,9 +460,68 @@ namespace webdriverxx {
                 if (response.status_code != 200)
                     throw std::runtime_error(response.text);
 
-                json responseJson = json::parse(response.text);
-                return Element(responseJson["value"].begin().value(), sessionURL);
+                json responseJson = json::parse(response.text)["value"];
+                return Element(responseJson.begin().key(), responseJson.begin().value(), sessionURL);
             }
 
+            std::string getWindowHandle() {
+                cpr::Response response {cpr::Get(sessionURL + "/window",  HEADER_ACC_RECV_JSON)}; 
+                if (response.status_code != 200)
+                    throw std::runtime_error(response.text);
+                return json::parse(response.text)["value"];
+            }
+
+            void closeWindow() {
+                cpr::Response response {cpr::Delete(sessionURL + "/window")};
+                if (response.status_code != 200)
+                    throw std::runtime_error(response.text);
+            }
+            
+            void switchWindow(const std::string &windowId) {
+                json payload {{ "handle", windowId }};
+                cpr::Response response {cpr::Post(sessionURL + "/window", cpr::Body{payload.dump()}, HEADER_ACC_RECV_JSON)};
+                if (response.status_code != 200)
+                    throw std::runtime_error(response.text);
+            }
+
+            std::vector<std::string> getWindowHandles() {
+                cpr::Response response {cpr::Get(sessionURL + "/window/handles",  HEADER_ACC_RECV_JSON)}; 
+                if (response.status_code != 200)
+                    throw std::runtime_error(response.text);
+                json handlesJSON = json::parse(response.text)["value"];
+                return {handlesJSON.begin(), handlesJSON.end()};
+            }
+
+            std::string newWindow(const WINDOW_TYPE &type) {
+                json payload {{ "type", type == WINDOW_TYPE::WINDOW? "window": "tab" }};
+                cpr::Response response {cpr::Post(sessionURL + "/window/new", cpr::Body{payload.dump()}, HEADER_ACC_RECV_JSON)};
+                if (response.status_code != 200)
+                    throw std::runtime_error(response.text);
+                return json::parse(response.text)["value"]["handle"];
+            }
+
+            void switchToParentFrame() {
+                cpr::Response response {cpr::Post(sessionURL + "/frame/parent", cpr::Body{"{}"}, HEADER_ACC_RECV_JSON)};
+                if (response.status_code != 200)
+                    throw std::runtime_error(response.text);
+            }
+
+            void switchFrame(const int index = -1) {
+                json payload;
+                if (index < 0) payload = {{ "id", nullptr }};
+                else payload = {{ "id", index }};
+                cpr::Response response {cpr::Post(sessionURL + "/frame", cpr::Body{payload.dump()}, HEADER_ACC_RECV_JSON)};
+                if (response.status_code != 200)
+                    throw std::runtime_error(response.text);
+            }
+
+            void switchFrame(const Element& element) {
+                json payload {{ 
+                    "id", {{ element.elementRef, element.elementId }}
+                }};
+                cpr::Response response {cpr::Post(sessionURL + "/frame", cpr::Body{payload.dump()}, HEADER_ACC_RECV_JSON)};
+                if (response.status_code != 200)
+                    throw std::runtime_error(response.text);
+            }
     };
 }
