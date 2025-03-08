@@ -4,9 +4,11 @@
 #include "json.hpp"
 #include "base64.hpp"
 
+#include <chrono>
 #include <fstream>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <tuple>
 
 // Note: Braced init doesn't work well, use `= init`
@@ -48,6 +50,27 @@ namespace webdriverxx {
 
     inline std::string operator+ (const std::string &str, const Keys& key) {
         return str + utf16_to_utf8(std::u16string(1, static_cast<char16_t>(key)));
+    }
+
+    template<typename Condition>
+    inline bool waitUntil(const Condition &condition, long timeoutMS = -1, long pollIntervalMS = 500) {
+        std::chrono::time_point start {std::chrono::steady_clock::now()};
+        while (true) {
+            // Return immediately if condition is met
+            try {
+                if (condition()) return true;
+            } catch (...) {}
+
+            // Current time
+            std::chrono::time_point now {std::chrono::steady_clock::now()};
+            long elapsed {(std::chrono::duration_cast<std::chrono::milliseconds>(now - start)).count()};
+            if (timeoutMS > 0 && elapsed >= timeoutMS) break;
+
+            // Pause before polling again
+            std::this_thread::sleep_for(std::chrono::milliseconds(pollIntervalMS));
+        }
+
+        return false;
     }
 
     class Element {
@@ -220,6 +243,15 @@ namespace webdriverxx {
             }
 
         public:
+            static bool status(const std::string &baseURL) {
+                cpr::Response response {cpr::Get(
+                    cpr::Url(baseURL + "/status"), 
+                    HEADER_ACC_RECV_JSON)
+                };
+
+                return json::parse(response.text)["value"]["ready"];
+            }
+
             Driver(
                 const std::string &binaryPath = "C:\\Program Files\\Mozilla Firefox\\firefox.exe", 
                 const std::string &baseURL = "http://127.0.0.1:4444"

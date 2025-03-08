@@ -2,9 +2,9 @@
 
 int main() {
     webdriverxx::Driver driver;
-    driver.navigateTo("https://google.com");
-    webdriverxx::Element element {driver.findElement(webdriverxx::LOCATION_STRATEGY::CSS, "textarea[title='Search']")};
+    driver.navigateTo("https://duckduckgo.com");
+    webdriverxx::Element element {driver.findElement(webdriverxx::LOCATION_STRATEGY::CSS, "#searchbox_input")};
     element.clear().sendKeys("Hello world").submit();
-    int status {driver.getTitle() == "Hello world - Google Search"};
+    int status {webdriverxx::waitUntil([&driver]{ return driver.getTitle() == "Hello world at DuckDuckGo"; }, 5000)};
     return !status;
 }
