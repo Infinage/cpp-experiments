@@ -5,7 +5,7 @@ int main() {
     int status {true};
     try {
         webdriverxx::Driver driver;
-        driver.findElement(webdriverxx::CSS, "#404");
+        driver.findElement(webdriverxx::LOCATION_STRATEGY::CSS, "#404");
     } catch(...) {
         status = webdriverxx::Driver::status("http://127.0.0.1:4444"); 
     }

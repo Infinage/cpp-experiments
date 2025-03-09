@@ -4,8 +4,10 @@
 #include "json.hpp"
 #include "base64.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <fstream>
+#include <iterator>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -77,12 +79,18 @@ namespace webdriverxx {
 
     class Element {
         private:
-            const std::string elementRef, elementId, elementURL;
+            const std::string elementRef, elementId, sessionURL, elementURL;
             friend class Driver;
 
         public:
-            Element(const std::string &elementId, const std::string &elementRef, const std::string &sessionURL): 
-                elementRef(elementRef), elementId(elementId),
+            explicit operator bool() const { 
+                return !elementId.empty(); 
+            }
+
+            Element(const std::string &elementRef, const std::string &elementId, const std::string &sessionURL): 
+                elementRef(elementRef), 
+                elementId(elementId), 
+                sessionURL(sessionURL),
                 elementURL(sessionURL + "/element/" + elementId) 
             { }
 
@@ -130,7 +138,7 @@ namespace webdriverxx {
                 return *this;
             }
 
-            std::string getElementAttribute(const std::string &name) {
+            std::string getElementAttribute(const std::string &name) const {
                 cpr::Response response {cpr::Get(
                     cpr::Url(elementURL + "/attribute/" + name),
                     HEADER_ACC_RECV_JSON
@@ -142,7 +150,7 @@ namespace webdriverxx {
                 return json::parse(response.text)["value"];
             }
 
-            std::string getElementProperty(const std::string &name) {
+            std::string getElementProperty(const std::string &name) const {
                 cpr::Response response {cpr::Get(
                     cpr::Url(elementURL + "/property/" + name),
                     HEADER_ACC_RECV_JSON
@@ -154,7 +162,7 @@ namespace webdriverxx {
                 return json::parse(response.text)["value"];
             }
 
-            std::string getElementCSSValue(const std::string &name) {
+            std::string getElementCSSValue(const std::string &name) const {
                 cpr::Response response {cpr::Get(
                     cpr::Url(elementURL + "/css/" + name),
                     HEADER_ACC_RECV_JSON
@@ -166,7 +174,7 @@ namespace webdriverxx {
                 return json::parse(response.text)["value"];
             }
 
-            std::string getElementText() {
+            std::string getElementText() const {
                 cpr::Response response {cpr::Get(
                     cpr::Url(elementURL + "/text"),
                     HEADER_ACC_RECV_JSON
@@ -178,7 +186,7 @@ namespace webdriverxx {
                 return json::parse(response.text)["value"];
             }
 
-            std::string getElementTagName() {
+            std::string getElementTagName() const {
                 cpr::Response response {cpr::Get(
                     cpr::Url(elementURL + "/name"),
                     HEADER_ACC_RECV_JSON
@@ -190,7 +198,7 @@ namespace webdriverxx {
                 return json::parse(response.text)["value"];
             }
 
-            bool isElementEnabled() {
+            bool isElementEnabled() const {
                 cpr::Response response {cpr::Get(
                     cpr::Url(elementURL + "/enabled"),
                     HEADER_ACC_RECV_JSON
@@ -202,7 +210,7 @@ namespace webdriverxx {
                 return json::parse(response.text)["value"];
             }
 
-            void save_screenshot(const std::string &ofile) {
+            void save_screenshot(const std::string &ofile) const {
                 cpr::Response response {cpr::Get(
                     cpr::Url(elementURL + "/screenshot"),
                     HEADER_ACC_RECV_JSON
@@ -214,6 +222,56 @@ namespace webdriverxx {
                 std::ofstream imageFS {ofile, std::ios::binary};
                 std::string decoded {Base64::base64Decode(json::parse(response.text)["value"])};
                 imageFS.write(decoded.data(), static_cast<long>(decoded.size()));
+            }
+
+            Element findElement(const LOCATION_STRATEGY &strategy, const std::string &criteria) const {
+                std::string strategyKeyword;
+                switch (strategy) {
+                    case CSS: strategyKeyword = "css selector"; break;
+                    case TAGNAME: strategyKeyword = "tag name"; break;
+                    case XPATH: strategyKeyword = "xpath"; break;
+                }
+
+                json payload {{"using", strategyKeyword}, {"value", criteria}};
+                cpr::Response response {cpr::Post(
+                    cpr::Url(elementURL + "/element"),
+                    cpr::Body{payload.dump()},
+                    HEADER_ACC_RECV_JSON
+                )}; 
+
+                if (response.status_code != 200)
+                    throw std::runtime_error(response.text);
+
+                json responseJson = json::parse(response.text)["value"];
+                return Element(responseJson.begin().key(), responseJson.begin().value(), sessionURL);
+            }
+
+            std::vector<Element> findElements(const LOCATION_STRATEGY &strategy, const std::string &criteria) const {
+                std::string strategyKeyword;
+                switch (strategy) {
+                    case CSS: strategyKeyword = "css selector"; break;
+                    case TAGNAME: strategyKeyword = "tag name"; break;
+                    case XPATH: strategyKeyword = "xpath"; break;
+                }
+
+                json payload {{"using", strategyKeyword}, {"value", criteria}};
+                cpr::Response response {cpr::Post(
+                    cpr::Url(elementURL + "/elements"),
+                    cpr::Body{payload.dump()},
+                    HEADER_ACC_RECV_JSON
+                )}; 
+
+                if (response.status_code != 200)
+                    throw std::runtime_error(response.text);
+
+                json responseJson = json::parse(response.text)["value"];
+                std::vector<Element> elements;
+                std::transform(responseJson.begin(), responseJson.end(), std::back_inserter(elements), 
+                    [&](const json::value_type &ele) {
+                        return Element{ele.begin().key(), ele.begin().value(), sessionURL};
+                    }
+                );
+                return elements;
             }
     };
 
@@ -258,11 +316,11 @@ namespace webdriverxx {
             Driver(
                 const std::string &binaryPath = "C:\\Program Files\\Mozilla Firefox\\firefox.exe", 
                 const std::string &baseURL = "http://127.0.0.1:4444",
-                const std::string &sessionId = ""
+                const std::string &sessId = ""
             ):
                 binaryPath(binaryPath), 
                 baseURL(baseURL), 
-                sessionId(sessionId.empty()? startSession(): sessionId), 
+                sessionId(sessId.empty()? startSession(): sessId), 
                 sessionURL(baseURL + "/session/" + sessionId) 
             { running = true; }
 
@@ -301,11 +359,13 @@ namespace webdriverxx {
 
             Driver& navigateTo(const std::string &url) {
                 json payload {{ "url", url }};
-                cpr::Post(
+                cpr::Response response {cpr::Post(
                     cpr::Url(sessionURL + "/url"), 
                     cpr::Body{payload.dump()}, 
                     HEADER_ACC_RECV_JSON
-                );
+                )};
+                if (response.status_code != 200)
+                    throw std::runtime_error(response.text);
 
                 return *this;
             }
@@ -346,7 +406,7 @@ namespace webdriverxx {
                 return *this;
             }
 
-            std::tuple<unsigned int, unsigned int, unsigned int> getTimeouts() {
+            std::tuple<unsigned int, unsigned int, unsigned int> getTimeouts() const {
                 cpr::Response response {cpr::Get(
                     cpr::Url(sessionURL + "/timeouts"),
                     HEADER_ACC_RECV_JSON
@@ -395,7 +455,7 @@ namespace webdriverxx {
                 return *this;
             }
 
-            void save_screenshot(const std::string &ofile) {
+            void save_screenshot(const std::string &ofile) const {
                 cpr::Response response {cpr::Get(
                     cpr::Url(sessionURL + "/screenshot"),
                     HEADER_ACC_RECV_JSON
@@ -409,7 +469,7 @@ namespace webdriverxx {
                 imageFS.write(decoded.data(), static_cast<long>(decoded.size()));
             }
 
-            std::string getCurrentURL() {
+            std::string getCurrentURL() const {
                 cpr::Response response {cpr::Get(
                     cpr::Url(sessionURL + "/url"),
                     HEADER_ACC_RECV_JSON
@@ -422,7 +482,7 @@ namespace webdriverxx {
                 return responseJson["value"];
             }
 
-            std::string getTitle() {
+            std::string getTitle() const {
                 cpr::Response response {cpr::Get(cpr::Url(sessionURL + "/title"))};
 
                 if (response.status_code != 200)
@@ -432,7 +492,7 @@ namespace webdriverxx {
                 return responseJson["value"];
             }
 
-            std::string getPageSource() {
+            std::string getPageSource() const {
                 cpr::Response response {cpr::Get(cpr::Url(sessionURL + "/source"))};
 
                 if (response.status_code != 200)
@@ -442,7 +502,7 @@ namespace webdriverxx {
                 return responseJson["value"];
             }
 
-            Element findElement(const LOCATION_STRATEGY &strategy, const std::string &criteria) {
+            Element findElement(const LOCATION_STRATEGY &strategy, const std::string &criteria) const {
                 std::string strategyKeyword;
                 switch (strategy) {
                     case CSS: strategyKeyword = "css selector"; break;
@@ -464,28 +524,56 @@ namespace webdriverxx {
                 return Element(responseJson.begin().key(), responseJson.begin().value(), sessionURL);
             }
 
-            std::string getWindowHandle() {
-                cpr::Response response {cpr::Get(sessionURL + "/window",  HEADER_ACC_RECV_JSON)}; 
+            std::vector<Element> findElements(const LOCATION_STRATEGY &strategy, const std::string &criteria) const {
+                std::string strategyKeyword;
+                switch (strategy) {
+                    case CSS: strategyKeyword = "css selector"; break;
+                    case TAGNAME: strategyKeyword = "tag name"; break;
+                    case XPATH: strategyKeyword = "xpath"; break;
+                }
+
+                json payload {{"using", strategyKeyword}, {"value", criteria}};
+                cpr::Response response {cpr::Post(
+                    cpr::Url(sessionURL + "/elements"),
+                    cpr::Body{payload.dump()},
+                    HEADER_ACC_RECV_JSON
+                )}; 
+
+                if (response.status_code != 200)
+                    throw std::runtime_error(response.text);
+
+                json responseJson = json::parse(response.text)["value"];
+                std::vector<Element> elements;
+                std::transform(responseJson.begin(), responseJson.end(), std::back_inserter(elements), 
+                    [&](const json::value_type &ele) {
+                        return Element{ele.begin().key(), ele.begin().value(), sessionURL};
+                    }
+                );
+                return elements;
+            }
+
+            std::string getWindowHandle() const {
+                cpr::Response response {cpr::Get(cpr::Url(sessionURL + "/window"),  HEADER_ACC_RECV_JSON)}; 
                 if (response.status_code != 200)
                     throw std::runtime_error(response.text);
                 return json::parse(response.text)["value"];
             }
 
             void closeWindow() {
-                cpr::Response response {cpr::Delete(sessionURL + "/window")};
+                cpr::Response response {cpr::Delete(cpr::Url(sessionURL + "/window"))};
                 if (response.status_code != 200)
                     throw std::runtime_error(response.text);
             }
             
             void switchWindow(const std::string &windowId) {
                 json payload {{ "handle", windowId }};
-                cpr::Response response {cpr::Post(sessionURL + "/window", cpr::Body{payload.dump()}, HEADER_ACC_RECV_JSON)};
+                cpr::Response response {cpr::Post(cpr::Url(sessionURL + "/window"), cpr::Body{payload.dump()}, HEADER_ACC_RECV_JSON)};
                 if (response.status_code != 200)
                     throw std::runtime_error(response.text);
             }
 
-            std::vector<std::string> getWindowHandles() {
-                cpr::Response response {cpr::Get(sessionURL + "/window/handles",  HEADER_ACC_RECV_JSON)}; 
+            std::vector<std::string> getWindowHandles() const {
+                cpr::Response response {cpr::Get(cpr::Url(sessionURL + "/window/handles"),  HEADER_ACC_RECV_JSON)}; 
                 if (response.status_code != 200)
                     throw std::runtime_error(response.text);
                 json handlesJSON = json::parse(response.text)["value"];
@@ -494,14 +582,14 @@ namespace webdriverxx {
 
             std::string newWindow(const WINDOW_TYPE &type) {
                 json payload {{ "type", type == WINDOW_TYPE::WINDOW? "window": "tab" }};
-                cpr::Response response {cpr::Post(sessionURL + "/window/new", cpr::Body{payload.dump()}, HEADER_ACC_RECV_JSON)};
+                cpr::Response response {cpr::Post(cpr::Url(sessionURL + "/window/new"), cpr::Body{payload.dump()}, HEADER_ACC_RECV_JSON)};
                 if (response.status_code != 200)
                     throw std::runtime_error(response.text);
                 return json::parse(response.text)["value"]["handle"];
             }
 
             void switchToParentFrame() {
-                cpr::Response response {cpr::Post(sessionURL + "/frame/parent", cpr::Body{"{}"}, HEADER_ACC_RECV_JSON)};
+                cpr::Response response {cpr::Post(cpr::Url(sessionURL + "/frame/parent"), cpr::Body{"{}"}, HEADER_ACC_RECV_JSON)};
                 if (response.status_code != 200)
                     throw std::runtime_error(response.text);
             }
@@ -510,7 +598,7 @@ namespace webdriverxx {
                 json payload;
                 if (index < 0) payload = {{ "id", nullptr }};
                 else payload = {{ "id", index }};
-                cpr::Response response {cpr::Post(sessionURL + "/frame", cpr::Body{payload.dump()}, HEADER_ACC_RECV_JSON)};
+                cpr::Response response {cpr::Post(cpr::Url(sessionURL + "/frame"), cpr::Body{payload.dump()}, HEADER_ACC_RECV_JSON)};
                 if (response.status_code != 200)
                     throw std::runtime_error(response.text);
             }
@@ -519,7 +607,7 @@ namespace webdriverxx {
                 json payload {{ 
                     "id", {{ element.elementRef, element.elementId }}
                 }};
-                cpr::Response response {cpr::Post(sessionURL + "/frame", cpr::Body{payload.dump()}, HEADER_ACC_RECV_JSON)};
+                cpr::Response response {cpr::Post(cpr::Url(sessionURL + "/frame"), cpr::Body{payload.dump()}, HEADER_ACC_RECV_JSON)};
                 if (response.status_code != 200)
                     throw std::runtime_error(response.text);
             }

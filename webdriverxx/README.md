@@ -32,9 +32,9 @@
 | POST    | /session/{session id}/window/minimize                           | Minimize Window            | Done    |
 | POST    | /session/{session id}/window/fullscreen                         | Fullscreen Window          |         |
 | POST    | /session/{session id}/element                                   | Find Element               | Done    |
-| POST    | /session/{session id}/elements                                  | Find Elements              |         |
-| POST    | /session/{session id}/element/{element id}/element              | Find Element From Element  |         |
-| POST    | /session/{session id}/element/{element id}/elements             | Find Elements From Element |         |
+| POST    | /session/{session id}/elements                                  | Find Elements              | Done    |
+| POST    | /session/{session id}/element/{element id}/element              | Find Element From Element  | Done    |
+| POST    | /session/{session id}/element/{element id}/elements             | Find Elements From Element | Done    |
 | GET     | /session/{session id}/element/active                            | Get Active Element         |         |
 | GET     | /session/{session id}/element/{element id}/selected             | Is Element Selected        |         |
 | GET     | /session/{session id}/element/{element id}/attribute/{name}     | Get Element Attribute      | Done    |
