@@ -1,9 +1,10 @@
 ## TODO:
-1. Cookies
-2. Execute async
-1. Better test cases
-4. Support multiple browsers
-5. Better error handling
+1. Actions API
+1. Execute async
+1. Encapsulate into seperate classes
+2. Better test cases
+3. Support multiple browsers
+4. Better error handling
 
 ### Endpoints Supported
 
@@ -36,8 +37,8 @@
 | POST    | /session/{session id}/elements                                  | Find Elements              | Done    |
 | POST    | /session/{session id}/element/{element id}/element              | Find Element From Element  | Done    |
 | POST    | /session/{session id}/element/{element id}/elements             | Find Elements From Element | Done    |
-| GET     | /session/{session id}/element/active                            | Get Active Element         |         |
-| GET     | /session/{session id}/element/{element id}/selected             | Is Element Selected        |         |
+| GET     | /session/{session id}/element/active                            | Get Active Element         | Done    |
+| GET     | /session/{session id}/element/{element id}/selected             | Is Element Selected        | Done    |
 | GET     | /session/{session id}/element/{element id}/attribute/{name}     | Get Element Attribute      | Done    |
 | GET     | /session/{session id}/element/{element id}/property/{name}      | Get Element Property       | Done    |
 | GET     | /session/{session id}/element/{element id}/css/{property name}  | Get Element CSS Value      | Done    |
@@ -51,11 +52,11 @@
 | GET     | /session/{session id}/source                                    | Get Page Source            | Done    |
 | POST    | /session/{session id}/execute/sync                              | Execute Script             | Done    |
 | POST    | /session/{session id}/execute/async                             | Execute Async Script       |         |
-| GET     | /session/{session id}/cookie                                    | Get All Cookies            |         |
-| GET     | /session/{session id}/cookie/{name}                             | Get Named Cookie           |         |
-| POST    | /session/{session id}/cookie                                    | Add Cookie                 |         |
-| DELETE  | /session/{session id}/cookie/{name}                             | Delete Cookie              |         |
-| DELETE  | /session/{session id)/cookie                                    | Delete All Cookies         |         |
+| GET     | /session/{session id}/cookie                                    | Get All Cookies            | Done    |
+| GET     | /session/{session id}/cookie/{name}                             | Get Named Cookie           | Done    |
+| POST    | /session/{session id}/cookie                                    | Add Cookie                 | Done    |
+| DELETE  | /session/{session id}/cookie/{name}                             | Delete Cookie              | Done    |
+| DELETE  | /session/{session id)/cookie                                    | Delete All Cookies         | Done    |
 | POST    | /session/{session id}/actions                                   | Perform Actions            |         |
 | DELETE  | /session/{session id}/actions                                   | Release Actions            |         |
 | POST    | /session/{session id}/alert/dismiss                             | Dismiss Alert              | Done    |
