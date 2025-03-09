@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdlib>
 #include <fstream>
 #include <iterator>
 #include <optional>
@@ -13,6 +14,7 @@
 #include <string>
 #include <thread>
 #include <tuple>
+#include <unordered_map>
 #include <vector>
 
 // Note: Braced init doesn't work well, use `= init`
@@ -24,6 +26,13 @@ namespace webdriverxx {
 
     enum LOCATION_STRATEGY {CSS, TAGNAME, XPATH};
     enum WINDOW_TYPE {TAB, WINDOW};
+    enum BROWSERS {MSEDGE, CHROME, FIREFOX, AUTO};
+
+    const std::unordered_map<BROWSERS, std::unordered_map<std::string, std::string>> defaultConfigs {
+        {BROWSERS::FIREFOX, {{"browserSpecificOptsId", "moz:firefoxOptions"}}},
+        {BROWSERS::CHROME,  {{"browserSpecificOptsId", "goog:chromeOptions"}}},
+        {BROWSERS::MSEDGE,  {{"browserSpecificOptsId",     "ms:edgeOptions"}}},
+    };
 
     enum class Keys: char16_t {
         Cancel = u'\uE001', Help = u'\uE002', Backspace = u'\uE003', Tab = u'\uE004',
@@ -372,15 +381,21 @@ namespace webdriverxx {
 
     class Driver {
         private:
-            const std::string binaryPath, baseURL, sessionId, sessionURL;
+            const BROWSERS browserName;
+            const std::string port, binaryPath, baseURL; 
+            const std::string sessionId, sessionURL;
             bool running {false};
 
         private:
             std::string startSession() {
+                if (!status()) 
+                    throw std::runtime_error("Webdriver not in ready state");
+
                 json payload {{
                     "capabilities", {{
                         "alwaysMatch", {{
-                            "moz:firefoxOptions", {{ "binary", binaryPath }}
+                            defaultConfigs.at(browserName).at("browserSpecificOptsId"), 
+                                {{ "binary", binaryPath }}
                         }}
                     }}
                 }};
@@ -398,29 +413,70 @@ namespace webdriverxx {
                 return responseJson["value"]["sessionId"];
             }
 
-        public:
-            static bool status(const std::string &baseURL) {
-                cpr::Response response {cpr::Get(
-                    cpr::Url(baseURL + "/status"), 
-                    HEADER_ACC_RECV_JSON)
-                };
-
-                return json::parse(response.text)["value"]["ready"];
+            std::string getBinaryPath() const {
+                std::string envKey;
+                switch (browserName) {
+                    case (FIREFOX): envKey = "FIREFOX"; break;
+                    case (CHROME): envKey = "CHROME"; break;
+                    case (MSEDGE): envKey = "MSEDGE"; break;
+                    default: envKey = "FIREFOX"; break;
+                }
+                envKey += "_BINARY";
+                char *path {std::getenv(envKey.c_str())};
+                if (!path)
+                    throw std::runtime_error('`' + envKey + "` env variable not set.");
+                return path;
             }
 
+            static BROWSERS getBrowser() {
+                char *browser {std::getenv("BROWSER")};
+                if (!browser)
+                    throw std::runtime_error("`BROWSER` env variable not set.");
+                else if (std::strcmp(browser, "firefox") == 0)
+                    return BROWSERS::FIREFOX;
+                else if (std::strcmp(browser, "chrome") == 0)
+                    return BROWSERS::CHROME;
+                else if (std::strcmp(browser, "msedge") == 0)
+                    return BROWSERS::MSEDGE;
+                else
+                    throw std::runtime_error('`' + std::string{browser} + "` not supported.");
+            }
+
+            static std::string getPort() {
+                char *port {std::getenv("PORT")};
+                if (!port)
+                    throw std::runtime_error("`PORT` env variable not set.");
+                return port;
+            }
+
+        public:
             Driver(
-                const std::string &binaryPath = "C:\\Program Files\\Mozilla Firefox\\firefox.exe", 
-                const std::string &baseURL = "http://127.0.0.1:4444",
-                const std::string &sessId = ""
+                const BROWSERS &browserName_ = BROWSERS::AUTO,
+                const std::string &binaryPath_ = "",
+                const unsigned short port_ = 0,
+                const std::string &sessionId_  = ""
             ):
-                binaryPath(binaryPath), 
-                baseURL(baseURL), 
-                sessionId(sessId.empty()? startSession(): sessId), 
+                browserName(browserName_ == BROWSERS::AUTO? getBrowser(): browserName_), 
+                port(port_ == 0? getPort(): "4444"),
+                binaryPath(binaryPath_.empty()? getBinaryPath(): binaryPath_),
+                baseURL("http://127.0.0.1:" + port), 
+                sessionId(sessionId_.empty()? startSession(): sessionId_), 
                 sessionURL(baseURL + "/session/" + sessionId) 
             { running = true; }
 
             ~Driver() { if (running) quit(); }
 
+            bool status() {
+                cpr::Response response {cpr::Get(
+                    cpr::Url(baseURL + "/status"), 
+                    HEADER_ACC_RECV_JSON)
+                };
+
+                if (response.status_code != 200)
+                    return false;
+                else 
+                    return json::parse(response.text)["value"]["ready"];
+            }
             void quit() {
                 cpr::Delete(cpr::Url(sessionURL)); 
                 running = false;

@@ -1,9 +1,9 @@
 ## TODO:
+3. Support multiple browsers: Firefox, Chrome, Edge
+1. Encapsulate into seperate classes
 1. Actions API
 1. Execute async
-1. Encapsulate into seperate classes
 2. Better test cases
-3. Support multiple browsers
 4. Better error handling
 
 ### Endpoints Supported
@@ -66,3 +66,8 @@
 | GET     | /session/{session id}/screenshot                                | Take Screenshot            | Done    |
 | GET     | /session/{session id}/element/{element id}/screenshot           | Take Element Screenshot    | Done    |
 | POST    | /session/{session id}/print                                     | Print Page                 |         |
+
+#### Run tests against multiple browser types
+1. Firefox: `PORT=4444 BROWSER=firefox FIREFOX_BINARY="C:\Program Files\Mozilla Firefox\firefox.exe" ctest --output-on-failure`
+2. Chrome:  `PORT=4444 BROWSER=chrome CHROME_BINARY="C:\Program Files\Google\Chrome\Application\chrome.exe" ctest --output-on-failure`
+3. MS-Edge: `PORT=4444 BROWSER=msedge MSEDGE_BINARY="C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe" ctest --output-on-failure`
