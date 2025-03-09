@@ -87,6 +87,10 @@ namespace webdriverxx {
                 return !elementId.empty(); 
             }
 
+            operator json() const {
+                return json{{elementRef, elementId}};
+            }
+
             Element(const std::string &elementRef, const std::string &elementId, const std::string &sessionURL): 
                 elementRef(elementRef), 
                 elementId(elementId), 
@@ -94,7 +98,7 @@ namespace webdriverxx {
                 elementURL(sessionURL + "/element/" + elementId) 
             { }
 
-            Element& click() {
+            Element &click() {
                 cpr::Response response {cpr::Post(
                     cpr::Url(elementURL + "/click"), 
                     cpr::Body{"{}"}, 
@@ -107,7 +111,7 @@ namespace webdriverxx {
                 return *this;
             }
 
-            Element& sendKeys(const std::string &text) {
+            Element &sendKeys(const std::string &text) {
                 json payload {{ "text", text }};
                 cpr::Response response {cpr::Post(
                     cpr::Url(elementURL + "/value"), 
@@ -121,17 +125,35 @@ namespace webdriverxx {
                 return *this;
             }
 
-            Element& submit() { 
+            Element &submit() { 
                 sendKeys("" + Keys::Enter); 
                 return *this;
             }
 
-            Element& clear() {
+            Element &clear() {
                 cpr::Response response {cpr::Post(
                     cpr::Url(elementURL + "/clear"),
                     cpr::Body{"{}"}, 
                     HEADER_ACC_RECV_JSON
                 )};
+                if (response.status_code != 200)
+                    throw std::runtime_error(response.text);
+
+                return *this;
+            }
+
+            Element &scrollIntoView() {
+                json payload = {
+                    { "script", "arguments[0].scrollIntoView({behavior: 'smooth', block: 'center'});" }, 
+                    { "args", json::array({{{elementRef, elementId}}}) }
+                };
+
+                cpr::Response response {cpr::Post(
+                    cpr::Url(sessionURL + "/execute/sync"), 
+                    cpr::Body{payload.dump()}, 
+                    HEADER_ACC_RECV_JSON)
+                };
+
                 if (response.status_code != 200)
                     throw std::runtime_error(response.text);
 
@@ -610,6 +632,45 @@ namespace webdriverxx {
                 cpr::Response response {cpr::Post(cpr::Url(sessionURL + "/frame"), cpr::Body{payload.dump()}, HEADER_ACC_RECV_JSON)};
                 if (response.status_code != 200)
                     throw std::runtime_error(response.text);
+            }
+
+            void dismissAlert(bool accept) {
+                cpr::Response response {cpr::Post(
+                    cpr::Url(sessionURL + "/alert/" + (accept? "accept": "dismiss")), 
+                    cpr::Body{"{}"}, HEADER_ACC_RECV_JSON)
+                };
+                if (response.status_code != 200)
+                    throw std::runtime_error(response.text);
+            }
+
+            std::string getAlertText() const {
+                cpr::Response response {cpr::Get(cpr::Url(sessionURL + "/alert/text"), HEADER_ACC_RECV_JSON)};
+                if (response.status_code != 200)
+                    throw std::runtime_error(response.text);
+                return json::parse(response.text)["value"];
+            }
+
+            void setAlertResponse(const std::string &text) {
+                json payload = {{ "text", text }};
+                cpr::Response response {cpr::Post(cpr::Url(sessionURL + "/alert/text"), cpr::Body{payload.dump()}, HEADER_ACC_RECV_JSON)};
+                if (response.status_code != 200)
+                    throw std::runtime_error(response.text);
+            }
+
+            template<typename T>
+            T execute(const std::string &code, const json &args = json::array()) {
+                json payload = {{ "script", code }, { "args", args.is_array()? args: json::array({args}) }};
+
+                cpr::Response response {cpr::Post(
+                    cpr::Url(sessionURL + "/execute/sync"),
+                    cpr::Body{payload.dump()}, 
+                    HEADER_ACC_RECV_JSON)
+                };
+
+                if (response.status_code != 200)
+                    throw std::runtime_error(response.text);
+
+                return json::parse(response.text)["value"].get<T>();
             }
     };
 }

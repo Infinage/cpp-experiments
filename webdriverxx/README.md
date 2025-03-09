@@ -1,5 +1,6 @@
 ## TODO:
-1. Cookies, Alerts
+1. Cookies
+2. Execute async
 1. Better test cases
 4. Support multiple browsers
 5. Better error handling
@@ -48,7 +49,7 @@
 | POST    | /session/{session id}/element/{element id}/clear                | Element Clear              | Done    |
 | POST    | /session/{session id}/element/{element id}/value                | Element Send Keys          | Done    |
 | GET     | /session/{session id}/source                                    | Get Page Source            | Done    |
-| POST    | /session/{session id}/execute/sync                              | Execute Script             |         |
+| POST    | /session/{session id}/execute/sync                              | Execute Script             | Done    |
 | POST    | /session/{session id}/execute/async                             | Execute Async Script       |         |
 | GET     | /session/{session id}/cookie                                    | Get All Cookies            |         |
 | GET     | /session/{session id}/cookie/{name}                             | Get Named Cookie           |         |
@@ -57,10 +58,10 @@
 | DELETE  | /session/{session id)/cookie                                    | Delete All Cookies         |         |
 | POST    | /session/{session id}/actions                                   | Perform Actions            |         |
 | DELETE  | /session/{session id}/actions                                   | Release Actions            |         |
-| POST    | /session/{session id}/alert/dismiss                             | Dismiss Alert              |         |
-| POST    | /session/{session id}/alert/accept                              | Accept Alert               |         |
-| GET     | /session/{session id}/alert/text                                | Get Alert Text             |         |
-| POST    | /session/{session id}/alert/text                                | Send Alert Text            |         |
+| POST    | /session/{session id}/alert/dismiss                             | Dismiss Alert              | Done    |
+| POST    | /session/{session id}/alert/accept                              | Accept Alert               | Done    |
+| GET     | /session/{session id}/alert/text                                | Get Alert Text             | Done    |
+| POST    | /session/{session id}/alert/text                                | Send Alert Text            | Done    |
 | GET     | /session/{session id}/screenshot                                | Take Screenshot            | Done    |
 | GET     | /session/{session id}/element/{element id}/screenshot           | Take Element Screenshot    | Done    |
 | POST    | /session/{session id}/print                                     | Print Page                 |         |
