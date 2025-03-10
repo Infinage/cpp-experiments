@@ -84,12 +84,6 @@ namespace webdriverxx {
 
     class Capabilities {
         private:
-            const std::unordered_map<BROWSERS, std::unordered_map<std::string, std::string>> defaultConfigs {
-                {BROWSERS::FIREFOX, {{"optsId", "moz:firefoxOptions"}}},
-                {BROWSERS::CHROME,  {{"optsId", "goog:chromeOptions"}}},
-                {BROWSERS::MSEDGE,  {{"optsId",     "ms:edgeOptions"}}},
-            };
-
             const BROWSERS browserType;
             const std::string binaryPath;
 
@@ -131,20 +125,30 @@ namespace webdriverxx {
                         std::cerr << "Start maximized is not supported in firefox. Please maximize by calling `driver.maximize` instead.\n";
                 }
 
-                // Feed in the args
-                json args = json::array();
-                if (_headless && *_headless) args.push_back("--headless");
-                if (_disableGPU && *_disableGPU) args.push_back("--disable-gpu");
-                if (_startMaximized && *_startMaximized) args.push_back("--start-maximized");
-                if (_disablePopupBlocking && *_disablePopupBlocking && browserType != BROWSERS::FIREFOX) args.push_back("--disable-popup-blocking");
-
                 // Base capabilities
+                std::string optsId;
+                switch (browserType) {
+                    case BROWSERS::FIREFOX: optsId = "moz:firefoxOptions"; break;
+                    case BROWSERS::CHROME: optsId = "goog:chromeOptions"; break;
+                    case BROWSERS::MSEDGE: optsId = "ms:edgeOptions"; break;
+                }
+
                 json alwaysMatch = { 
-                    { defaultConfigs.at(browserType).at("optsId"), {  
-                        { "args", args },
+                    { optsId, {  
+                        { "args", json::array() },
                         { "binary", binaryPath }
                     }}
                 };
+
+                // Feed in the args
+                if (_headless && *_headless) 
+                    alwaysMatch[optsId]["args"].push_back("--headless");
+                if (_disableGPU && *_disableGPU) 
+                    alwaysMatch[optsId]["args"].push_back("--disable-gpu");
+                if (_startMaximized && *_startMaximized) 
+                    alwaysMatch[optsId]["args"].push_back("--start-maximized");
+                if (_disablePopupBlocking && *_disablePopupBlocking && browserType != BROWSERS::FIREFOX) 
+                    alwaysMatch[optsId]["args"].push_back("--disable-popup-blocking");
 
                 // Handle Ignore Certificate Errors
                 if (_ignoreCertErrors && *_ignoreCertErrors)
@@ -153,8 +157,8 @@ namespace webdriverxx {
                 // Firefox specific opts
                 if (browserType == BROWSERS::FIREFOX) {
                     if (_windowHeight && _windowWidth) {
-                        args.push_back("--height=" + std::to_string(*_windowHeight)); 
-                        args.push_back("--width=" + std::to_string(*_windowWidth));
+                        alwaysMatch[optsId]["args"].push_back("--height=" + std::to_string(*_windowHeight)); 
+                        alwaysMatch[optsId]["args"].push_back("--width=" + std::to_string(*_windowWidth));
                     }
                     if (_userAgent)
                         alwaysMatch["moz:firefoxOptions"]["prefs"]["general.useragent.override"] = *_userAgent;
@@ -172,13 +176,13 @@ namespace webdriverxx {
                 // Chrome / MS Edge specific opts
                 else {
                     if (_windowHeight && _windowWidth)
-                        args.push_back("--window-size=" + std::to_string(*_windowHeight) + ',' + std::to_string(*_windowWidth));
+                        alwaysMatch[optsId]["args"].push_back("--window-size=" + std::to_string(*_windowHeight) + ',' + std::to_string(*_windowWidth));
                     if (_userAgent)
-                        args.push_back("--user-agent=" + *_userAgent);
+                        alwaysMatch[optsId]["args"].push_back("--user-agent=" + *_userAgent);
                     if (_disableExtensions && *_disableExtensions)
-                        args.push_back("--disable-extensions");
+                        alwaysMatch[optsId]["args"].push_back("--disable-extensions");
                     if (_downloadDir) {
-                        alwaysMatch[defaultConfigs.at(browserType).at("optsId")]["prefs"] = {
+                        alwaysMatch[optsId]["prefs"] = {
                             {"download.default_directory", *_downloadDir},
                             {"download.prompt_for_download", false},
                             {"download.directory_upgrade", true},
