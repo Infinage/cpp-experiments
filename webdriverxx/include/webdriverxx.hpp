@@ -72,7 +72,7 @@ namespace webdriverxx {
 
             // Current time
             std::chrono::time_point now {std::chrono::steady_clock::now()};
-            long elapsed {(std::chrono::duration_cast<std::chrono::milliseconds>(now - start)).count()};
+            long long elapsed {(std::chrono::duration_cast<std::chrono::milliseconds>(now - start)).count()};
             if (timeoutMS >= 0 && elapsed >= timeoutMS) break;
 
             // Pause before polling again
@@ -303,7 +303,7 @@ namespace webdriverxx {
                 return *this;
             }
 
-            Element &scrollIntoView() {
+            Element &scrollIntoView(unsigned short pauseMS = 0) {
                 json payload = {
                     { "script", "arguments[0].scrollIntoView({behavior: 'smooth', block: 'center'});" }, 
                     { "args", json::array({{{elementRef, elementId}}}) }
@@ -317,6 +317,9 @@ namespace webdriverxx {
 
                 if (response.status_code != 200)
                     throw std::runtime_error(response.text);
+                
+                // Add a tiny pause if required
+                std::this_thread::sleep_for(std::chrono::milliseconds(pauseMS));
 
                 return *this;
             }

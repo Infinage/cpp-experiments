@@ -1,14 +1,13 @@
 #include "test_config.hpp"
-#include "webdriverxx.hpp"
 
 int main() {
-    webdriverxx::Driver driver{webdriverxx::Capabilities{BROWSER_NAME, BROWSER_BINARY}, PORT};
+    webdriverxx::Driver driver{webdriverxx::Capabilities{BROWSER_TYPE, BROWSER_BINARY}, PORT};
 
     driver.navigateTo("https://www.selenium.dev/documentation/webdriver/interactions/alerts");
     int status {true};
 
     // Simple Alert
-    driver.findElement(webdriverxx::LOCATION_STRATEGY::XPATH, "//a[normalize-space()='See an example alert']").scrollIntoView().click();
+    driver.findElement(webdriverxx::LOCATION_STRATEGY::XPATH, "//a[normalize-space()='See an example alert']").scrollIntoView(100).click();
     status &= driver.getAlertText() == "Sample alert";
     driver.dismissAlert(false);
 

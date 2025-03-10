@@ -14,12 +14,38 @@ include_directories(include)
 # Generate compile_commands.json for clangd
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-include(FetchContent)
-FetchContent_Declare(cpr 
-    GIT_REPOSITORY https://github.com/libcpr/cpr.git
-    GIT_TAG  1.11.2)
-set(CPR_ENABLE_SSL OFF)
-FetchContent_MakeAvailable(cpr)
+# Set CPPLIB root directory
+set(CPPLIB_DIR "$ENV{HOME}/cpplib")
+set(CPPLIB_REPOS_DIR "${CPPLIB_DIR}/repos")
+
+# Check if CPR is available in ~/cpplib
+find_library(CPR_LIB NAMES cpr PATHS "${CPPLIB_DIR}/lib" NO_DEFAULT_PATH)
+find_path(CPR_INCLUDE_DIR NAMES cpr/cpr.h PATHS "${CPPLIB_DIR}/include" NO_DEFAULT_PATH)
+
+if (CPR_LIB AND CPR_INCLUDE_DIR)
+    message(STATUS "Using prebuilt CPR from ${CPPLIB_DIR}")
+    
+    add_library(cpr::cpr INTERFACE IMPORTED)
+    set_target_properties(cpr::cpr PROPERTIES
+        INTERFACE_INCLUDE_DIRECTORIES "${CPR_INCLUDE_DIR}"
+        INTERFACE_LINK_LIBRARIES "${CPR_LIB}"
+    )
+else()
+    message(STATUS "CPR not found in ${CPPLIB_DIR}, fetching from GitHub...")
+
+    include(FetchContent)
+    FetchContent_Declare(cpr 
+        GIT_REPOSITORY https://github.com/libcpr/cpr.git
+        GIT_TAG 1.11.2
+        SOURCE_DIR "${CPPLIB_REPOS_DIR}/cpr"
+    )
+
+    set(CPR_ENABLE_SSL OFF)
+
+    # Install fetched CPR to ~/cpplib
+    set(CMAKE_INSTALL_PREFIX "${CPPLIB_DIR}")
+    FetchContent_MakeAvailable(cpr)
+endif()
 
 # Define `webdriverxx` as an INTERFACE library
 add_library(webdriverxx INTERFACE)

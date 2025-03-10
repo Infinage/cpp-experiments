@@ -13,12 +13,13 @@ inline std::string getEnv(const std::string &key) {
 }
 
 inline webdriverxx::BROWSERS resolveBrowser(const std::string &browserName) {
-    if (browserName == "firefox") return webdriverxx::BROWSERS::FIREFOX;
-    else if (browserName == "chrome") return webdriverxx::BROWSERS::CHROME;
-    else if (browserName == "msedge") return webdriverxx::BROWSERS::MSEDGE;
+    if (browserName == "FIREFOX") return webdriverxx::BROWSERS::FIREFOX;
+    else if (browserName == "CHROME") return webdriverxx::BROWSERS::CHROME;
+    else if (browserName == "MSEDGE") return webdriverxx::BROWSERS::MSEDGE;
     else throw std::runtime_error('`' + browserName + "` is not supported.");
 }
 
-const webdriverxx::BROWSERS BROWSER_NAME {resolveBrowser(getEnv("BROWSER"))};
+const std::string BROWSER_NAME {getEnv({"BROWSER"})};
+const webdriverxx::BROWSERS BROWSER_TYPE {resolveBrowser(BROWSER_NAME)};
 const std::string BROWSER_BINARY {getEnv("BROWSER_BINARY")};
-const std::string PORT {getEnv("PORT")};
+const std::string PORT {getEnv(BROWSER_NAME + "_PORT")};
