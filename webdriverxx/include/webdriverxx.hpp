@@ -8,6 +8,7 @@
 #include <chrono>
 #include <cstdlib>
 #include <fstream>
+#include <iostream>
 #include <iterator>
 #include <optional>
 #include <stdexcept>
@@ -27,12 +28,6 @@ namespace webdriverxx {
     enum LOCATION_STRATEGY {CSS, TAGNAME, XPATH};
     enum WINDOW_TYPE {TAB, WINDOW};
     enum BROWSERS {MSEDGE, CHROME, FIREFOX};
-
-    const std::unordered_map<BROWSERS, std::unordered_map<std::string, std::string>> defaultConfigs {
-        {BROWSERS::FIREFOX, {{"browserSpecificOptsId", "moz:firefoxOptions"}}},
-        {BROWSERS::CHROME,  {{"browserSpecificOptsId", "goog:chromeOptions"}}},
-        {BROWSERS::MSEDGE,  {{"browserSpecificOptsId",     "ms:edgeOptions"}}},
-    };
 
     enum class Keys: char16_t {
         Cancel = u'\uE001', Help = u'\uE002', Backspace = u'\uE003', Tab = u'\uE004',
@@ -86,6 +81,117 @@ namespace webdriverxx {
 
         return false;
     }
+
+    class Capabilities {
+        private:
+            const std::unordered_map<BROWSERS, std::unordered_map<std::string, std::string>> defaultConfigs {
+                {BROWSERS::FIREFOX, {{"optsId", "moz:firefoxOptions"}}},
+                {BROWSERS::CHROME,  {{"optsId", "goog:chromeOptions"}}},
+                {BROWSERS::MSEDGE,  {{"optsId",     "ms:edgeOptions"}}},
+            };
+
+            const BROWSERS browserType;
+            const std::string binaryPath;
+
+            std::optional<bool> _headless;
+            std::optional<bool> _disableGPU;
+            std::optional<bool> _startMaximized;
+            std::optional<bool> _disableExtensions;
+            std::optional<bool> _ignoreCertErrors;
+            std::optional<bool> _disablePopupBlocking;
+
+            std::optional<int>  _windowHeight;
+            std::optional<int>  _windowWidth;
+
+            std::optional<std::string> _userAgent;
+            std::optional<std::string> _downloadDir;
+            std::optional<std::string> _proxy;
+
+        public:
+            Capabilities(const BROWSERS &browserType, const std::string &binaryPath): 
+                browserType(browserType), binaryPath(binaryPath) {}
+
+            // Builder pattern for setting capabilities
+            Capabilities &headless(bool flag) { _headless = flag; return *this; }
+            Capabilities &disableGPU(bool flag) { _disableGPU = flag; return *this; }
+            Capabilities &startMaximized(bool flag) { _startMaximized = flag; return *this; }
+            Capabilities &disableExtensions(bool flag) { _disableExtensions = flag; return *this; }
+            Capabilities &ignoreCertErrors(bool flag) { _ignoreCertErrors = flag; return *this; }
+            Capabilities &disablePopupBlocking(bool flag) { _disablePopupBlocking = flag; return *this; }
+            Capabilities &userAgent(const std::string &agent) { _userAgent = agent; return *this; }
+            Capabilities &downloadDir(const std::string &directory) { _downloadDir = directory; return *this; }
+            Capabilities &proxy(const std::string &proxyURL) { _proxy = proxyURL; return *this; }
+            Capabilities &windowSize(int height, int width) { _windowHeight = height; _windowWidth = width; return *this; }
+
+            operator json() const {
+
+                // Warn unsupported opts
+                if (browserType == BROWSERS::FIREFOX) {
+                    if (_startMaximized && *_startMaximized)
+                        std::cerr << "Start maximized is not supported in firefox. Please maximize by calling `driver.maximize` instead.\n";
+                }
+
+                // Feed in the args
+                json args = json::array();
+                if (_headless && *_headless) args.push_back("--headless");
+                if (_disableGPU && *_disableGPU) args.push_back("--disable-gpu");
+                if (_startMaximized && *_startMaximized) args.push_back("--start-maximized");
+                if (_disablePopupBlocking && *_disablePopupBlocking && browserType != BROWSERS::FIREFOX) args.push_back("--disable-popup-blocking");
+
+                // Base capabilities
+                json alwaysMatch = { 
+                    { defaultConfigs.at(browserType).at("optsId"), {  
+                        { "args", args },
+                        { "binary", binaryPath }
+                    }}
+                };
+
+                // Handle Ignore Certificate Errors
+                if (_ignoreCertErrors && *_ignoreCertErrors)
+                    alwaysMatch["acceptInsecureCerts"] = true;
+
+                // Firefox specific opts
+                if (browserType == BROWSERS::FIREFOX) {
+                    if (_windowHeight && _windowWidth) {
+                        args.push_back("--height=" + std::to_string(*_windowHeight)); 
+                        args.push_back("--width=" + std::to_string(*_windowWidth));
+                    }
+                    if (_userAgent)
+                        alwaysMatch["moz:firefoxOptions"]["prefs"]["general.useragent.override"] = *_userAgent;
+                    if (_disableExtensions && *_disableExtensions)
+                        alwaysMatch["moz:firefoxOptions"]["prefs"]["extensions.enabled"] = false;
+                    if (_downloadDir) {
+                        alwaysMatch["moz:firefoxOptions"]["prefs"] = {
+                            {"browser.download.dir", *_downloadDir},
+                            {"browser.download.folderList", 2},
+                            {"browser.helperApps.neverAsk.saveToDisk", "application/pdf"}
+                        };
+                    }
+                } 
+
+                // Chrome / MS Edge specific opts
+                else {
+                    if (_windowHeight && _windowWidth)
+                        args.push_back("--window-size=" + std::to_string(*_windowHeight) + ',' + std::to_string(*_windowWidth));
+                    if (_userAgent)
+                        args.push_back("--user-agent=" + *_userAgent);
+                    if (_disableExtensions && *_disableExtensions)
+                        args.push_back("--disable-extensions");
+                    if (_downloadDir) {
+                        alwaysMatch[defaultConfigs.at(browserType).at("optsId")]["prefs"] = {
+                            {"download.default_directory", *_downloadDir},
+                            {"download.prompt_for_download", false},
+                            {"download.directory_upgrade", true},
+                            {"safebrowsing.enabled", true}
+                        };
+                    }
+                }
+
+                // Final payload
+                json payload = {{"capabilities", {{"alwaysMatch", alwaysMatch}}}};
+                return payload;
+            }
+    };
 
     class Cookie {
         public:
@@ -381,8 +487,8 @@ namespace webdriverxx {
 
     class Driver {
         private:
-            const BROWSERS browserName;
-            const std::string port, binaryPath, baseURL; 
+            const Capabilities capabilities;
+            const std::string port, baseURL; 
             const std::string sessionId, sessionURL;
             bool running {false};
 
@@ -391,18 +497,9 @@ namespace webdriverxx {
                 if (!status()) 
                     throw std::runtime_error("Webdriver not in ready state");
 
-                json payload {{
-                    "capabilities", {{
-                        "alwaysMatch", {{
-                            defaultConfigs.at(browserName).at("browserSpecificOptsId"), 
-                                {{ "binary", binaryPath }}
-                        }}
-                    }}
-                }};
-
                 cpr::Response response {cpr::Post(
                     cpr::Url(baseURL + "/session"), 
-                    cpr::Body{payload.dump()},
+                    cpr::Body{static_cast<json>(capabilities).dump()},
                     HEADER_ACC_RECV_JSON)
                 };
 
@@ -415,13 +512,11 @@ namespace webdriverxx {
 
         public:
             Driver(
-                const    BROWSERS &browserName_,
-                const std::string &binaryPath_,
-                const std::string &port_,
-                const std::string &sessionId_  = ""
+                const Capabilities &cap_,
+                const std::string  &port_,
+                const std::string  &sessionId_  = ""
             ):
-                browserName(browserName_), 
-                port(port_), binaryPath(binaryPath_),
+                capabilities(cap_), port(port_),
                 baseURL("http://127.0.0.1:" + port), 
                 sessionId(sessionId_.empty()? startSession(): sessionId_), 
                 sessionURL(baseURL + "/session/" + sessionId) 

@@ -1,7 +1,8 @@
 #include "test_config.hpp"
+#include "webdriverxx.hpp"
 
 int main() {
-    webdriverxx::Driver driver{BROWSER_NAME, BROWSER_BINARY, PORT};
+    webdriverxx::Driver driver{webdriverxx::Capabilities{BROWSER_NAME, BROWSER_BINARY}, PORT};
 
     driver.navigateTo("https://www.selenium.dev/documentation/webdriver/interactions/alerts");
     int status {true};
