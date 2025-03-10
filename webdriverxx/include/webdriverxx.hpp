@@ -26,7 +26,7 @@ namespace webdriverxx {
 
     enum LOCATION_STRATEGY {CSS, TAGNAME, XPATH};
     enum WINDOW_TYPE {TAB, WINDOW};
-    enum BROWSERS {MSEDGE, CHROME, FIREFOX, AUTO};
+    enum BROWSERS {MSEDGE, CHROME, FIREFOX};
 
     const std::unordered_map<BROWSERS, std::unordered_map<std::string, std::string>> defaultConfigs {
         {BROWSERS::FIREFOX, {{"browserSpecificOptsId", "moz:firefoxOptions"}}},
@@ -413,52 +413,15 @@ namespace webdriverxx {
                 return responseJson["value"]["sessionId"];
             }
 
-            std::string getBinaryPath() const {
-                std::string envKey;
-                switch (browserName) {
-                    case (FIREFOX): envKey = "FIREFOX"; break;
-                    case (CHROME): envKey = "CHROME"; break;
-                    case (MSEDGE): envKey = "MSEDGE"; break;
-                    default: envKey = "FIREFOX"; break;
-                }
-                envKey += "_BINARY";
-                char *path {std::getenv(envKey.c_str())};
-                if (!path)
-                    throw std::runtime_error('`' + envKey + "` env variable not set.");
-                return path;
-            }
-
-            static BROWSERS getBrowser() {
-                char *browser {std::getenv("BROWSER")};
-                if (!browser)
-                    throw std::runtime_error("`BROWSER` env variable not set.");
-                else if (std::strcmp(browser, "firefox") == 0)
-                    return BROWSERS::FIREFOX;
-                else if (std::strcmp(browser, "chrome") == 0)
-                    return BROWSERS::CHROME;
-                else if (std::strcmp(browser, "msedge") == 0)
-                    return BROWSERS::MSEDGE;
-                else
-                    throw std::runtime_error('`' + std::string{browser} + "` not supported.");
-            }
-
-            static std::string getPort() {
-                char *port {std::getenv("PORT")};
-                if (!port)
-                    throw std::runtime_error("`PORT` env variable not set.");
-                return port;
-            }
-
         public:
             Driver(
-                const BROWSERS &browserName_ = BROWSERS::AUTO,
-                const std::string &binaryPath_ = "",
-                const unsigned short port_ = 0,
+                const    BROWSERS &browserName_,
+                const std::string &binaryPath_,
+                const std::string &port_,
                 const std::string &sessionId_  = ""
             ):
-                browserName(browserName_ == BROWSERS::AUTO? getBrowser(): browserName_), 
-                port(port_ == 0? getPort(): "4444"),
-                binaryPath(binaryPath_.empty()? getBinaryPath(): binaryPath_),
+                browserName(browserName_), 
+                port(port_), binaryPath(binaryPath_),
                 baseURL("http://127.0.0.1:" + port), 
                 sessionId(sessionId_.empty()? startSession(): sessionId_), 
                 sessionURL(baseURL + "/session/" + sessionId) 

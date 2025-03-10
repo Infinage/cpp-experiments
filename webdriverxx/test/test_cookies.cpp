@@ -1,7 +1,7 @@
-#include "webdriverxx.hpp"
+#include "test_config.hpp"
 
 int main() {
-    webdriverxx::Driver driver;
+    webdriverxx::Driver driver{BROWSER_NAME, BROWSER_BINARY, PORT};
     driver.navigateTo("https://httpbin.org/cookies/set/test_cookie/test_value");
 
     // Test getNamedCookie endpoint

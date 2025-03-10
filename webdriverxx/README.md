@@ -1,5 +1,5 @@
 ## TODO:
-3. Support multiple browsers: Firefox, Chrome, Edge
+3. Support multiple browsers: Firefox, Chrome, Edge - more capabilities
 1. Encapsulate into seperate classes
 1. Actions API
 1. Execute async

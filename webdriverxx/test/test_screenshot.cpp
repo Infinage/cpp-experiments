@@ -1,7 +1,7 @@
-#include "webdriverxx.hpp"
+#include "test_config.hpp"
 
 int main() {
-    webdriverxx::Driver driver;
+    webdriverxx::Driver driver{BROWSER_NAME, BROWSER_BINARY, PORT};
     driver.navigateTo("https://github.com/Infinage");
     driver.save_screenshot("screenshot-full.png");
     driver.setImplicitTimeoutMS(30 * 1000);
