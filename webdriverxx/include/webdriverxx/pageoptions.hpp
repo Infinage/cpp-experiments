@@ -17,19 +17,19 @@ namespace webdriverxx {
             std::optional<std::vector<std::string>> pageRanges_;
 
         public:
-            PageOptions  &background(bool value) {  background_ = value; return *this; }
-            PageOptions &shrinkToFit(bool value) { shrinkToFit_ = value; return *this; }
+            PageOptions  &background(const bool value) {  background_ = value; return *this; }
+            PageOptions &shrinkToFit(const bool value) { shrinkToFit_ = value; return *this; }
 
-            PageOptions  &pageWidth(float value) {  pageWidth_ = value; return *this; }
-            PageOptions  &pageScale(float value) {  pageScale_ = value; return *this; }
-            PageOptions &pageHeight(float value) { pageHeight_ = value; return *this; }
+            PageOptions  &pageWidth(const float value) {  pageWidth_ = value; return *this; }
+            PageOptions  &pageScale(const float value) {  pageScale_ = value; return *this; }
+            PageOptions &pageHeight(const float value) { pageHeight_ = value; return *this; }
 
-            PageOptions    &marginTop(float value) {    marginTop_ = value; return *this; }
-            PageOptions   &marginLeft(float value) {   marginLeft_ = value; return *this; }
-            PageOptions  &marginRight(float value) {  marginRight_ = value; return *this; }
-            PageOptions &marginBottom(float value) { marginBottom_ = value; return *this; }
+            PageOptions    &marginTop(const float value) {    marginTop_ = value; return *this; }
+            PageOptions   &marginLeft(const float value) {   marginLeft_ = value; return *this; }
+            PageOptions  &marginRight(const float value) {  marginRight_ = value; return *this; }
+            PageOptions &marginBottom(const float value) { marginBottom_ = value; return *this; }
 
-            PageOptions &orientation(ORIENTATION &value) { 
+            PageOptions &orientation(const ORIENTATION &value) { 
                 orientation_ = value; return *this; 
             }
 

@@ -57,3 +57,6 @@ install(TARGETS webdriverxx
 
 # Include tests
 add_subdirectory(tests)
+
+# Include examples
+add_subdirectory(examples)
