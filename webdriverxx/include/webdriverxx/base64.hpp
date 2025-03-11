@@ -1,8 +1,8 @@
 #pragma once
 
-#include <stdexcept>
-#include <string>
 #include <array>
+#include <string>
+#include <stdexcept>
 #include <unordered_map>
 
 namespace Base64 {
