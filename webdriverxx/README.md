@@ -1,5 +1,4 @@
 ## TODO:
-3. Support multiple browsers: Firefox, Chrome, Edge - more capabilities
 1. Encapsulate into seperate classes
 1. Actions API
 1. Execute async
@@ -28,11 +27,11 @@
 | GET     | /session/{session id}/window/new                                | Create new Window / Tab    | Done    |
 | POST    | /session/{session id}/frame                                     | Switch To Frame            | Done    |
 | POST    | /session/{session id}/frame/parent                              | Switch To Parent Frame     | Done    |
-| GET     | /session/{session id}/window/rect                               | Get Window Rect            |         |
-| POST    | /session/{session id}/window/rect                               | Set Window Rect            |         |
+| GET     | /session/{session id}/window/rect                               | Get Window Rect            | Done    |
+| POST    | /session/{session id}/window/rect                               | Set Window Rect            | Done    |
 | POST    | /session/{session id}/window/maximize                           | Maximize Window            | Done    |
 | POST    | /session/{session id}/window/minimize                           | Minimize Window            | Done    |
-| POST    | /session/{session id}/window/fullscreen                         | Fullscreen Window          |         |
+| POST    | /session/{session id}/window/fullscreen                         | Fullscreen Window          | Done    |
 | POST    | /session/{session id}/element                                   | Find Element               | Done    |
 | POST    | /session/{session id}/elements                                  | Find Elements              | Done    |
 | POST    | /session/{session id}/element/{element id}/element              | Find Element From Element  | Done    |
@@ -44,7 +43,7 @@
 | GET     | /session/{session id}/element/{element id}/css/{property name}  | Get Element CSS Value      | Done    |
 | GET     | /session/{session id}/element/{element id}/text                 | Get Element Text           | Done    |
 | GET     | /session/{session id}/element/{element id}/name                 | Get Element Tag Name       | Done    |
-| GET     | /session/{session id}/element/{element id}/rect                 | Get Element Rect           |         |
+| GET     | /session/{session id}/element/{element id}/rect                 | Get Element Rect           | Done    |
 | GET     | /session/{session id}/element/{element id}/enabled              | Is Element Enabled         | Done    |
 | POST    | /session/{session id}/element/{element id}/click                | Element Click              | Done    |
 | POST    | /session/{session id}/element/{element id}/clear                | Element Clear              | Done    |
@@ -65,4 +64,4 @@
 | POST    | /session/{session id}/alert/text                                | Send Alert Text            | Done    |
 | GET     | /session/{session id}/screenshot                                | Take Screenshot            | Done    |
 | GET     | /session/{session id}/element/{element id}/screenshot           | Take Element Screenshot    | Done    |
-| POST    | /session/{session id}/print                                     | Print Page                 |         |
+| POST    | /session/{session id}/print                                     | Print Page                 | Done    |

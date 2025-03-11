@@ -14,8 +14,6 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
-#include <tuple>
-#include <unordered_map>
 #include <vector>
 
 // Note: Braced init doesn't work well, use `= init`
@@ -28,6 +26,7 @@ namespace webdriverxx {
     enum LOCATION_STRATEGY {CSS, TAGNAME, XPATH};
     enum WINDOW_TYPE {TAB, WINDOW};
     enum BROWSERS {MSEDGE, CHROME, FIREFOX};
+    enum ORIENTATION {POTRAIT, LANDSCAPE};
 
     enum class Keys: char16_t {
         Cancel = u'\uE001', Help = u'\uE002', Backspace = u'\uE003', Tab = u'\uE004',
@@ -81,6 +80,10 @@ namespace webdriverxx {
 
         return false;
     }
+
+    struct Timeout { 
+        std::optional<unsigned int> script, pageLoad, implicit; 
+    };
 
     class Capabilities {
         private:
@@ -197,49 +200,128 @@ namespace webdriverxx {
             }
     };
 
-    class Cookie {
+    class PageOptions {
+        private:
+            std::optional<ORIENTATION> orientation_;
+            std::optional<bool> background_, shrinkToFit_;
+            std::optional<float> pageHeight_, pageWidth_, pageScale_;
+            std::optional<float> marginTop_, marginBottom_, marginLeft_, marginRight_;
+            std::optional<std::vector<std::string>> pageRanges_;
+
         public:
-            std::string name, value;
-            std::optional<std::string> domain, path, sameSite;
-            std::optional<bool> secureFlag, httpOnlyFlag;
-            std::optional<unsigned long long> expiry, size;
+            PageOptions  &background(bool value) {  background_ = value; return *this; }
+            PageOptions &shrinkToFit(bool value) { shrinkToFit_ = value; return *this; }
 
-            Cookie(const std::string &name, const std::string &value): 
-                name(name), value(value) {}
+            PageOptions  &pageWidth(float value) {  pageWidth_ = value; return *this; }
+            PageOptions  &pageScale(float value) {  pageScale_ = value; return *this; }
+            PageOptions &pageHeight(float value) { pageHeight_ = value; return *this; }
 
-            Cookie(const json &json_) {
-                if (json_.is_array() || !json_.contains("name") || !json_.contains("value"))
-                    throw std::runtime_error("Not a valid cookie: " + json_.dump());
+            PageOptions    &marginTop(float value) {    marginTop_ = value; return *this; }
+            PageOptions   &marginLeft(float value) {   marginLeft_ = value; return *this; }
+            PageOptions  &marginRight(float value) {  marginRight_ = value; return *this; }
+            PageOptions &marginBottom(float value) { marginBottom_ = value; return *this; }
 
-                else {
-                    name  = json_.at("name");
-                    value = json_.at("value");
+            PageOptions &orientation(ORIENTATION &value) { 
+                orientation_ = value; return *this; 
+            }
 
-                    // Optional values
-                    if (json_.contains("domain"))   domain = json_.at("domain");
-                    if (json_.contains("path"))     path = json_.at("path");
-                    if (json_.contains("sameSite")) sameSite = json_.at("sameSite");
-                    if (json_.contains("secure"))   secureFlag = json_.at("secure");
-                    if (json_.contains("httpOnly")) httpOnlyFlag = json_.at("httpOnly");
-                    if (json_.contains("expiry"))   expiry = json_.at("expiry");
-                    if (json_.contains("Size"))   size = json_.at("Size");
-                }
+            PageOptions &pageRanges(const std::vector<std::string> &value) { 
+                pageRanges_ = value; return *this; 
             }
 
             operator json() const {
-                json object = json{{"name", name}, {"value", value}};
+                json object;
 
-                // Optional values
-                if (domain)       object["domain"] = *domain;
-                if (path)         object["path"] = *path;
-                if (sameSite)     object["sameSite"] = *sameSite;
-                if (secureFlag)   object["secure"] = *secureFlag;
-                if (httpOnlyFlag) object["httpOnly"] = *httpOnlyFlag;
-                if (expiry)       object["expiry"] = *expiry;
-                if (size)         object["Size"] = *size;
+                if ( background_) object["background"] = *background_;
+                if (shrinkToFit_) object["shrinkToFit"] = *shrinkToFit_;
+
+                if (   pageWidth_) object[   "pageWidth"] =    *pageWidth_;
+                if (   pageScale_) object[   "pageScale"] =    *pageScale_;
+                if (  pageHeight_) object[  "pageHeight"] =   *pageHeight_;
+
+                if (   marginTop_) object[   "marginTop"] =    *marginTop_;
+                if (  marginLeft_) object[  "marginLeft"] =   *marginLeft_;
+                if ( marginRight_) object[ "marginRight"] =  *marginRight_;
+                if (marginBottom_) object["marginBottom"] = *marginBottom_;
+
+                if (orientation_) object["orientation"] = (
+                        *orientation_ == ORIENTATION::LANDSCAPE? 
+                        "landscape": "portrait"
+                );
+
+                if (pageRanges_) {
+                    json ranges = json::array();
+                    for (const std::string &str: *pageRanges_)
+                        ranges.push_back(str);
+                    object["pageRanges"] = ranges;
+                }
 
                 return object;
             }
+    };
+
+    struct Cookie {
+        std::string name, value;
+        std::optional<std::string> domain, path, sameSite;
+        std::optional<bool> secureFlag, httpOnlyFlag;
+        std::optional<unsigned long long> expiry, size;
+
+        Cookie(const std::string &name, const std::string &value): 
+            name(name), value(value) {}
+
+        Cookie(const json &json_) {
+            if (json_.is_array() || !json_.contains("name") || !json_.contains("value"))
+                throw std::runtime_error("Not a valid cookie: " + json_.dump());
+
+            else {
+                name  = json_.at("name");
+                value = json_.at("value");
+
+                // Optional values
+                if (json_.contains("domain"))   domain = json_.at("domain");
+                if (json_.contains("path"))     path = json_.at("path");
+                if (json_.contains("sameSite")) sameSite = json_.at("sameSite");
+                if (json_.contains("secure"))   secureFlag = json_.at("secure");
+                if (json_.contains("httpOnly")) httpOnlyFlag = json_.at("httpOnly");
+                if (json_.contains("expiry"))   expiry = json_.at("expiry");
+                if (json_.contains("Size"))   size = json_.at("Size");
+            }
+        }
+
+        operator json() const {
+            json object = json{{"name", name}, {"value", value}};
+
+            // Optional values
+            if (domain)       object["domain"] = *domain;
+            if (path)         object["path"] = *path;
+            if (sameSite)     object["sameSite"] = *sameSite;
+            if (secureFlag)   object["secure"] = *secureFlag;
+            if (httpOnlyFlag) object["httpOnly"] = *httpOnlyFlag;
+            if (expiry)       object["expiry"] = *expiry;
+            if (size)         object["Size"] = *size;
+
+            return object;
+        }
+    };
+
+    struct Rect {
+        std::optional<int> x, y, width, height; 
+
+        Rect(const json &json_) {
+            if (json_.contains("x")) x = json_.at("x");
+            if (json_.contains("y")) y = json_.at("y");
+            if (json_.contains( "width"))  width = json_.at( "width");
+            if (json_.contains("height")) height = json_.at("height");
+        }
+
+        operator json() const {
+            json object = json::object();
+            if (x) object["x"] = *x;
+            if (y) object["y"] = *y;
+            if (width)  object[ "width"] = *width;
+            if (height) object["height"] = *height;
+            return object;
+        }
     };
 
     class Element {
@@ -490,6 +572,13 @@ namespace webdriverxx {
                 );
                 return elements;
             }
+
+            Rect getElementRect() const {
+                cpr::Response response {cpr::Get(cpr::Url(elementURL + "/rect"), HEADER_ACC_RECV_JSON)};
+                if (response.status_code != 200)
+                    throw std::runtime_error(response.text);
+                return Rect{json::parse(response.text)["value"]};
+            }
     };
 
     class Driver {
@@ -547,7 +636,7 @@ namespace webdriverxx {
                 running = false;
             }
 
-            Driver& minimize() {
+            Rect minimize() {
                 cpr::Response response {cpr::Post(
                     cpr::Url(sessionURL + "/window/minimize"),
                     cpr::Body{"{}"}, 
@@ -557,10 +646,10 @@ namespace webdriverxx {
                 if (response.status_code != 200)
                     throw std::runtime_error(response.text);
 
-                return *this;
+                return Rect{json::parse(response.text)["value"]};
             }
 
-            Driver& maximize() {
+            Rect maximize() {
                 cpr::Response response {cpr::Post(
                     cpr::Url(sessionURL + "/window/maximize"),
                     cpr::Body{"{}"}, 
@@ -570,7 +659,20 @@ namespace webdriverxx {
                 if (response.status_code != 200)
                     throw std::runtime_error(response.text);
 
-                return *this;
+                return Rect{json::parse(response.text)["value"]};
+            }
+
+            Rect fullscreen() {
+                cpr::Response response {cpr::Post(
+                    cpr::Url(sessionURL + "/window/fullscreen"),
+                    cpr::Body{"{}"}, 
+                    HEADER_ACC_RECV_JSON
+                )};
+
+                if (response.status_code != 200)
+                    throw std::runtime_error(response.text);
+
+                return Rect{json::parse(response.text)["value"]};
             }
 
             Driver& navigateTo(const std::string &url) {
@@ -622,44 +724,32 @@ namespace webdriverxx {
                 return *this;
             }
 
-            std::tuple<unsigned int, unsigned int, unsigned int> getTimeouts() const {
+            Timeout getTimeouts() const {
                 cpr::Response response {cpr::Get(
                     cpr::Url(sessionURL + "/timeouts"),
                     HEADER_ACC_RECV_JSON
                 )};
+
                 if (response.status_code != 200)
                     throw std::runtime_error(response.text);
 
                 json timeouts = json::parse(response.text)["value"];
-                return { timeouts["script"], timeouts["pageLoad"], timeouts["implicit"] };
+
+                return { 
+                    .script=timeouts["script"], 
+                    .pageLoad=timeouts["pageLoad"], 
+                    .implicit=timeouts["implicit"] 
+                };
             }
             
-            Driver &setTimeouts(const std::tuple<unsigned int, unsigned int, unsigned int> &timeouts) {
-                json payload {
-                    {"script",   std::get<0>(timeouts)},
-                    {"pageLoad", std::get<1>(timeouts)},
-                    {"implicit", std::get<2>(timeouts)}
-                };
+            Driver &setTimeouts(const Timeout &timeouts) {
+                if (timeouts.script && timeouts.pageLoad && timeouts.implicit)
+                    throw std::invalid_argument("Atleast one timeout must be set.");
 
-                if (payload["script"] < 0 || payload["pageLoad"] < 0 || payload["implicit"] < 0)
-                    throw std::runtime_error("Timeouts cannot be negative");
-
-                cpr::Response response {cpr::Post(
-                    cpr::Url(sessionURL + "/timeouts"),
-                    cpr::Body(payload.dump()),
-                    HEADER_ACC_RECV_JSON
-                )};
-                if (response.status_code != 200)
-                    throw std::runtime_error(response.text);
-
-                return *this;
-            }
-
-            Driver& setImplicitTimeoutMS(unsigned int timeout) {
-                json payload {{"implicit", timeout }};
-
-                if (payload["implicit"] < 0)
-                    throw std::runtime_error("Timeouts cannot be negative");
+                json payload = json::object();
+                if (timeouts.script) payload["script"] = *timeouts.script;
+                if (timeouts.pageLoad) payload["pageLoad"] = *timeouts.pageLoad;
+                if (timeouts.implicit) payload["pageLoad"] = *timeouts.implicit;
 
                 cpr::Response response {cpr::Post(
                     cpr::Url(sessionURL + "/timeouts"),
@@ -922,6 +1012,43 @@ namespace webdriverxx {
                 cpr::Response response {cpr::Delete(cpr::Url(sessionURL + "/cookie/" + name), HEADER_ACC_RECV_JSON)};
                 if (response.status_code != 200)
                     throw std::runtime_error(response.text);
+                return *this;
+            }
+
+            Rect getWindowRect() const {
+                cpr::Response response {cpr::Get(cpr::Url(sessionURL + "/window/rect"), HEADER_ACC_RECV_JSON)};
+                if (response.status_code != 200)
+                    throw std::runtime_error(response.text);
+                return Rect{json::parse(response.text)["value"]};
+            }
+
+            Driver &setWindowRect(const Rect& rect) {
+                cpr::Response response {cpr::Post(
+                    cpr::Url(sessionURL + "/window/rect"), 
+                    cpr::Body{static_cast<json>(rect).dump()}, 
+                    HEADER_ACC_RECV_JSON)
+                };
+
+                if (response.status_code != 200)
+                    throw std::runtime_error(response.text);
+
+                return *this;
+            }
+
+            Driver &print(const std::string &ofile, const PageOptions &opts = PageOptions{}) {
+                cpr::Response response {cpr::Post(
+                    cpr::Url(sessionURL + "/print"),
+                    cpr::Body{static_cast<json>(opts).dump()},
+                    HEADER_ACC_RECV_JSON
+                )};
+
+                if (response.status_code != 200)
+                    throw std::runtime_error(response.text);
+
+                std::ofstream imageFS {ofile, std::ios::binary};
+                std::string decoded {Base64::base64Decode(json::parse(response.text)["value"])};
+                imageFS.write(decoded.data(), static_cast<long>(decoded.size()));
+
                 return *this;
             }
     };
