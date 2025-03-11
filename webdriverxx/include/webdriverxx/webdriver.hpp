@@ -8,6 +8,10 @@
 #include "element.hpp"
 
 namespace webdriverxx {
+
+    // Webdriver constants
+    enum WINDOW_TYPE {TAB, WINDOW};
+
     class Driver {
         private:
             const Capabilities capabilities;

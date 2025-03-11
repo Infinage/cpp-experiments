@@ -1,11 +1,13 @@
 #pragma once
 
-#include "utils.hpp"
 #include "json.hpp"
 
 using json = nlohmann::json;
 
 namespace webdriverxx {
+
+    enum ORIENTATION {POTRAIT, LANDSCAPE};
+
     class PageOptions {
         private:
             std::optional<ORIENTATION> orientation_;

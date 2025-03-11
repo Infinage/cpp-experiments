@@ -1,8 +1,7 @@
 ## TODO:
-1. Encapsulate into seperate classes
 1. Actions API
-1. Execute async
-2. Better test cases
+2. Execute async
+3. Improve test cases
 4. Better error handling
 
 ### Endpoints Supported

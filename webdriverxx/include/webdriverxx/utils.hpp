@@ -3,10 +3,11 @@
 #include "cpr/api.h"
 #include "json.hpp"
 
+#include "apierror.hpp"
+
 #include <chrono>
 #include <codecvt>
 #include <locale>
-#include <stdexcept>
 #include <thread>
 
 using json = nlohmann::json;
@@ -16,9 +17,6 @@ namespace webdriverxx {
     const cpr::Header HEADER_ACC_RECV_JSON {{"Content-Type", "application/json"}, {"Accept", "application/json"}};
 
     enum LOCATION_STRATEGY {CSS, TAGNAME, XPATH};
-    enum WINDOW_TYPE {TAB, WINDOW};
-    enum BROWSERS {MSEDGE, CHROME, FIREFOX};
-    enum ORIENTATION {POTRAIT, LANDSCAPE};
     enum API_METHOD {GET, POST, DELETE};
 
     enum class Keys: char16_t {
@@ -93,9 +91,11 @@ namespace webdriverxx {
                 break;
         }
 
-        if (response.status_code != OK && !ignoreError)
-            throw std::runtime_error(response.text);
-        else 
+        if (response.status_code != OK && !ignoreError) {
+            std::string methodStr {requestType == GET? "GET": requestType == POST? "POST": "DELETE"};
+            throw APIError{url, body, methodStr, response.status_code, response.text};
+        } else {
             return json::parse(response.text);
+        }
     }
 }

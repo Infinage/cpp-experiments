@@ -56,4 +56,4 @@ install(TARGETS webdriverxx
     RUNTIME DESTINATION ${CMAKE_INSTALL_PREFIX}/bin)
 
 # Include tests
-add_subdirectory(test)
+add_subdirectory(tests)

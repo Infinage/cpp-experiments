@@ -1,6 +1,5 @@
 #pragma once
 
-#include "utils.hpp"
 #include "json.hpp"
 
 #include <iostream>
@@ -8,6 +7,9 @@
 using json = nlohmann::json;
 
 namespace webdriverxx {
+
+    enum BROWSERS {MSEDGE, CHROME, FIREFOX};
+
     class Capabilities {
         private:
             const BROWSERS browserType;
