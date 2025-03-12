@@ -3,6 +3,7 @@
 #include "utils.hpp"
 #include "rect.hpp"
 #include "base64.hpp"
+#include <stdexcept>
 
 using json = nlohmann::json;
 
@@ -27,6 +28,15 @@ namespace webdriverxx {
                 sessionURL(sessionURL),
                 elementURL(sessionURL + "/element/" + elementId) 
             { }
+
+            Element &clickJS() {
+                json payload = {
+                    { "script", "arguments[0].click();" }, 
+                    { "args", json::array({{{elementRef, elementId}}}) }
+                };
+                sendRequest(POST, sessionURL + "/execute/sync", payload.dump());
+                return *this;
+            }
 
             Element &click() {
                 sendRequest(POST, elementURL + "/click");
@@ -97,6 +107,7 @@ namespace webdriverxx {
             Element &save_screenshot(const std::string &ofile) {
                 json response = sendRequest(GET, elementURL + "/screenshot");
                 std::ofstream imageFS {ofile, std::ios::binary};
+                if (!imageFS) throw std::runtime_error("Failed to open file for writing: " + ofile);
                 std::string decoded {Base64::base64Decode(response["value"])};
                 imageFS.write(decoded.data(), static_cast<long>(decoded.size()));
                 return *this;

@@ -40,17 +40,17 @@ namespace webdriverxx {
             operator json() const {
                 json object;
 
-                if ( background_) object["background"] = *background_;
-                if (shrinkToFit_) object["shrinkToFit"] = *shrinkToFit_;
+                if (  background_) object[ "background"] = *background_;
+                if ( shrinkToFit_) object["shrinkToFit"] = *shrinkToFit_;
+                if (   pageScale_) object[      "scale"] =    *pageScale_;
 
-                if (   pageWidth_) object[   "pageWidth"] =    *pageWidth_;
-                if (   pageScale_) object[   "pageScale"] =    *pageScale_;
-                if (  pageHeight_) object[  "pageHeight"] =   *pageHeight_;
+                if (   pageWidth_) object[  "page"][ "width"] =    *pageWidth_;
+                if (  pageHeight_) object[  "page"]["height"] =   *pageHeight_;
 
-                if (   marginTop_) object[   "marginTop"] =    *marginTop_;
-                if (  marginLeft_) object[  "marginLeft"] =   *marginLeft_;
-                if ( marginRight_) object[ "marginRight"] =  *marginRight_;
-                if (marginBottom_) object["marginBottom"] = *marginBottom_;
+                if (   marginTop_) object["margin"][   "top"] =    *marginTop_;
+                if (  marginLeft_) object["margin"][  "left"] =   *marginLeft_;
+                if ( marginRight_) object["margin"][ "right"] =  *marginRight_;
+                if (marginBottom_) object["margin"]["bottom"] = *marginBottom_;
 
                 if (orientation_) object["orientation"] = (
                         *orientation_ == ORIENTATION::LANDSCAPE? 

@@ -18,8 +18,7 @@ int main() {
     driver.dismissAlert(true);
 
     // Prompt
-    auto promptElement {driver.findElement(webdriverxx::LOCATION_STRATEGY::XPATH, "//a[normalize-space()='See a sample prompt']").scrollIntoView()};
-    driver.execute<std::nullptr_t>("arguments[0].click()", promptElement);
+    driver.findElement(webdriverxx::LOCATION_STRATEGY::XPATH, "//a[normalize-space()='See a sample prompt']").scrollIntoView().clickJS();
     status &= driver.getAlertText() == "What is your tool of choice?";
     driver.setAlertResponse("Webdriverxx");
     driver.dismissAlert(true);

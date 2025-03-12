@@ -6,6 +6,7 @@
 #include "cookie.hpp"
 #include "timeout.hpp"
 #include "element.hpp"
+#include <stdexcept>
 
 namespace webdriverxx {
 
@@ -113,6 +114,7 @@ namespace webdriverxx {
             Driver &save_screenshot(const std::string &ofile) {
                 json response = sendRequest(GET, sessionURL + "/screenshot");
                 std::ofstream imageFS {ofile, std::ios::binary};
+                if (!imageFS) throw std::runtime_error("Failed to open file for writing: " + ofile);
                 std::string decoded {Base64::base64Decode(response["value"])};
                 imageFS.write(decoded.data(), static_cast<long>(decoded.size()));
                 return *this;
@@ -283,9 +285,10 @@ namespace webdriverxx {
             Driver &print(const std::string &ofile, const PageOptions &opts = PageOptions{}) {
                 json optsJson = static_cast<json>(opts);
                 json response = sendRequest(POST, sessionURL + "/print", optsJson.empty()? "{}": optsJson.dump());
-                std::ofstream imageFS {ofile, std::ios::binary};
+                std::ofstream pdfFS {ofile, std::ios::binary};
+                if (!pdfFS) throw std::runtime_error("Failed to open file for writing: " + ofile);
                 std::string decoded {Base64::base64Decode(response["value"])};
-                imageFS.write(decoded.data(), static_cast<long>(decoded.size()));
+                pdfFS.write(decoded.data(), static_cast<long>(decoded.size()));
                 return *this;
             }
     };
