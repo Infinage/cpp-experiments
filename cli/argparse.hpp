@@ -1,6 +1,7 @@
 #pragma once
 
 #include <iomanip>
+#include <iostream>
 #include <optional>
 #include <ostream>
 #include <sstream>
@@ -11,6 +12,9 @@
 #include <variant>
 #include <vector>
 #include <charconv>
+
+// If parser has child parsers, ensure that there are no positional args
+// And that all named parameters are optional*
 
 namespace argparse {
     enum ARGTYPE { POSITIONAL, NAMED, BOTH };
@@ -106,6 +110,7 @@ namespace argparse {
             }
 
             bool isValueSet() const { return _valueSet; }
+            bool isDefaultSet() const { return _defaultValueSet; }
             bool ok() const { return !_required || _valueSet || _defaultValueSet; }
 
             template <typename T>
@@ -218,10 +223,11 @@ namespace argparse {
     class ArgumentParser {
         private:
             const std::string name, helpArgName, helpAliasName;
+            std::optional<std::string> _description, _epilog;
+            std::unordered_map<std::string, ArgumentParser&> subcommands;
             std::unordered_map<std::string, Argument> allArgs;
             std::unordered_map<std::string, Argument&> namedArgs, aliasedArgs;
             std::unordered_map<std::size_t, Argument&> positionalArgs;
-            std::optional<std::string> _description, _epilog;
 
         public:
             ArgumentParser(
@@ -240,6 +246,7 @@ namespace argparse {
                     Argument(helpArgName, ARGTYPE::NAMED)
                     .help("Display this help text and exit")
                     .implicitValue(true)
+                    .defaultValue(false)
                 };
                 if (!helpAliasName.empty()) 
                     help.alias(helpAliasName);
@@ -253,6 +260,8 @@ namespace argparse {
                 return "";
             }
 
+            bool ok() const { return check().empty(); }
+
             ArgumentParser &description(const std::string &message) {
                 _description = message; return *this;
             }
@@ -263,9 +272,26 @@ namespace argparse {
 
             template<typename T>
             T get(const std::string &key) const {
+                if constexpr (std::is_same_v<T, ArgumentParser>) {
+                    if (subcommands.find(key) == subcommands.end())
+                        throw std::runtime_error("Error: Subcommand with name '" + key + "' does not exist");
+                    return subcommands.at(key);
+                }
+
+                else {
+                    if (allArgs.find(key) == allArgs.end())
+                        throw std::runtime_error("Error: Argument with name '" + key + "' does not exist");
+                    return allArgs.at(key).get<T>();
+                }
+            }
+
+            bool exists(const std::string &key) const {
                 if (allArgs.find(key) == allArgs.end())
-                    throw std::runtime_error("Error: Argument with name '" + key + "' does not exist");
-                return allArgs.at(key).get<T>();
+                    return false;
+                else {
+                    Argument arg {allArgs.at(key)};
+                    return arg.isValueSet() || arg.isDefaultSet();
+                }
             }
 
             static std::pair<std::string, std::string> splitArg(const std::string &arg) {
@@ -298,14 +324,15 @@ namespace argparse {
                 }
             }
 
-            void parseArgs(int argc, char** argv) {
+            void parseArgs(int argc, char** argv, std::size_t parseStartIdx = 0) {
                 // Convert to strings for ease of parsing
                 const std::vector<std::string> argVec {argv, argv+argc};
 
                 // Parse the args
                 std::size_t position {0}; bool explicitPositionalArgMarker {false};
-                for (std::size_t i {1}; i < argVec.size(); i++) {
+                for (std::size_t i {parseStartIdx + 1}; i < argVec.size(); i++) {
                     std::string arg {argVec[i]};
+
                     if (arg == "--") {
                         explicitPositionalArgMarker = true;
                     }
@@ -336,6 +363,11 @@ namespace argparse {
                             aliasedArgs.at(arg).set(argVec[++i]);
                     }
 
+                    else if (!explicitPositionalArgMarker && subcommands.find(arg) != subcommands.end()) {
+                        subcommands.at(arg).parseArgs(argc, argv, i);
+                        return;
+                    }
+
                     else {
                         explicitPositionalArgMarker = true;
 
@@ -344,16 +376,18 @@ namespace argparse {
                             position++;
 
                         // If no positional args, left throw error
-                        if (position == positionalArgs.size())
+                        if (position >= positionalArgs.size())
                             throw std::runtime_error("Error: Unknown positional argument passed: " + arg);
 
                         positionalArgs.at(position++).set(arg);
                     }
 
                     // Check if help parameter has been set
-                    // Stops the parsing & returns early
-                    if (allArgs.at(helpArgName).get<bool>())
-                        return;
+                    // Stops the parsing & exits early
+                    if (allArgs.at(helpArgName).get<bool>()) {
+                        std::cout << getHelp() << '\n';
+                        std::exit(1);
+                    }
                 }
 
                 // Check if all args are satisified
@@ -368,6 +402,8 @@ namespace argparse {
                 // Ensure no duplicates
                 if (allArgs.find(argName) != allArgs.end())
                     throw std::runtime_error("Error: Duplicate argument with name: " + argName);
+                if (subcommands.find(argName) != subcommands.end())
+                    throw std::runtime_error("Error: Argument name conflicts with subcommand: " + argName);
                 if (aliasedArgs.find(aliasName) != aliasedArgs.end())
                     throw std::runtime_error("Error: Duplicate argument with alias: " + aliasName);
 
@@ -382,9 +418,31 @@ namespace argparse {
                 return *this;
             }
 
+            ArgumentParser &addSubcommand(ArgumentParser &parser) {
+                if (allArgs.find(parser.name) != allArgs.end())
+                    throw std::runtime_error("Error: Subcommand conflict with argument: " + parser.name);
+                subcommands.emplace(parser.name, parser);
+                return *this;
+            }
+
             std::string getHelp() const {
                 std::ostringstream oss;
                 oss << "Usage: " << name << " [OPTIONS] ";
+
+                // Print out any subcommands if present
+                std::ostringstream subcommandsHelp;
+                std::string subcommandsAvailable;
+                for (const auto& [_, command]: subcommands) {
+                    subcommandsAvailable += command.name + ',';
+                    std::string commandDesc {command._description? *command._description: "The '" + command.name + "' subcommand"};
+                    subcommandsHelp << ' ' << std::left << std::setw(15) 
+                                    << command.name << "\t" << commandDesc 
+                                    << '\n';
+                }
+                if (!subcommands.empty()) {
+                    subcommandsAvailable.pop_back();
+                    oss << '{' << subcommandsAvailable << "} ";
+                }
 
                 // Print out positional args
                 for (std::size_t i {0}; i < positionalArgs.size(); i++) {
@@ -396,6 +454,12 @@ namespace argparse {
 
                 if (_description) 
                     oss << "\n\n" << *_description;
+
+                if (!subcommands.empty()) {
+                    std::string temp {subcommandsHelp.str()};
+                    temp.pop_back();
+                    oss << "\n\nSubcommands:\n" << temp;
+                }
 
                 // Print out all the args with details
                 oss << "\n\nArguments:\n";
