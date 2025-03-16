@@ -4,7 +4,6 @@
 #include <iostream>
 #include <optional>
 #include <ostream>
-#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <tuple>
@@ -13,15 +12,14 @@
 #include <vector>
 #include <charconv>
 
-// If parser has child parsers, ensure that there are no positional args
-// And that all named parameters are optional*
-
 namespace argparse {
     enum ARGTYPE { POSITIONAL, NAMED, BOTH };
+
     using VALUE_TYPE = std::variant<
         bool, short, int, long, float, long long, double, 
         std::string, std::vector<std::string>>;
 
+    // Helper to print variant directly to outputstream
     inline std::ostream &operator<<(std::ostream &oss, const VALUE_TYPE &val) {
         std::visit([&oss](const auto &arg) {
             if constexpr (std::is_same_v<std::decay_t<decltype(arg)>, std::vector<std::string>>) {
@@ -68,15 +66,26 @@ namespace argparse {
                 }
             }
 
-            Argument &alias(const std::string &name) { 
-                if (_type == ARGTYPE::POSITIONAL)
-                    throw std::runtime_error("Error: Alias being set for a positional argument: " + _name);
-                _alias = name; return *this; 
-            }
+            bool           ok() const { return !_required || _valueSet || _defaultValueSet; }
+            bool   isOptional() const { return !_required || _defaultValueSet; }
+
+            bool   isValueSet() const { return _valueSet; }
+            bool isDefaultSet() const { return _defaultValueSet; }
 
             std::string getAlias() const { return _alias; }
             std::string getName() const { return _name; }
+
             ARGTYPE getArgType() const { return _type; }
+
+            template<typename T>
+            T get() const {
+                if (!_valueSet && !_defaultValueSet) 
+                    throw std::runtime_error("Error: Argument '" + _name + "' was not set");
+                else if (!std::holds_alternative<T>(_value))
+                    throw std::runtime_error("Error: Type mismatch (get): " + _name);
+                else
+                    return std::get<T>(_value);
+            }
 
             std::string getHelp() const { 
                 std::ostringstream oss, part;
@@ -97,8 +106,26 @@ namespace argparse {
                 return oss.str(); 
             }
 
-            bool isOptional() const { 
-                return !_required || _defaultValueSet; 
+            std::string getTypeName() const {
+                return std::visit([](const auto& v) -> std::string {
+                    using T = std::decay_t<decltype(v)>;
+                    if constexpr (std::is_same_v<T, bool>) return "bool";
+                    else if constexpr (std::is_same_v<T, short>) return "short";
+                    else if constexpr (std::is_same_v<T, int>) return "int";
+                    else if constexpr (std::is_same_v<T, long>) return "long";
+                    else if constexpr (std::is_same_v<T, long long>) return "long long";
+                    else if constexpr (std::is_same_v<T, float>) return "float";
+                    else if constexpr (std::is_same_v<T, double>) return "double";
+                    else if constexpr (std::is_same_v<T, std::string>) return "string";
+                    else if constexpr (std::is_same_v<T, std::vector<std::string>>) return "list[str]";
+                    else return "unknown";
+                }, _value);
+            }
+
+            Argument &alias(const std::string &name) { 
+                if (_type == ARGTYPE::POSITIONAL)
+                    throw std::runtime_error("Error: Alias being set for a positional argument: " + _name);
+                _alias = name; return *this;
             }
 
             Argument &required() { 
@@ -109,15 +136,41 @@ namespace argparse {
                 _helpStr = msg; return *this; 
             }
 
-            bool isValueSet() const { return _valueSet; }
-            bool isDefaultSet() const { return _defaultValueSet; }
-            bool ok() const { return !_required || _valueSet || _defaultValueSet; }
+            Argument &set() {
+                if (!_implicit.has_value())
+                    throw std::runtime_error("Error: No implicit value set: " + _name);
+                _value = *_implicit; _valueSet = true; return *this;
+            }
+
+            Argument &set(const std::string &val) {
+                std::visit([&](auto &arg) {
+                    using T = std::decay_t<decltype(arg)>;
+                    arg = parse<T>(val);
+                }, _value);
+                _typeSet = true; _valueSet = true; return *this;
+            }
 
             template <typename T>
             Argument &scan() { 
                 if (_typeSet && !std::holds_alternative<T>(_value))
                     throw std::runtime_error("Error: Type mismatch (scan): " + _name);
                 _typeSet = true; _value = T{}; return *this;
+            }
+
+            template<typename T>
+            Argument &defaultValue(const T &val) {
+                if (_typeSet && !std::holds_alternative<T>(_value))
+                    throw std::runtime_error("Error: Type mismatch (default): " + _name);
+                _defaultValueSet = true; _typeSet = true; 
+                _default = _value = val;  return *this;
+            }
+
+            template<typename T>
+            Argument &implicitValue(const T &val) {
+                if (_typeSet && !std::holds_alternative<T>(_value))
+                    throw std::runtime_error("Error: Type mismatch (implicit): " + _name);
+                _typeSet = true; _implicit = val;  _value = T{};
+                return *this;
             }
 
             template<typename T>
@@ -162,138 +215,18 @@ namespace argparse {
                     return placeholder;
                 }
             }
-
-            template<typename T>
-            Argument &defaultValue(const T &val) {
-                if (_typeSet && !std::holds_alternative<T>(_value))
-                    throw std::runtime_error("Error: Type mismatch (default): " + _name);
-                _defaultValueSet = true; _typeSet = true; 
-                _default = _value = val;  return *this;
-            }
-
-            template<typename T>
-            Argument &implicitValue(const T &val) {
-                if (_typeSet && !std::holds_alternative<T>(_value))
-                    throw std::runtime_error("Error: Type mismatch (implicit): " + _name);
-                _typeSet = true; _implicit = val;  _value = T{};
-                return *this;
-            }
-
-            Argument &set() {
-                if (!_implicit.has_value())
-                    throw std::runtime_error("Error: No implicit value set: " + _name);
-                _value = *_implicit; _valueSet = true; return *this;
-            }
-
-            template<typename T>
-            T get() const {
-                if (!_valueSet && !_defaultValueSet) 
-                    throw std::runtime_error("Error: Argument '" + _name + "' was not set");
-                else if (!std::holds_alternative<T>(_value))
-                    throw std::runtime_error("Error: Type mismatch (get): " + _name);
-                else
-                    return std::get<T>(_value);
-            }
-
-            Argument &set(const std::string &val) {
-                std::visit([&](auto &arg) {
-                    using T = std::decay_t<decltype(arg)>;
-                    arg = parse<T>(val);
-                }, _value);
-                _typeSet = true; _valueSet = true; return *this;
-            }
-
-            std::string getTypeName() const {
-                return std::visit([](const auto& v) -> std::string {
-                    using T = std::decay_t<decltype(v)>;
-                    if constexpr (std::is_same_v<T, bool>) return "bool";
-                    else if constexpr (std::is_same_v<T, short>) return "short";
-                    else if constexpr (std::is_same_v<T, int>) return "int";
-                    else if constexpr (std::is_same_v<T, long>) return "long";
-                    else if constexpr (std::is_same_v<T, long long>) return "long long";
-                    else if constexpr (std::is_same_v<T, float>) return "float";
-                    else if constexpr (std::is_same_v<T, double>) return "double";
-                    else if constexpr (std::is_same_v<T, std::string>) return "string";
-                    else if constexpr (std::is_same_v<T, std::vector<std::string>>) return "list[str]";
-                    else return "unknown";
-                }, _value);
-            }
     };
 
     class ArgumentParser {
         private:
             const std::string name, helpArgName, helpAliasName;
             std::optional<std::string> _description, _epilog;
-            std::unordered_map<std::string, ArgumentParser&> subcommands;
             std::unordered_map<std::string, Argument> allArgs;
-            std::unordered_map<std::string, Argument&> namedArgs, aliasedArgs;
             std::unordered_map<std::size_t, Argument&> positionalArgs;
+            std::unordered_map<std::string, Argument&> namedArgs, aliasedArgs;
+            std::unordered_map<std::string, ArgumentParser&> subcommands;
 
-        public:
-            ArgumentParser(
-                const std::string &name, 
-                const std::string &helpArgName = "help", 
-                const std::string &helpAliasName = ""
-            ): 
-                name(name), 
-                helpArgName(helpArgName), 
-                helpAliasName(helpAliasName)
-            {
-                // Help is mandatory to short circuit checks
-                if (helpArgName.empty())
-                    throw std::runtime_error("Error: Help Argument name cannot be empty");
-                Argument help {
-                    Argument(helpArgName, ARGTYPE::NAMED)
-                    .help("Display this help text and exit")
-                    .implicitValue(true)
-                    .defaultValue(false)
-                };
-                if (!helpAliasName.empty()) 
-                    help.alias(helpAliasName);
-                addArgument(help);
-            }
-
-            std::string check() const {
-                for (const auto &[_, arg]: allArgs)
-                    if (!arg.ok())
-                        return arg.getName();
-                return "";
-            }
-
-            bool ok() const { return check().empty(); }
-
-            ArgumentParser &description(const std::string &message) {
-                _description = message; return *this;
-            }
-
-            ArgumentParser &epilog(const std::string &message) {
-                _epilog = message; return *this;
-            }
-
-            template<typename T>
-            T get(const std::string &key) const {
-                if constexpr (std::is_same_v<T, ArgumentParser>) {
-                    if (subcommands.find(key) == subcommands.end())
-                        throw std::runtime_error("Error: Subcommand with name '" + key + "' does not exist");
-                    return subcommands.at(key);
-                }
-
-                else {
-                    if (allArgs.find(key) == allArgs.end())
-                        throw std::runtime_error("Error: Argument with name '" + key + "' does not exist");
-                    return allArgs.at(key).get<T>();
-                }
-            }
-
-            bool exists(const std::string &key) const {
-                if (allArgs.find(key) == allArgs.end())
-                    return false;
-                else {
-                    Argument arg {allArgs.at(key)};
-                    return arg.isValueSet() || arg.isDefaultSet();
-                }
-            }
-
+            // Static utility to split based on '=' sign (named args with '--')
             static std::pair<std::string, std::string> splitArg(const std::string &arg) {
                 std::size_t pos {arg.find('=')};
                 if (pos == std::string::npos)
@@ -324,6 +257,77 @@ namespace argparse {
                 }
             }
 
+        public:
+            ArgumentParser(
+                const std::string &name, 
+                const std::string &helpArgName = "help", 
+                const std::string &helpAliasName = ""
+            ): 
+                name(name), 
+                helpArgName(helpArgName), 
+                helpAliasName(helpAliasName)
+            {
+                // Help is mandatory to short circuit checks
+                if (helpArgName.empty())
+                    throw std::runtime_error("Error: Help Argument name cannot be empty");
+                Argument help {
+                    Argument(helpArgName, ARGTYPE::NAMED)
+                    .help("Display this help text and exit")
+                    .implicitValue(true)
+                    .defaultValue(false)
+                };
+                if (!helpAliasName.empty()) 
+                    help.alias(helpAliasName);
+                addArgument(help);
+            }
+
+            // Check if all arguments contained inside the parser are satisifed
+            // If any arg is not satisifed, returns its name for logging
+            // DOES NOT CHECK THE CHILD PARSERS
+            std::string check() const {
+                for (const auto &[_, arg]: allArgs)
+                    if (!arg.ok())
+                        return arg.getName();
+                return "";
+            }
+
+            // Conveneince function over `check()`
+            bool ok() const { return check().empty(); }
+
+            ArgumentParser &description(const std::string &message) {
+                _description = message; return *this;
+            }
+
+            ArgumentParser &epilog(const std::string &message) {
+                _epilog = message; return *this;
+            }
+
+            template<typename T>
+            T get(const std::string &key) const {
+                if constexpr (std::is_same_v<T, ArgumentParser>) {
+                    auto it {subcommands.find(key)};
+                    if (it == subcommands.end())
+                        throw std::runtime_error("Error: Subcommand with name '" + key + "' does not exist");
+                    return it->second;
+                }
+
+                else {
+                    auto it {allArgs.find(key)};
+                    if (it == allArgs.end())
+                        throw std::runtime_error("Error: Argument with name '" + key + "' does not exist");
+                    return it->second.get<T>();
+                }
+            }
+
+            // Return true/false based on whether a key is retreivable
+            bool exists(const std::string &key) const noexcept {
+                auto it {allArgs.find(key)};
+                if (it == allArgs.end()) return false;
+                else return it->second.isValueSet() || it->second.isDefaultSet();
+            }
+
+            // Bread and butter, recursively call subcommands if found
+            // Skip parsing parent and validating parent if subcommand has been found
             void parseArgs(int argc, char** argv, std::size_t parseStartIdx = 0) {
                 // Convert to strings for ease of parsing
                 const std::vector<std::string> argVec {argv, argv+argc};
@@ -333,42 +337,51 @@ namespace argparse {
                 for (std::size_t i {parseStartIdx + 1}; i < argVec.size(); i++) {
                     std::string arg {argVec[i]};
 
+                    // Marks the start of positional argument start (optional)
                     if (arg == "--") {
                         explicitPositionalArgMarker = true;
                     }
 
+                    // Named arg, eg: "--age=12" (or) "--age 12"
                     else if (!explicitPositionalArgMarker && arg.starts_with("--")) {
                         arg = arg.substr(2); std::string value;
                         std::tie(arg, value) = splitArg(arg);
 
-                        if (namedArgs.find(arg) == namedArgs.end())
+                        auto it {namedArgs.find(arg)};
+                        if (it == namedArgs.end())
                             throw std::runtime_error("Error: Unknown named argument passed: " + arg);
-
-                        if (!value.empty())
-                            namedArgs.at(arg).set(value);
+                        else if (!value.empty())
+                            it->second.set(value);
                         else if (i == argVec.size() - 1 || argVec[i + 1].starts_with('-'))
-                            namedArgs.at(arg).set();
+                            it->second.set();
                         else
-                            namedArgs.at(arg).set(argVec[++i]);
+                            it->second.set(argVec[++i]);
                     }
 
+                    // Aliased arg, eg: "-a 20"
                     else if (!explicitPositionalArgMarker && arg.starts_with('-')) {
                         arg = arg.substr(1);
-                        if (aliasedArgs.find(arg) == aliasedArgs.end())
+                        auto it {aliasedArgs.find(arg)};
+                        if (it == aliasedArgs.end())
                             throw std::runtime_error("Error: Unknown aliased argument passed: " + arg);
 
                         if (i == argVec.size() - 1 || argVec[i + 1].starts_with('-'))
-                            aliasedArgs.at(arg).set();
+                            it->second.set();
                         else
-                            aliasedArgs.at(arg).set(argVec[++i]);
+                            it->second.set(argVec[++i]);
                     }
 
+                    // Check if the arg is command, doing this check here allows us to processes
+                    // no subcommands uptil this point if we wanted to
+                    // Recursive call - skip validating the parent parser; hence the return
                     else if (!explicitPositionalArgMarker && subcommands.find(arg) != subcommands.end()) {
                         subcommands.at(arg).parseArgs(argc, argv, i);
                         return;
                     }
 
+                    // None of the options suit us, maybe this is a positional argument
                     else {
+                        // Once positional arg starts, no turning back
                         explicitPositionalArgMarker = true;
 
                         // If already set, move on
@@ -383,7 +396,7 @@ namespace argparse {
                     }
 
                     // Check if help parameter has been set
-                    // Stops the parsing & exits early
+                    // If yes, stop the parsing & exit early
                     if (allArgs.at(helpArgName).get<bool>()) {
                         std::cout << getHelp() << '\n';
                         std::exit(1);
@@ -396,6 +409,7 @@ namespace argparse {
                     throw std::runtime_error("Error: Missing value for argument: " + missingArg);
             }
 
+            // Add a new argument for the parser, no duplicates
             ArgumentParser &addArgument(const Argument& arg) {
                 const std::string argName {arg.getName()}, aliasName {arg.getAlias()};
 
@@ -407,6 +421,7 @@ namespace argparse {
                 if (aliasedArgs.find(aliasName) != aliasedArgs.end())
                     throw std::runtime_error("Error: Duplicate argument with alias: " + aliasName);
 
+                // Assign according to argtype for later retreival
                 allArgs.emplace(argName, std::move(arg));
                 if (arg.getArgType() == ARGTYPE::POSITIONAL || arg.getArgType() == ARGTYPE::BOTH)
                     positionalArgs.emplace(positionalArgs.size(), allArgs.at(argName));
@@ -418,6 +433,7 @@ namespace argparse {
                 return *this;
             }
 
+            // Add subcommand into the parser, check if name is not already taken
             ArgumentParser &addSubcommand(ArgumentParser &parser) {
                 if (allArgs.find(parser.name) != allArgs.end())
                     throw std::runtime_error("Error: Subcommand conflict with argument: " + parser.name);
@@ -425,6 +441,7 @@ namespace argparse {
                 return *this;
             }
 
+            // Processes and returns the help message
             std::string getHelp() const {
                 std::ostringstream oss;
                 oss << "Usage: " << name << " [OPTIONS] ";

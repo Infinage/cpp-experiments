@@ -7,7 +7,8 @@ int main(int argc, char **argv) {
         program.addArgument(argparse::Argument("user").help("User's name").alias("u").required());
         program.addArgument(argparse::Argument("age").help("User's age").defaultValue(18).alias("a"));
         program.addArgument(argparse::Argument("weight").help("Current weight (kg)").alias("w").required());
-        program.addArgument(argparse::Argument("goal").help("Fitness goal (e.g., weight loss, muscle gain)").alias("g"));
+        program.addArgument(argparse::Argument("goal").help("Fitness goal (e.g., weight loss, muscle gain)")
+            .alias("g").implicitValue(std::string{"weight loss"}));
 
         program.description("A command-line fitness tracker to log workouts and track progress.");
 
@@ -38,7 +39,16 @@ int main(int argc, char **argv) {
         program.parseArgs(argc, argv);
 
         // Handle subcommands
-        if (logWorkout.ok()) {
+        if (program.ok()) {
+            // Display user info
+            std::cout << "User: " << program.get<std::string>("user") << '\n';
+            std::cout << "Age: " << program.get<int>("age") << '\n';
+            std::cout << "Weight: " << program.get<std::string>("weight") << " kg\n";
+            if (program.exists("goal"))
+                std::cout << "Goal: " << program.get<std::string>("goal") << '\n';
+        }
+
+        else if (logWorkout.ok()) {
             std::cout << "Logging Workout:\n";
             std::cout << "Exercise: " << logWorkout.get<std::string>("exercise") << '\n';
             std::cout << "Duration: " << logWorkout.get<int>("duration") << " minutes\n";
@@ -52,15 +62,6 @@ int main(int argc, char **argv) {
         else if (sync.ok()) {
             std::cout << "Syncing workout data to the cloud...\n";
         } 
-
-        else {
-            // Display user info
-            std::cout << "User: " << program.get<std::string>("user") << '\n';
-            std::cout << "Age: " << program.get<int>("age") << '\n';
-            std::cout << "Weight: " << program.get<std::string>("weight") << " kg\n";
-            if (program.exists("goal"))
-                std::cout << "Goal: " << program.get<std::string>("goal") << '\n';
-        }
 
     } catch (const std::exception &ex) {
         std::cerr << ex.what() << '\n';
