@@ -1,5 +1,4 @@
 #include <algorithm>
-#include <cctype>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -78,7 +77,15 @@ namespace INI {
             }
 
             // Non const access
-            inline T &operator[] (const std::string &key) {
+            inline T &operator[] (const std::string &key_) {
+                // Convert to lower case for Section keys
+                std::string key {key_};
+                if constexpr (std::is_same_v<T, std::string>) {
+                    std::transform(key.begin(), key.end(), key.begin(), [](unsigned char ch) { 
+                        return std::tolower(ch); 
+                    });
+                }
+
                 if (!validateKey(key))
                     throw std::runtime_error("Key contains unsupported characters.");
                 else if (!exists(key)) {
@@ -90,13 +97,20 @@ namespace INI {
             }
 
             // Const access
-            inline const T &operator[] (const std::string &key) const {
+            inline const T &operator[] (const std::string &key_) const {
+                // Convert to lower case for Section keys
+                std::string key {key_};
+                if constexpr (std::is_same_v<T, std::string>) {
+                    std::transform(key.begin(), key.end(), key.begin(), [](unsigned char ch) { 
+                        return std::tolower(ch); 
+                    });
+                }
                 if (!exists(key)) 
                     throw std::runtime_error("Key: `" + key + "` not found.");
                 return data.at(key);
             }
 
-            bool exists(const std::string &key) const noexcept {
+            inline bool exists(const std::string &key) const noexcept {
                 return data.find(key) != data.end();
             }
 
@@ -112,7 +126,7 @@ namespace INI {
 
     class Section: public Iterator<std::string> {
         public:
-            bool empty() const {
+            inline bool empty() const {
                 return data.empty();
             }
     };
@@ -176,6 +190,7 @@ namespace INI {
                 }
             }
 
+            // Read into curr object from an input string
             void reads(const std::string &raw) {
                 std::string currSectionName, prevKey, line; 
                 std::size_t prevFirstNonSpace {0};
@@ -203,6 +218,8 @@ namespace INI {
                             else if (line.size() >= 3 && line[0] == '[' && line.back() == ']') {
                                 prevKey = ""; prevFirstNonSpace = 0;
                                 currSectionName = line.substr(1, line.size() - 2);
+                                if (exists(currSectionName))
+                                    throw std::runtime_error("Section '" + currSectionName + "' already exists.");
                                 (*this)[currSectionName] = {};
                             }
 
@@ -210,6 +227,9 @@ namespace INI {
                             else if (firstKVSeperator != std::string::npos && firstKVSeperator > 0) {
                                 prevFirstNonSpace = firstNonSpace; std::string value;
                                 std::tie(prevKey, value) = extractKV(line, firstKVSeperator);
+                                if (exists(currSectionName, prevKey))
+                                    throw std::runtime_error("Option '" + prevKey + "' in section '" + 
+                                        currSectionName + "' already exists.");
                                 (*this)[currSectionName][prevKey] = value;
                             }
 
@@ -225,6 +245,7 @@ namespace INI {
                 }
             }
 
+            // Write the file in INI format as a string
             std::string dumps() const {
                 std::ostringstream oss; 
                 for (const auto& [sectionName, section]: *this) {
