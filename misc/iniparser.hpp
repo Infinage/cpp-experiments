@@ -1,13 +1,11 @@
 #include <algorithm>
+#include <cctype>
 #include <sstream>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
 #include <utility>
 #include <vector>
-
-// TODO: Handle multi line outputs
-// TODO: Impl the reads function
 
 namespace INI {
     template<typename T>
@@ -120,11 +118,51 @@ namespace INI {
     };
 
     class Parser: public Iterator<Section> {
+        private:
+            template<typename T>
+            static std::size_t findFirstMatch(const std::string &str, T func) {
+                std::size_t pos = std::string::npos;
+                for (std::size_t i {0}; i < str.size(); i++) {
+                    if (func(str[i]))
+                        return i;
+                }
+                return pos;
+            }
+
+            static void trim(std::string &str) {
+                // Remove spaces from the end
+                while (!str.empty() && std::isspace(str.back()))
+                    str.pop_back();
+
+                // First non space char from string
+                std::size_t firstNonSpacePos {findFirstMatch(str, [](const char &ch) { 
+                    return !std::isspace(ch); 
+                })};
+
+                // Do nothing, no trim required
+                if (firstNonSpacePos == 0) return;
+                
+                // Non space char exists and is > 0, trim required
+                else if (firstNonSpacePos != std::string::npos)
+                    str = str.substr(firstNonSpacePos);
+
+                // No non space char exists (either empty or all spaces, all 
+                // spaces cannot be since prev step would eliminat it)
+                else str = "";
+            }
+
+            static std::pair<std::string, std::string> extractKV(const std::string &line, std::size_t splitPos) {
+                std::string   key {line.substr(0,  splitPos)}; 
+                std::string value {line.substr(splitPos + 1)};
+                trim(key); trim(value);
+                return {key, value};
+            }
+
         public:
             using Iterator::exists, Iterator::remove;
 
             bool exists(const std::string &sectionName, const std::string &key) const noexcept {
-                return this->exists(sectionName) && this->operator[](sectionName).exists(key);
+                return exists(sectionName) && this->operator[](sectionName).exists(key);
             }
 
             bool remove(const std::string &sectionName, const std::string &key) {
@@ -133,13 +171,58 @@ namespace INI {
                     Section section {this->operator[](sectionName)};
                     section.remove(key);
                     if (section.empty())
-                        this->remove(sectionName);
+                        remove(sectionName);
                     return true;
                 }
             }
 
             void reads(const std::string &raw) {
+                std::string currSectionName, prevKey, line; 
+                std::size_t prevFirstNonSpace {0};
+                for (const char &ch: raw) {
+                    if (ch == '\n') {
+                        // Find first non space char if not found returns string::npos
+                        std::size_t firstNonSpace {findFirstMatch(line, [](const char &ch) { return !std::isspace(ch); })};
 
+                        // Ignore if line contains no nonspace char or starts with a comment
+                        if (firstNonSpace != std::string::npos && line[firstNonSpace] != ';' && line[firstNonSpace] != '#') {
+                            // Strip spaces from both ends
+                            trim(line);
+
+                            // Find first key value seperator
+                            std::size_t firstKVSeperator {findFirstMatch(line, [](const char &ch) { 
+                                return ch == ':' || ch == '='; 
+                            })};
+
+                            // Check indentation level with prev level
+                            if (firstNonSpace > prevFirstNonSpace && exists(currSectionName, prevKey)) {
+                                data[currSectionName][prevKey] += '\n' + line;
+                            }
+
+                            // Check start of a new section
+                            else if (line.size() >= 3 && line[0] == '[' && line.back() == ']') {
+                                prevKey = ""; prevFirstNonSpace = 0;
+                                currSectionName = line.substr(1, line.size() - 2);
+                                (*this)[currSectionName] = {};
+                            }
+
+                            // Check if line contains '=' or ':', key contains atleast 1 char
+                            else if (firstKVSeperator != std::string::npos && firstKVSeperator > 0) {
+                                prevFirstNonSpace = firstNonSpace; std::string value;
+                                std::tie(prevKey, value) = extractKV(line, firstKVSeperator);
+                                (*this)[currSectionName][prevKey] = value;
+                            }
+
+                            else {
+                                throw std::runtime_error("Error parsing line: " + line);
+                            }
+
+                        }
+
+                        line.clear();
+                        
+                    } else line += ch;
+                }
             }
 
             std::string dumps() const {
