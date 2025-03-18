@@ -6,75 +6,76 @@
 #include <utility>
 #include <vector>
 
+// TODO: Check that key, value does not have special chars such as '=' or ':' or ';'
+// TODO: Handle multi line outputs
+// TODO: Impl the reads function
+
 namespace INI {
     template<typename T>
     class Iterator {
-        private:
+        protected:
+            // Data containers
             std::unordered_map<std::string, T> data;
             std::unordered_map<std::string, std::size_t> ordering;
             std::size_t counter {0};
 
+            // For iterators
+            mutable bool dirty = true;
+            mutable std::vector<std::pair<std::string, T&>> sorted;
+            mutable std::vector<std::pair<std::string, const T&>> constSorted;
+
+            void buildIterator() const {
+                if (dirty) {
+                    // Accumulate to a vector
+                    std::vector<std::pair<std::size_t, std::string>> temp;
+                    for (const auto &[key, pos]: ordering)
+                        temp.emplace_back(pos, key);
+
+                    // Sort the temp vector
+                    std::sort(temp.begin(), temp.end(), [](const auto &p1, const auto &p2) { 
+                        return p1.first < p2.first;
+                    });
+
+                    // insert into sorted
+                    sorted.clear();
+                    for (const auto &[pos, key]: temp) {
+                        sorted.emplace_back(key, const_cast<T&>(data.at(key)));
+                        constSorted.emplace_back(key, data.at(key));
+                    }
+
+                    // Flag to check if we require sorting
+                    dirty = false;
+                }
+            }
+
         public:
-            template <typename U>
-            class OrderedIterator {
-                public:
-                    using KV_PAIR = std::pair<const std::string, U&>;
+            using OrderedIterator = std::vector<std::pair<std::string, T&>>::iterator;
+            using ConstOrderedIterator = std::vector<std::pair<std::string, const T&>>::const_iterator;
 
-                private:
-                    std::vector<KV_PAIR>::const_iterator it{};
-                    std::vector<KV_PAIR> sorted;
-
-                public:
-                    OrderedIterator() { it = sorted.end(); }
-
-                    OrderedIterator(
-                        std::unordered_map<std::string, T> &data,
-                        std::unordered_map<std::string, std::size_t> &ordering
-                    ) {
-                        // Accumulate to a vector
-                        std::vector<std::pair<std::size_t, std::string>> temp;
-                        for (const auto &[key, pos]: ordering)
-                            temp.emplace_back(pos, key);
-
-                        // Sort the temp vector
-                        std::sort(temp.begin(), temp.end(), [](const auto &p1, const auto &p2) { 
-                            return p1.first < p2.first;
-                        });
-
-                        // insert into sorted
-                        for (const auto &[pos, key]: temp)
-                            sorted.emplace_back(key, data.at(key));
-
-                        // Assign the iterator
-                        it = sorted.begin();
-                    }
-
-                    const KV_PAIR &operator*() { return *it; }
-                    OrderedIterator &operator++() { ++it; return *this; }
-                    bool operator!=(const OrderedIterator &other) const {
-                        return it != other.it;
-                    }
-            };
-
-            OrderedIterator<T> begin() {
-                return OrderedIterator<T>{data, ordering};
+            OrderedIterator begin() {
+                buildIterator();
+                return sorted.begin();
             }
 
-            OrderedIterator<T> end() {
-                return OrderedIterator<T>{};
+            OrderedIterator end() {
+                buildIterator();
+                return sorted.end();
             }
 
-            OrderedIterator<const T> begin() const {
-                return OrderedIterator<const T>{data, ordering};
+            ConstOrderedIterator begin() const {
+                buildIterator();
+                return constSorted.cbegin();
             }
 
-            OrderedIterator<const T> end() const {
-                return OrderedIterator<const T>{};
+            ConstOrderedIterator end() const {
+                buildIterator();
+                return constSorted.cend();
             }
-            
+
             // Non const access
             inline T &operator[] (const std::string &key) {
                 if (!exists(key)) {
+                    dirty = true;
                     ordering[key] = counter++;
                     data.emplace(key, T{});
                 }
@@ -97,12 +98,17 @@ namespace INI {
                 else {
                     data.erase(key);
                     ordering.erase(key);
-                    return true;
+                    dirty = true; return true;
                 }
             }
     };
 
-    class Section: public Iterator<std::string> {};
+    class Section: public Iterator<std::string> {
+        public:
+            bool empty() const {
+                return data.empty();
+            }
+    };
 
     class Parser: public Iterator<Section> {
         public:
@@ -115,7 +121,10 @@ namespace INI {
             bool remove(const std::string &sectionName, const std::string &key) {
                 if (!exists(sectionName, key)) return false;
                 else {
-                    this->operator[](sectionName).remove(key);
+                    Section section {this->operator[](sectionName)};
+                    section.remove(key);
+                    if (section.empty())
+                        this->remove(sectionName);
                     return true;
                 }
             }
@@ -126,6 +135,12 @@ namespace INI {
 
             std::string dumps() const {
                 std::ostringstream oss; 
+                for (const auto& [sectionName, section]: *this) {
+                    oss << "[" << sectionName << "]" << '\n';
+                    for (const auto &[key, value]: section)
+                        oss << key << " = " << value << '\n';
+                    oss << '\n';
+                }
                 return oss.str();
             }
     };
