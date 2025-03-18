@@ -6,7 +6,6 @@
 #include <utility>
 #include <vector>
 
-// TODO: Check that key, value does not have special chars such as '=' or ':' or ';'
 // TODO: Handle multi line outputs
 // TODO: Impl the reads function
 
@@ -48,6 +47,14 @@ namespace INI {
                 }
             }
 
+            static bool validateKey(const std::string &key) {
+                for (const char &ch: key) {
+                    if (ch == '\n' || ch == '\r' || ch == '\b')
+                        return false;
+                }
+                return true;
+            }
+
         public:
             using OrderedIterator = std::vector<std::pair<std::string, T&>>::iterator;
             using ConstOrderedIterator = std::vector<std::pair<std::string, const T&>>::const_iterator;
@@ -74,7 +81,9 @@ namespace INI {
 
             // Non const access
             inline T &operator[] (const std::string &key) {
-                if (!exists(key)) {
+                if (!validateKey(key))
+                    throw std::runtime_error("Key contains unsupported characters.");
+                else if (!exists(key)) {
                     dirty = true;
                     ordering[key] = counter++;
                     data.emplace(key, T{});
@@ -137,8 +146,15 @@ namespace INI {
                 std::ostringstream oss; 
                 for (const auto& [sectionName, section]: *this) {
                     oss << "[" << sectionName << "]" << '\n';
-                    for (const auto &[key, value]: section)
-                        oss << key << " = " << value << '\n';
+                    for (const auto &[key, value]: section) {
+                        oss << key << " = ";
+                        for (const char &ch: value) {
+                            oss << ch;
+                            if (ch == '\n')
+                                oss << '\t';
+                        }
+                        oss << '\n';
+                    }
                     oss << '\n';
                 }
                 return oss.str();
