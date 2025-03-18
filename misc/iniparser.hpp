@@ -20,6 +20,7 @@ namespace INI {
             mutable std::vector<std::pair<std::string, T&>> sorted;
             mutable std::vector<std::pair<std::string, const T&>> constSorted;
 
+            // Maybe use a linked list impl, deletion and insertion should be O(1) only built
             void buildIterator() const {
                 if (dirty) {
                     // Accumulate to a vector
@@ -52,6 +53,13 @@ namespace INI {
                 return true;
             }
 
+            static inline std::string tolower(std::string str) {
+                std::transform(str.begin(), str.end(), str.begin(), [](unsigned char ch) { 
+                    return std::tolower(ch);
+                });
+                return str;
+            }
+
         public:
             using OrderedIterator = std::vector<std::pair<std::string, T&>>::iterator;
             using ConstOrderedIterator = std::vector<std::pair<std::string, const T&>>::const_iterator;
@@ -78,14 +86,8 @@ namespace INI {
 
             // Non const access
             inline T &operator[] (const std::string &key_) {
-                // Convert to lower case for Section keys
-                std::string key {key_};
-                if constexpr (std::is_same_v<T, std::string>) {
-                    std::transform(key.begin(), key.end(), key.begin(), [](unsigned char ch) { 
-                        return std::tolower(ch); 
-                    });
-                }
-
+                // Convert to lower case for Section keys - no matter what key user enters lowercase it
+                std::string key {std::is_same_v<T, std::string>? tolower(key_): key_};
                 if (!validateKey(key))
                     throw std::runtime_error("Key contains unsupported characters.");
                 else if (!exists(key)) {
@@ -99,22 +101,21 @@ namespace INI {
             // Const access
             inline const T &operator[] (const std::string &key_) const {
                 // Convert to lower case for Section keys
-                std::string key {key_};
-                if constexpr (std::is_same_v<T, std::string>) {
-                    std::transform(key.begin(), key.end(), key.begin(), [](unsigned char ch) { 
-                        return std::tolower(ch); 
-                    });
-                }
+                std::string key {std::is_same_v<T, std::string>? tolower(key_): key_};
                 if (!exists(key)) 
                     throw std::runtime_error("Key: `" + key + "` not found.");
                 return data.at(key);
             }
 
-            inline bool exists(const std::string &key) const noexcept {
+            inline bool exists(const std::string &key_) const noexcept {
+                // Convert to lower case for Section keys regardless of user input
+                std::string key {std::is_same_v<T, std::string>? tolower(key_): key_};
                 return data.find(key) != data.end();
             }
 
-            bool remove(const std::string &key) {
+            bool remove(const std::string &key_) {
+                // Convert to lower case for Section keys regardless of user input
+                std::string key {std::is_same_v<T, std::string>? tolower(key_): key_};
                 if (!exists(key)) return false;
                 else {
                     data.erase(key);
@@ -193,7 +194,7 @@ namespace INI {
             // Read into curr object from an input string
             void reads(const std::string &raw) {
                 std::string currSectionName, prevKey, line; 
-                std::size_t prevFirstNonSpace {0};
+                std::size_t prevFirstNonSpace {0}, emptyLines {0}, lineNo {1};
                 for (const char &ch: raw) {
                     if (ch == '\n') {
                         // Find first non space char if not found returns string::npos
@@ -211,7 +212,7 @@ namespace INI {
 
                             // Check indentation level with prev level
                             if (firstNonSpace > prevFirstNonSpace && exists(currSectionName, prevKey)) {
-                                data[currSectionName][prevKey] += '\n' + line;
+                                data[currSectionName][prevKey] += std::string(emptyLines + 1, '\n') + line;
                             }
 
                             // Check start of a new section
@@ -219,7 +220,7 @@ namespace INI {
                                 prevKey = ""; prevFirstNonSpace = 0;
                                 currSectionName = line.substr(1, line.size() - 2);
                                 if (exists(currSectionName))
-                                    throw std::runtime_error("Section '" + currSectionName + "' already exists.");
+                                    throw std::runtime_error("Line #: " + std::to_string(lineNo) + ": Section '" + currSectionName + "' already exists.");
                                 (*this)[currSectionName] = {};
                             }
 
@@ -228,18 +229,24 @@ namespace INI {
                                 prevFirstNonSpace = firstNonSpace; std::string value;
                                 std::tie(prevKey, value) = extractKV(line, firstKVSeperator);
                                 if (exists(currSectionName, prevKey))
-                                    throw std::runtime_error("Option '" + prevKey + "' in section '" + 
+                                    throw std::runtime_error("Line #: " + std::to_string(lineNo) + ": Option '" + prevKey + "' in section '" + 
                                         currSectionName + "' already exists.");
                                 (*this)[currSectionName][prevKey] = value;
                             }
 
                             else {
-                                throw std::runtime_error("Error parsing line: " + line);
+                                throw std::runtime_error("Line #: " + std::to_string(lineNo) +" Error parsing line: " + line);
                             }
 
-                        }
+                            // Every time it is not an empty line, reset the counter
+                            emptyLines = 0;
+                        } 
 
-                        line.clear();
+                        // Counting newlines to add into multi lined values
+                        else if (firstNonSpace == std::string::npos) emptyLines++;
+
+                        // Execute for every line once we have processed them
+                        line.clear(); lineNo++;
                         
                     } else line += ch;
                 }
