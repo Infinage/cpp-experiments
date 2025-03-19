@@ -20,7 +20,7 @@ namespace INI {
             mutable std::vector<std::pair<std::string, T&>> sorted;
             mutable std::vector<std::pair<std::string, const T&>> constSorted;
 
-            // Maybe use a linked list impl, deletion and insertion should be O(1) only built
+            // Maybe use a linked list impl, deletion and insertion should be O(1)
             void buildIterator() const {
                 if (dirty) {
                     // Accumulate to a vector
