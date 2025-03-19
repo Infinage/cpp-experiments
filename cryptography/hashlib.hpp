@@ -2,6 +2,7 @@
 
 #include <bit>
 #include <bitset>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -12,13 +13,23 @@ namespace hashutil {
             vec.push_back(bits[i]);
     }
 
+    template <std::size_t T>
+    inline std::bitset<T> operator+(const std::bitset<T> &b1, const std::bitset<T> &b2) {
+        return std::bitset<T>{b1.to_ullong() + b2.to_ullong()};
+    }
+
+    template <std::size_t T>
+    inline std::bitset<T> rotate_left(const std::bitset<T> &b, int shift) {
+        return std::bitset<T>{std::rotl(b.to_ullong(), shift)};
+    }
+
     inline std::string sha1(const std::string &raw) {
         // Define constants for SHA1
-        const constexpr std::bitset<32> H0{"01100111010001010010001100000001"};
-        const constexpr std::bitset<32> H1{"11101111110011011010101110001001"};
-        const constexpr std::bitset<32> H2{"10011000101110101101110011111110"};
-        const constexpr std::bitset<32> H3{"00010000001100100101010001110110"};
-        const constexpr std::bitset<32> H4{"11000011110100101110000111110000"};
+        std::bitset<32> h0{"01100111010001010010001100000001"};
+        std::bitset<32> h1{"11101111110011011010101110001001"};
+        std::bitset<32> h2{"10011000101110101101110011111110"};
+        std::bitset<32> h3{"00010000001100100101010001110110"};
+        std::bitset<32> h4{"11000011110100101110000111110000"};
 
         // Store the bits into a dynamic vector
         std::vector<bool> bitString;
@@ -70,15 +81,14 @@ namespace hashutil {
                 std::bitset<32> xor_ {w1 ^ w2 ^ w3 ^ w4};
 
                 // Left rotate by 1 and append result to array
-                unsigned long rotated = std::rotl(xor_.to_ulong(), 1);
-                word.emplace_back(std::bitset<32>(rotated));
+                word.emplace_back(rotate_left(xor_, 1));
             }
         }
 
         // Meat of the actual algorithm
         for (std::size_t i {0}; i < nChunks; i++) {
             // Initialize values to constant values defined at top
-            std::bitset<32> a {H0}, b {H1}, c {H2}, d {H3}, e {H4};
+            std::bitset<32> a {h0}, b {h1}, c {h2}, d {h3}, e {h4};
 
             for (std::size_t j {0}; j < 80; j++) {
                 // init k & f based on where we are at the loop
@@ -97,11 +107,28 @@ namespace hashutil {
                     f = b ^ c ^ d;
                 }
 
-                // TODO: Continue from line 99 - https://github.com/sbwheeler/SHA-1/blob/master/src/sha1.js
+                // Execute regardless of j's position
+                std::bitset<32> temp {rotate_left(a, 5) + f + e + k + words[i][j]};
+
+                // Shift assign
+                e = d; d = c; 
+                c = rotate_left(b, 30);
+                b = a; a = temp;
             }
 
+            // Update the constants post iterating 80 times inside the loop
+            h0 = h0 + a; h1 = h1 + b; h2 = h2 + c; h3 = h3 + d; h4 = h4 + e;
         }
 
-        return "";
+        // Convert h0..4 to hex
+        std::ostringstream oss;
+        oss << std::hex 
+            << h0.to_ulong() 
+            << h1.to_ulong() 
+            << h2.to_ulong() 
+            << h3.to_ulong() 
+            << h4.to_ulong();
+
+        return oss.str();
     }
 };
