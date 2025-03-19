@@ -1,49 +1,18 @@
+#pragma once
+
 #include <algorithm>
 #include <sstream>
 #include <stdexcept>
 #include <string>
-#include <unordered_map>
 #include <utility>
-#include <vector>
+#include "ordered_map.hpp"
 
 namespace INI {
     template<typename T>
     class Iterator {
         protected:
             // Data containers
-            std::unordered_map<std::string, T> data;
-            std::unordered_map<std::string, std::size_t> ordering;
-            std::size_t counter {0};
-
-            // For iterators
-            mutable bool dirty = true;
-            mutable std::vector<std::pair<std::string, T&>> sorted;
-            mutable std::vector<std::pair<std::string, const T&>> constSorted;
-
-            // Maybe use a linked list impl, deletion and insertion should be O(1)
-            void buildIterator() const {
-                if (dirty) {
-                    // Accumulate to a vector
-                    std::vector<std::pair<std::size_t, std::string>> temp;
-                    for (const auto &[key, pos]: ordering)
-                        temp.emplace_back(pos, key);
-
-                    // Sort the temp vector
-                    std::sort(temp.begin(), temp.end(), [](const auto &p1, const auto &p2) { 
-                        return p1.first < p2.first;
-                    });
-
-                    // insert into sorted
-                    sorted.clear();
-                    for (const auto &[pos, key]: temp) {
-                        sorted.emplace_back(key, const_cast<T&>(data.at(key)));
-                        constSorted.emplace_back(key, data.at(key));
-                    }
-
-                    // Flag to check if we require sorting
-                    dirty = false;
-                }
-            }
+            stdx::ordered_map<std::string, T> data;
 
             static bool validateKey(const std::string &key) {
                 for (const char &ch: key) {
@@ -61,28 +30,14 @@ namespace INI {
             }
 
         public:
-            using OrderedIterator = std::vector<std::pair<std::string, T&>>::iterator;
-            using ConstOrderedIterator = std::vector<std::pair<std::string, const T&>>::const_iterator;
+            using OrderedIterator = stdx::ordered_map<std::string, T>::iterator;
+            using ConstOrderedIterator = stdx::ordered_map<std::string, T>::const_iterator;
 
-            OrderedIterator begin() {
-                buildIterator();
-                return sorted.begin();
-            }
+            OrderedIterator begin() { return data.begin(); }
+            OrderedIterator end() { return data.end(); }
 
-            OrderedIterator end() {
-                buildIterator();
-                return sorted.end();
-            }
-
-            ConstOrderedIterator begin() const {
-                buildIterator();
-                return constSorted.cbegin();
-            }
-
-            ConstOrderedIterator end() const {
-                buildIterator();
-                return constSorted.cend();
-            }
+            ConstOrderedIterator begin() const { return data.cbegin(); }
+            ConstOrderedIterator end() const { return data.cend(); }
 
             // Non const access
             inline T &operator[] (const std::string &key_) {
@@ -90,11 +45,8 @@ namespace INI {
                 std::string key {std::is_same_v<T, std::string>? tolower(key_): key_};
                 if (!validateKey(key))
                     throw std::runtime_error("Key contains unsupported characters.");
-                else if (!exists(key)) {
-                    dirty = true;
-                    ordering[key] = counter++;
-                    data.emplace(key, T{});
-                }
+                else if (!exists(key))
+                    data.insert(key, T{});
                 return data[key];
             }
 
@@ -116,12 +68,7 @@ namespace INI {
             bool remove(const std::string &key_) {
                 // Convert to lower case for Section keys regardless of user input
                 std::string key {std::is_same_v<T, std::string>? tolower(key_): key_};
-                if (!exists(key)) return false;
-                else {
-                    data.erase(key);
-                    ordering.erase(key);
-                    dirty = true; return true;
-                }
+                return data.erase(key);
             }
     };
 
