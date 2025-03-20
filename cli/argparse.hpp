@@ -52,16 +52,16 @@ namespace argparse {
             {
                 // Check parameter name validity
                 if (name.empty()) { 
-                    throw std::runtime_error("Error: Argument name cannot be empty");
+                    throw std::runtime_error("Argparse Error: Argument name cannot be empty");
                 } else if (name.starts_with('-')) {
                     throw std::runtime_error(
-                        "Error: Parameter names must not start with a hypen, "
+                        "Argparse Error: Parameter names must not start with a hypen, "
                         "consider explicitly setting the argtype instead."
                     );
                 } else {
                     for (const char &ch: name) {
                         if (ch == '=')
-                            throw std::runtime_error("Error: Invalid parameter name: " + name);
+                            throw std::runtime_error("Argparse Error: Invalid parameter name: " + name);
                     }
                 }
             }
@@ -80,9 +80,9 @@ namespace argparse {
             template<typename T>
             T get() const {
                 if (!_valueSet && !_defaultValueSet) 
-                    throw std::runtime_error("Error: Argument '" + _name + "' was not set");
+                    throw std::runtime_error("Argparse Error: Argument '" + _name + "' was not set");
                 else if (!std::holds_alternative<T>(_value))
-                    throw std::runtime_error("Error: Type mismatch (get): " + _name);
+                    throw std::runtime_error("Argparse Error: Type mismatch (get): " + _name);
                 else
                     return std::get<T>(_value);
             }
@@ -124,7 +124,7 @@ namespace argparse {
 
             Argument &alias(const std::string &name) { 
                 if (_type == ARGTYPE::POSITIONAL)
-                    throw std::runtime_error("Error: Alias being set for a positional argument: " + _name);
+                    throw std::runtime_error("Argparse Error: Alias being set for a positional argument: " + _name);
                 _alias = name; return *this;
             }
 
@@ -138,7 +138,7 @@ namespace argparse {
 
             Argument &set() {
                 if (!_implicit.has_value())
-                    throw std::runtime_error("Error: No implicit value set: " + _name);
+                    throw std::runtime_error("Argparse Error: No implicit value set: " + _name);
                 _value = *_implicit; _valueSet = true; return *this;
             }
 
@@ -153,14 +153,14 @@ namespace argparse {
             template <typename T>
             Argument &scan() { 
                 if (_typeSet && !std::holds_alternative<T>(_value))
-                    throw std::runtime_error("Error: Type mismatch (scan): " + _name);
+                    throw std::runtime_error("Argparse Error: Type mismatch (scan): " + _name);
                 _typeSet = true; _value = T{}; return *this;
             }
 
             template<typename T>
             Argument &defaultValue(const T &val) {
                 if (_typeSet && !std::holds_alternative<T>(_value))
-                    throw std::runtime_error("Error: Type mismatch (default): " + _name);
+                    throw std::runtime_error("Argparse Error: Type mismatch (default): " + _name);
                 _defaultValueSet = true; _typeSet = true; 
                 _default = _value = val;  return *this;
             }
@@ -168,7 +168,7 @@ namespace argparse {
             template<typename T>
             Argument &implicitValue(const T &val) {
                 if (_typeSet && !std::holds_alternative<T>(_value))
-                    throw std::runtime_error("Error: Type mismatch (implicit): " + _name);
+                    throw std::runtime_error("Argparse Error: Type mismatch (implicit): " + _name);
                 _typeSet = true; _implicit = val;  _value = T{};
                 return *this;
             }
@@ -202,7 +202,7 @@ namespace argparse {
                         prevCh = ch;
                     }
                     if (insideQuote) 
-                        throw std::runtime_error("Error: Invalid value passed to '" + _name + "': " + arg);
+                        throw std::runtime_error("Argparse Error: Invalid value passed to '" + _name + "': " + arg);
                     placeholder.emplace_back(acc);
                     return placeholder;
                 } 
@@ -211,7 +211,7 @@ namespace argparse {
                     T placeholder;
                     std::from_chars_result parseResult {std::from_chars(arg.c_str(), arg.c_str() + arg.size(), placeholder)};
                     if (parseResult.ec != std::errc() || parseResult.ptr != arg.c_str() + arg.size())
-                        throw std::runtime_error("Error: Invalid value passed to '" + _name + "': " + arg);
+                        throw std::runtime_error("Argparse Error: Invalid value passed to '" + _name + "': " + arg);
                     return placeholder;
                 }
             }
@@ -251,7 +251,7 @@ namespace argparse {
                     }
 
                     if (insideQuote)
-                        throw std::runtime_error("Error: Invalid argument passed: " + arg);
+                        throw std::runtime_error("Argparse Error: Invalid argument passed: " + arg);
 
                     return {arg.substr(0, pos), value};
                 }
@@ -269,7 +269,7 @@ namespace argparse {
             {
                 // Help is mandatory to short circuit checks
                 if (helpArgName.empty())
-                    throw std::runtime_error("Error: Help Argument name cannot be empty");
+                    throw std::runtime_error("Argparse Error: Help Argument name cannot be empty");
                 Argument help {
                     Argument(helpArgName, ARGTYPE::NAMED)
                     .help("Display this help text and exit")
@@ -307,14 +307,14 @@ namespace argparse {
                 if constexpr (std::is_same_v<T, ArgumentParser>) {
                     auto it {subcommands.find(key)};
                     if (it == subcommands.end())
-                        throw std::runtime_error("Error: Subcommand with name '" + key + "' does not exist");
+                        throw std::runtime_error("Argparse Error: Subcommand with name '" + key + "' does not exist");
                     return it->second;
                 }
 
                 else {
                     auto it {allArgs.find(key)};
                     if (it == allArgs.end())
-                        throw std::runtime_error("Error: Argument with name '" + key + "' does not exist");
+                        throw std::runtime_error("Argparse Error: Argument with name '" + key + "' does not exist");
                     return it->second.get<T>();
                 }
             }
@@ -349,7 +349,7 @@ namespace argparse {
 
                         auto it {namedArgs.find(arg)};
                         if (it == namedArgs.end())
-                            throw std::runtime_error("Error: Unknown named argument passed: " + arg);
+                            throw std::runtime_error("Argparse Error: Unknown named argument passed: " + arg);
                         else if (!value.empty())
                             it->second.set(value);
                         else if (i == argVec.size() - 1 || argVec[i + 1].starts_with('-'))
@@ -363,7 +363,7 @@ namespace argparse {
                         arg = arg.substr(1);
                         auto it {aliasedArgs.find(arg)};
                         if (it == aliasedArgs.end())
-                            throw std::runtime_error("Error: Unknown aliased argument passed: " + arg);
+                            throw std::runtime_error("Argparse Error: Unknown aliased argument passed: " + arg);
 
                         if (i == argVec.size() - 1 || argVec[i + 1].starts_with('-'))
                             it->second.set();
@@ -390,7 +390,7 @@ namespace argparse {
 
                         // If no positional args, left throw error
                         if (position >= positionalArgs.size())
-                            throw std::runtime_error("Error: Unknown positional argument passed: " + arg);
+                            throw std::runtime_error("Argparse Error: Unknown positional argument passed: " + arg);
 
                         positionalArgs.at(position++).set(arg);
                     }
@@ -406,7 +406,7 @@ namespace argparse {
                 // Check if all args are satisified
                 const std::string missingArg {check()};
                 if (!missingArg.empty())
-                    throw std::runtime_error("Error: Missing value for argument: " + missingArg);
+                    throw std::runtime_error("Argparse Error: Missing value for argument: " + missingArg);
             }
 
             // Add a new argument for the parser, no duplicates
@@ -415,11 +415,11 @@ namespace argparse {
 
                 // Ensure no duplicates
                 if (allArgs.find(argName) != allArgs.end())
-                    throw std::runtime_error("Error: Duplicate argument with name: " + argName);
+                    throw std::runtime_error("Argparse Error: Duplicate argument with name: " + argName);
                 if (subcommands.find(argName) != subcommands.end())
-                    throw std::runtime_error("Error: Argument name conflicts with subcommand: " + argName);
+                    throw std::runtime_error("Argparse Error: Argument name conflicts with subcommand: " + argName);
                 if (aliasedArgs.find(aliasName) != aliasedArgs.end())
-                    throw std::runtime_error("Error: Duplicate argument with alias: " + aliasName);
+                    throw std::runtime_error("Argparse Error: Duplicate argument with alias: " + aliasName);
 
                 // Assign according to argtype for later retreival
                 allArgs.emplace(argName, std::move(arg));
@@ -436,7 +436,7 @@ namespace argparse {
             // Add subcommand into the parser, check if name is not already taken
             ArgumentParser &addSubcommand(ArgumentParser &parser) {
                 if (allArgs.find(parser.name) != allArgs.end())
-                    throw std::runtime_error("Error: Subcommand conflict with argument: " + parser.name);
+                    throw std::runtime_error("Argparse Error: Subcommand conflict with argument: " + parser.name);
                 subcommands.emplace(parser.name, parser);
                 return *this;
             }
