@@ -1,17 +1,12 @@
 #pragma once
 
 #include <bitset>
+#include <iomanip>
 #include <sstream>
 #include <string>
 #include <vector>
 
 namespace hashutil {
-    template <std::size_t T>
-    void extend(std::vector<bool> &vec, const std::bitset<T> &bits) {
-        for (std::size_t i {bits.size()}; i-- > 0;)
-            vec.push_back(bits[i]);
-    }
-
     template <std::size_t T>
     inline std::bitset<T> operator+(const std::bitset<T> &b1, const std::bitset<T> &b2) {
         return std::bitset<T>{b1.to_ullong() + b2.to_ullong()};
@@ -36,8 +31,9 @@ namespace hashutil {
 
         // Convert each char to 8 bit binary and append to a bool vector
         for (int _ch: raw) {
-            std::bitset<8> bitRep {static_cast<std::size_t>(_ch)};
-            extend(bitString, bitRep);
+            for (int i = 7; i >= 0; i--) {
+                bitString.push_back((_ch >> i) & 1);
+            }
         }
 
         // Store the length to add to bit rep later on
@@ -53,7 +49,9 @@ namespace hashutil {
             bitString.push_back(0);
 
         // Add the bitstring length
-        extend(bitString, std::bitset<64>{bitStrLen});
+        std::bitset<64> bitStrLenInBits {bitStrLen};
+        for (std::size_t i {64}; i-- > 0;)
+            bitString.push_back(bitStrLenInBits[i]);
 
         // Split the vector<bool> into 512 chunks, each chunk further into 
         // 16 words each containing 32 bits (nested vector<vector<bitset>>)
@@ -120,14 +118,14 @@ namespace hashutil {
             h0 = h0 + a; h1 = h1 + b; h2 = h2 + c; h3 = h3 + d; h4 = h4 + e;
         }
 
-        // Convert h0..4 to hex
+        // Convert h0..h4 to hex
         std::ostringstream oss;
-        oss << std::hex 
-            << h0.to_ulong() 
-            << h1.to_ulong() 
-            << h2.to_ulong() 
-            << h3.to_ulong() 
-            << h4.to_ulong();
+        oss << std::hex << std::setfill('0')
+            << std::setw(8) << h0.to_ulong() 
+            << std::setw(8) << h1.to_ulong() 
+            << std::setw(8) << h2.to_ulong() 
+            << std::setw(8) << h3.to_ulong() 
+            << std::setw(8) << h4.to_ulong();
 
         return oss.str();
     }
