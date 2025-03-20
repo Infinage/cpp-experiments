@@ -1,6 +1,5 @@
 #pragma once
 
-#include <bit>
 #include <bitset>
 #include <sstream>
 #include <string>
@@ -19,8 +18,9 @@ namespace hashutil {
     }
 
     template <std::size_t T>
-    inline std::bitset<T> rotate_left(const std::bitset<T> &b, int shift) {
-        return std::bitset<T>{std::rotl(b.to_ullong(), shift)};
+    inline std::bitset<T> rotate_left(const std::bitset<T> &b, std::size_t shift) {
+        shift %= T;
+        return (b << shift) | (b >> (T - shift));
     }
 
     inline std::string sha1(const std::string &raw) {
@@ -64,7 +64,7 @@ namespace hashutil {
             for (std::size_t j {0}; j < 16; j++) {
                 for (std::size_t k {0}; k < 32; k++) {
                     if (bitString[(i * 512) + (j * 32) + k])
-                        words[i][j][32 - j] = 1;
+                        words[i][j][31 - k] = 1;
                 }
             }
         }
@@ -89,13 +89,13 @@ namespace hashutil {
         for (std::size_t i {0}; i < nChunks; i++) {
             // Initialize values to constant values defined at top
             std::bitset<32> a {h0}, b {h1}, c {h2}, d {h3}, e {h4};
-
             for (std::size_t j {0}; j < 80; j++) {
                 // init k & f based on where we are at the loop
                 std::bitset<32> f, k;
+
                 if (j < 20) {
                     k = std::bitset<32>{"01011010100000100111100110011001"}; 
-                    f = (b & c) | (b.flip() & d);
+                    f = (b & c) | (~b & d);
                 } else if (j < 40) {
                     k = std::bitset<32>{"01101110110110011110101110100001"}; 
                     f = b ^ c ^ d;
