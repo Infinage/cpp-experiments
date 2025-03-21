@@ -226,6 +226,10 @@ namespace argparse {
             std::unordered_map<std::string, Argument&> namedArgs, aliasedArgs;
             std::unordered_map<std::string, ArgumentParser&> subcommands;
 
+            // Check if the parser was called at all
+            // Esp required in the context of subcommands
+            bool touched {false}; 
+
             // Static utility to split based on '=' sign (named args with '--')
             static std::pair<std::string, std::string> splitArg(const std::string &arg) {
                 std::size_t pos {arg.find('=')};
@@ -292,7 +296,7 @@ namespace argparse {
             }
 
             // Conveneince function over `check()`
-            bool ok() const { return check().empty(); }
+            bool ok() const { return touched && check().empty(); }
 
             ArgumentParser &description(const std::string &message) {
                 _description = message; return *this;
@@ -329,6 +333,9 @@ namespace argparse {
             // Bread and butter, recursively call subcommands if found
             // Skip parsing parent and validating parent if subcommand has been found
             void parseArgs(int argc, char** argv, std::size_t parseStartIdx = 0) {
+                // If this func was called, set touched as true
+                touched = true;
+
                 // Convert to strings for ease of parsing
                 const std::vector<std::string> argVec {argv, argv+argc};
 
