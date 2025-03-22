@@ -1,10 +1,13 @@
+#include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <initializer_list>
 #include <memory>
 #include <sstream>
+#include <stack>
 #include <stdexcept>
 #include <string_view>
+#include <unordered_set>
 
 #include "argparse.hpp"
 #include "../misc/iniparser.hpp"
@@ -32,8 +35,8 @@ void writeTextFile(const std::string&, const std::string&) = delete;
 
 class GitObject {
     public:
-        const std::string fmt;
-        GitObject(const std::string &fmt): fmt(fmt) {}
+        const std::string sha, fmt;
+        GitObject(const std::string &sha, const std::string &fmt): sha(sha), fmt(fmt) {}
         virtual ~GitObject() = default;
         virtual void deserialize(const std::string&) = 0;
         virtual std::string serialize() const = 0;
@@ -44,17 +47,27 @@ class GitBlob: public GitObject {
         std::string data;
 
     public:
-        GitBlob(const std::string &data): GitObject("blob") { deserialize(data); }
+        GitBlob(const std::string &sha, const std::string &data): 
+            GitObject(sha, "blob") { deserialize(data); }
         void deserialize(const std::string &data) override { this->data = data; }
         std::string serialize() const override { return data; }
 };
 
 class GitCommit: public GitObject {
     private:
-        stdx::ordered_map<std::string, std::string> data;
+        stdx::ordered_map<std::string, std::vector<std::string>> data;
+        std::chrono::system_clock::time_point commitUTC;
 
     public:
-        GitCommit(const std::string &raw): GitObject("commit") { deserialize(raw); }
+        GitCommit(const std::string &sha, const std::string &raw): 
+            GitObject(sha, "commit") { deserialize(raw); }
+
+        std::vector<std::string> get(const std::string &key) const {
+            return data.find(key) != data.end()? data.at(key): std::vector<std::string>{};
+        }
+
+        inline bool operator<(GitCommit &other) const { return this->commitUTC < other.commitUTC; }
+        inline bool operator>(GitCommit &other) const { return this->commitUTC > other.commitUTC; }
 
         void deserialize(const std::string &raw) override {
             enum states: short {START, KEY_DONE, MULTILINE_VAL, BODY_START};
@@ -73,9 +86,10 @@ class GitCommit: public GitObject {
                 } else if (ch == '\n' && state == START) {
                     state = BODY_START; key = "";
                 } else if (ch == '\n' && state == KEY_DONE) {
-                    data[key] = acc; acc.clear(); state = START;
+                    data[key].emplace_back(acc); 
+                    acc.clear(); state = START;
                 } else if (ch == '\n' && state == MULTILINE_VAL) {
-                    data[key] += '\n' + acc;
+                    data[key].back() += '\n' + acc;
                 }
             }
 
@@ -84,27 +98,38 @@ class GitCommit: public GitObject {
                 acc.pop_back();
 
             // Add the body with empty string as header
-            data[""] = acc;
+            data[""] = {acc};
+
+            // Set the commit time UTC
+            std::string committerMsg {data["committer"][0]};
+            std::size_t tzStartPos {committerMsg.rfind(' ')};
+            std::size_t tsStartPos {committerMsg.rfind(' ', tzStartPos - 1)};
+            std::string ts {committerMsg.substr(tsStartPos + 1, tzStartPos - tsStartPos)};
+            commitUTC = std::chrono::system_clock::from_time_t(std::stol(ts));
         }
 
         std::string serialize() const override {
             std::ostringstream oss;
-            for (const auto &[key, value]: data) {
+            for (const auto &[key, values]: data) {
                 if (!key.empty()) {
-                    oss << key << ' ';
-                    for (const char &ch: value)
-                        oss << (ch != '\n'? std::string(1, ch): "\n ");
-                    oss << '\n';
+                    // Print all as `Key Value`
+                    for (const std::string &value: values) {
+                        oss << key << ' ';
+                        for (const char &ch: value)
+                            oss << (ch != '\n'? std::string(1, ch): "\n ");
+                        oss << '\n';
+                    }
                 }
             }
-            oss << '\n' << data.at("");
+
+            oss << '\n' << data.at("")[0];
             return oss.str();
         }
 };
 
 class GitTree: public GitObject {
     public:
-        GitTree(const std::string&): GitObject("tree") {}
+        GitTree(const std::string &sha, const std::string&): GitObject(sha, "tree") {}
 
         void deserialize(const std::string&) {
 
@@ -117,7 +142,7 @@ class GitTree: public GitObject {
 
 class GitTag: public GitObject {
     public:
-        GitTag(const std::string&): GitObject("tag") {}
+        GitTag(const std::string &sha, const std::string&): GitObject(sha, "tag") {}
 
         void deserialize(const std::string&) {
 
@@ -130,7 +155,7 @@ class GitTag: public GitObject {
 
 class GitRepository {
     private:
-        const fs::path workTree, gitDir;
+        mutable fs::path workTree, gitDir;
         INI::Parser conf;  
 
         fs::path repoPath(const std::initializer_list<std::string_view> &parts) const {
@@ -146,7 +171,7 @@ class GitRepository {
         {
             if (!force) {
                 if (!fs::is_directory(gitDir))
-                    throw std::runtime_error("Not a Git Repository: " + gitDir.string());
+                    throw std::runtime_error("Not a Git Repository: " + fs::canonical(gitDir).string());
                 if (!fs::is_regular_file(gitDir / "config"))
                     throw std::runtime_error("Configuration file missing");
 
@@ -160,12 +185,10 @@ class GitRepository {
             else {
                 if (!fs::exists(workTree)) 
                     fs::create_directories(workTree);
-                else {
-                    if (!fs::is_directory(workTree))
-                        throw std::runtime_error(workTree.string() + " is not a directory");
-                    else if (!fs::is_empty(workTree))
-                        throw std::runtime_error(workTree.string() + " is not empty");
-                }
+                else if (!fs::is_directory(workTree))
+                    throw std::runtime_error(workTree.string() + " is not a directory");
+                else if (fs::exists(gitDir) && !fs::is_empty(gitDir))
+                    throw std::runtime_error(fs::canonical(gitDir).string() + " is not empty");
 
                 // Create the folders required
                 fs::create_directories(gitDir / "branches");
@@ -185,6 +208,10 @@ class GitRepository {
                 conf["core"]["bare"] = "false";
                 writeTextFile(conf.dumps(), gitDir / "config");
             }
+
+            // Guaranteed that the paths exist, lets clean em up
+            gitDir = fs::canonical(gitDir);
+            workTree = fs::canonical(workTree); 
         }
 
         fs::path repoDir() const { return gitDir; }
@@ -248,15 +275,56 @@ class GitRepository {
 
             std::string data {raw.substr(sizeEndPos + 1)};
             if (fmt == "tag") 
-                return    std::make_unique<GitTag>(data);
+                return    std::make_unique<GitTag>(objectHash, data);
             else if (fmt == "tree") 
-                return   std::make_unique<GitTree>(data);
+                return   std::make_unique<GitTree>(objectHash, data);
             else if (fmt == "blob") 
-                return   std::make_unique<GitBlob>(data);
+                return   std::make_unique<GitBlob>(objectHash, data);
             else if (fmt == "commit") 
-                return std::make_unique<GitCommit>(data);
+                return std::make_unique<GitCommit>(objectHash, data);
             else
                 throw std::runtime_error("Unknown type " + fmt + " for object " + objectHash);
+        }
+
+        std::string getLog(const std::string &objectHash, long maxCount) const {
+            // Stop early
+            if (maxCount == 0) return "";
+
+            // Store the commit objects
+            std::vector<std::unique_ptr<GitCommit>> logs;
+
+            // DFS to read all the commits (until maxCount)
+            std::stack<std::pair<std::string, int>> stk {{{objectHash, 1}}};
+            std::unordered_set<std::string> visited {objectHash};
+            while (!stk.empty()) {
+                std::pair<std::string, int> curr {std::move(stk.top())}; stk.pop();
+                std::unique_ptr<GitObject> obj {readObject(curr.first)};
+                logs.emplace_back(dynamic_cast<GitCommit*>(obj.release()));
+                for (const std::string &parent: logs.back()->get("parent")) {
+                    if ((maxCount == -1 || curr.second < maxCount) && visited.find(parent) == visited.end()) {
+                        visited.insert(parent); 
+                        stk.push({parent, curr.second + 1});
+                    }
+                }
+            }
+
+            // Sort based on committer date in desc order
+            std::sort(logs.begin(), logs.end(), [](const auto &c1, const auto &c2) { return *c1 > *c2; });
+
+            // Print out the logs
+            std::ostringstream oss; std::size_t mc {static_cast<std::size_t>(maxCount)};
+            for (std::size_t i {0}; i < mc; i++)  {
+                const std::unique_ptr<GitCommit> &commit {logs[i]};
+                oss << "commit " << commit->sha << '\n'
+                    << commit->serialize() << "\n\n";
+            }
+
+            // Remove extra spaces
+            std::string result {oss.str()};
+            while (!result.empty() && result.back() == '\n') 
+                result.pop_back();
+
+            return result;
         }
 };
 
@@ -264,31 +332,48 @@ int main(int argc, char **argv) {
     argparse::ArgumentParser argparser{"git"};
     argparser.description("CGit: A lite C++ clone of Git");
 
+    // init command
     argparse::ArgumentParser initParser{"init"};
-    initParser.addArgument(argparse::Argument("path").defaultValue(".")
-            .help("Where to create the repository"));
+    initParser.description("Initialize a new, empty repository.");
+    initParser.addArgument(argparse::Argument("path", argparse::POSITIONAL)
+            .defaultValue(".").help("Where to create the repository"));
 
+    // cat-file command
     argparse::ArgumentParser catFileParser{"cat-file"};
-    catFileParser.addArgument(argparse::Argument("object")
+    catFileParser.description("Provide content of repository objects.");
+    catFileParser.addArgument(argparse::Argument("object", argparse::POSITIONAL)
             .required().help("The object to display"));
 
+    // hash-object command
     argparse::ArgumentParser hashObjectParser{"hash-object"};
+    hashObjectParser.description("Compute object ID and optionally creates a blob from a file.");
     hashObjectParser.addArgument(argparse::Argument("type").alias("t")
             .help("Specify the type").defaultValue("blob"));
-    hashObjectParser.addArgument(argparse::Argument("write").alias("w")
-            .help("Actually write the object into the database")
+    hashObjectParser.addArgument(argparse::Argument("write", argparse::NAMED)
+            .alias("w").help("Actually write the object into the database")
             .implicitValue(true).defaultValue(false));
     hashObjectParser.addArgument(argparse::Argument("path")
             .required().help("Read object from <path>"));
 
+    // log command
+    argparse::ArgumentParser logParser{"log"};
+    logParser.description("Display history of a given commit.")
+        .epilog("Equivalent to `git log --pretty=raw`");
+    logParser.addArgument(argparse::Argument("commit").defaultValue("HEAD").help("Commit to start at."));
+    logParser.addArgument(argparse::Argument("max-count").scan<long>().defaultValue(-1l)
+            .alias("n").help("Limit the number of commits displayed."));
+
+    // Add all the subcommands
     argparser.addSubcommand(initParser);
     argparser.addSubcommand(catFileParser);
     argparser.addSubcommand(hashObjectParser);
+    argparser.addSubcommand(logParser);
     argparser.parseArgs(argc, argv);
 
     if (initParser.ok()) {
         std::string path {initParser.get<std::string>("path")};
-        GitRepository(path, true);
+        GitRepository repo(path, true);
+        std::cout << "Initialized empty Git repository in " << repo.repoDir() << '\n';
     }
 
     else if (catFileParser.ok()) {
@@ -303,17 +388,25 @@ int main(int argc, char **argv) {
 
         std::unique_ptr<GitObject> obj;
         if (fmt == "tag") 
-            obj =    std::make_unique<GitTag>(data);
+            obj =    std::make_unique<GitTag>("", data);
         else if (fmt == "tree") 
-            obj =   std::make_unique<GitTree>(data);
+            obj =   std::make_unique<GitTree>("", data);
         else if (fmt == "blob") 
-            obj =   std::make_unique<GitBlob>(data);
+            obj =   std::make_unique<GitBlob>("", data);
         else if (fmt == "commit") 
-            obj = std::make_unique<GitCommit>(data);
+            obj = std::make_unique<GitCommit>("", data);
         else
             throw std::runtime_error("Unknown type " + fmt + "!");
 
         std::cout << GitRepository::findRepo().writeObject(obj, writeFile) << '\n';
+    }
+
+    else if (logParser.ok()) {
+        long maxCount {logParser.get<long>("max-count")};
+        std::string objectHash {logParser.get<std::string>("commit")};
+        GitRepository repo {GitRepository::findRepo()}; 
+        std::cout << repo.getLog(objectHash, maxCount);
+        if (maxCount != 0) std::cout << '\n';
     }
 
     else {
