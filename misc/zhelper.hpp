@@ -7,7 +7,7 @@
 #include <zlib.h>
 
 namespace zhelper {
-    inline std::vector<std::uint8_t> zcompress(const std::string &input) {
+    [[nodiscard]] inline std::vector<std::uint8_t> zcompress(const std::string &input) {
         std::vector<std::uint8_t> data(input.begin(), input.end());
 
         std::size_t srcLen = data.size();
@@ -15,13 +15,13 @@ namespace zhelper {
         std::vector<std::uint8_t> compressed(destLen);
 
         if (compress(compressed.data(), &destLen, data.data(), srcLen) != Z_OK)
-            throw std::runtime_error("Compression failed");
+            throw std::runtime_error("ZError: Compression failed");
         
         compressed.resize(destLen);
         return compressed;
     }
 
-    inline std::string zdecompress(const std::vector<std::uint8_t> &compressed) {
+    [[nodiscard]] inline std::string zdecompress(const std::vector<std::uint8_t> &compressed) {
         std::size_t destLen {compressed.size() * 4};
         std::vector<std::uint8_t> decompressed(destLen);
 
@@ -37,7 +37,7 @@ namespace zhelper {
         return std::string{decompressed.begin(), decompressed.end()};
     }
 
-    inline std::string zread(const std::string &ifile) {
+    [[nodiscard]] inline std::string zread(const std::string &ifile) {
         // Read the input as binary
         std::ifstream ifs {ifile, std::ios::binary | std::ios::ate};
         if (!ifs) throw std::runtime_error("ZError: Cannot open file for reading: " + ifile);

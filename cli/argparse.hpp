@@ -162,7 +162,7 @@ namespace argparse {
                 if (_typeSet && !std::holds_alternative<T>(_value))
                     throw std::runtime_error("Argparse Error: Type mismatch (default): " + _name);
                 _defaultValueSet = true; _typeSet = true; 
-                _default = _value = val;  return *this;
+                _default = _value = val; return *this;
             }
 
             template<typename T>
@@ -172,6 +172,10 @@ namespace argparse {
                 _typeSet = true; _implicit = val;  _value = T{};
                 return *this;
             }
+
+            // Auto cast char* to std::string
+            Argument  &defaultValue(const char *val) { return  defaultValue<std::string>(val); }
+            Argument &implicitValue(const char *val) { return implicitValue<std::string>(val); }
 
             template<typename T>
             T parse(const std::string &arg) {
