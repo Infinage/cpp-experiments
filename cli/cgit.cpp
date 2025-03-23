@@ -50,7 +50,7 @@ class GitBlob: public GitObject {
         GitBlob(const std::string &sha, const std::string &data): 
             GitObject(sha, "blob") { deserialize(data); }
         void deserialize(const std::string &data) override { this->data = data; }
-        std::string serialize() const override { return data; }
+        [[nodiscard]] std::string serialize() const override { return data; }
 };
 
 class GitCommit: public GitObject {
@@ -108,7 +108,7 @@ class GitCommit: public GitObject {
             commitUTC = std::chrono::system_clock::from_time_t(std::stol(ts));
         }
 
-        std::string serialize() const override {
+        [[nodiscard]] std::string serialize() const override {
             std::ostringstream oss;
             for (const auto &[key, values]: data) {
                 if (!key.empty()) {
@@ -184,7 +184,7 @@ class GitLeaf {
            return *this;
         }
 
-        inline std::string serialize() const {
+        [[nodiscard]] inline std::string serialize() const {
             return mode + ' ' + path + '\x00' + sha2Binary(sha);
         }
 
@@ -240,7 +240,7 @@ class GitTree: public GitObject {
             }
         }
 
-        std::string serialize() const {
+        [[nodiscard]] std::string serialize() const {
             std::ostringstream oss;
             std::sort(data.begin(), data.end());
             for (const GitLeaf &leaf: data) {
@@ -258,7 +258,7 @@ class GitTag: public GitObject {
 
         }
 
-        std::string serialize() const {
+        [[nodiscard]] std::string serialize() const {
 
         }
 };
@@ -396,6 +396,14 @@ class GitRepository {
                 throw std::runtime_error("Unknown type " + fmt + " for object " + objectHash);
         }
 
+        template <typename T>
+        std::unique_ptr<T> readObject(const std::string &objectHashPart) const {
+            std::unique_ptr<GitObject> obj {readObject(objectHashPart)};
+            T* casted {dynamic_cast<T*>(obj.get())};
+            if (!casted) throw std::runtime_error("Invalid cast: GitObject is not of requested type.");
+            return std::unique_ptr<T>(static_cast<T*>(obj.release()));
+        }
+
         std::string getLog(const std::string &objectHash, long maxCount) const {
             // Stop early
             if (maxCount == 0) return "";
@@ -408,8 +416,7 @@ class GitRepository {
             std::unordered_set<std::string> visited {objectHash};
             while (!stk.empty()) {
                 std::pair<std::string, int> curr {std::move(stk.top())}; stk.pop();
-                std::unique_ptr<GitObject> obj {readObject(curr.first)};
-                logs.emplace_back(dynamic_cast<GitCommit*>(obj.release()));
+                logs.emplace_back(readObject<GitCommit>(curr.first));
                 for (const std::string &parent: logs.back()->get("parent")) {
                     if ((maxCount == -1 || curr.second < maxCount) && visited.find(parent) == visited.end()) {
                         visited.insert(parent); 
@@ -439,9 +446,7 @@ class GitRepository {
 
         std::string lsTree(const std::string &ref, bool recurse, const fs::path &prefix = "") const {
             std::string sha {findObject(ref, "tree")};
-            std::unique_ptr<GitObject> obj {readObject(sha)};
-            std::unique_ptr<GitTree> tree {dynamic_cast<GitTree*>(obj.release())};
-
+            std::unique_ptr<GitTree> tree {readObject<GitTree>(sha)};
             std::ostringstream oss;
             for (const GitLeaf &leaf: *tree) {
                 std::string type;
@@ -470,6 +475,44 @@ class GitRepository {
 
             return result;
         }
+
+        void checkout(const std::string &ref, const fs::path &checkoutPath) const {
+            // Ensure empty before proceeding
+            if (!fs::exists(checkoutPath)) fs::create_directories(checkoutPath);
+            else if (!fs::is_directory(checkoutPath)) throw std::runtime_error("Not a directory: " + checkoutPath.string());
+            else if (!fs::is_empty(checkoutPath)) throw std::runtime_error("checkoutPath is not empty: " + checkoutPath.string());
+
+            // Get the absolute path
+            fs::path basePath {fs::canonical(fs::absolute(checkoutPath))};
+
+            // Read the ref, if commit grab its tree
+            std::unique_ptr<GitObject> obj {readObject(findObject(ref))};
+            if (obj->fmt == "commit") {
+                std::unique_ptr<GitCommit> commit {static_cast<GitCommit*>(obj.release())};
+                obj = readObject(commit->get("tree")[0]);
+            }
+
+            // Recursively write the tree contents
+            std::stack<std::pair<std::unique_ptr<GitTree>, fs::path>> stk {};
+            stk.emplace(static_cast<GitTree*>(obj.release()), basePath);
+            while (!stk.empty()) {
+                std::unique_ptr<GitTree> tree {std::move(stk.top().first)};
+                fs::path path {std::move(stk.top().second)}; stk.pop();
+                for (const GitLeaf &leaf: *tree) {
+                    std::unique_ptr<GitObject> obj {readObject(leaf.sha)};
+                    fs::path dest {path / leaf.path};
+                    if (obj->fmt == "tree") {
+                        fs::create_directories(dest);
+                        stk.emplace(static_cast<GitTree*>(obj.release()), dest);
+                    } else if (obj->fmt == "blob") {
+                        std::unique_ptr<GitBlob> blob {static_cast<GitBlob*>(obj.release())};
+                        std::string blobData {blob->serialize()};
+                        std::ofstream ofs {dest, std::ios::binary};
+                        ofs.write(blobData.c_str(), static_cast<std::streamsize>(blobData.size()));
+                    }
+                }
+            }
+        }
 };
 
 int main(int argc, char **argv) {
@@ -480,24 +523,24 @@ int main(int argc, char **argv) {
     argparse::ArgumentParser initParser{"init"};
     initParser.description("Initialize a new, empty repository.");
     initParser.addArgument(argparse::Argument("path", argparse::POSITIONAL)
-            .defaultValue(".").help("Where to create the repository"));
+            .defaultValue(".").help("Where to create the repository."));
 
     // cat-file command
     argparse::ArgumentParser catFileParser{"cat-file"};
     catFileParser.description("Provide content of repository objects.");
     catFileParser.addArgument(argparse::Argument("object", argparse::POSITIONAL)
-            .required().help("The object to display"));
+            .required().help("The object to display."));
 
     // hash-object command
     argparse::ArgumentParser hashObjectParser{"hash-object"};
     hashObjectParser.description("Compute object ID and optionally creates a blob from a file.");
     hashObjectParser.addArgument(argparse::Argument("type").alias("t")
-            .help("Specify the type").defaultValue("blob"));
+            .help("Specify the type.").defaultValue("blob"));
     hashObjectParser.addArgument(argparse::Argument("write", argparse::NAMED)
-            .alias("w").help("Actually write the object into the database")
+            .alias("w").help("Actually write the object into the database.")
             .implicitValue(true).defaultValue(false));
     hashObjectParser.addArgument(argparse::Argument("path")
-            .required().help("Read object from <path>"));
+            .required().help("Read object from <path>."));
 
     // log command
     argparse::ArgumentParser logParser{"log"};
@@ -511,9 +554,17 @@ int main(int argc, char **argv) {
     argparse::ArgumentParser lsTreeParser{"ls-tree"};
     lsTreeParser.description("Pretty-print a tree object.");
     lsTreeParser.addArgument(argparse::Argument("tree", argparse::POSITIONAL)
-            .help("A tree-ish object").required());
+            .help("A tree-ish object.").required());
     lsTreeParser.addArgument(argparse::Argument("recursive", argparse::NAMED).alias("r")
-            .defaultValue(false).implicitValue(true).help("Recurse into subtrees"));
+            .defaultValue(false).implicitValue(true).help("Recurse into subtrees."));
+
+    // checkout commnad
+    argparse::ArgumentParser checkoutParser{"checkout"};
+    checkoutParser.description("Checkout a commit inside of a directory.");
+    checkoutParser.addArgument(argparse::Argument("commit", argparse::POSITIONAL)
+            .help("The commit or tree to checkout.").required());
+    checkoutParser.addArgument(argparse::Argument("path", argparse::POSITIONAL)
+            .help("The EMPTY directory to checkout on.").required());
 
     // Add all the subcommands
     argparser.addSubcommand(initParser);
@@ -521,6 +572,7 @@ int main(int argc, char **argv) {
     argparser.addSubcommand(hashObjectParser);
     argparser.addSubcommand(logParser);
     argparser.addSubcommand(lsTreeParser);
+    argparser.addSubcommand(checkoutParser);
     argparser.parseArgs(argc, argv);
 
     if (initParser.ok()) {
@@ -568,6 +620,12 @@ int main(int argc, char **argv) {
         std::cout << GitRepository::findRepo().lsTree(ref, recurse) << '\n';
     }
 
+    else if (checkoutParser.ok()) {
+        std::string ref {checkoutParser.get<std::string>("commit")}, 
+            path {checkoutParser.get<std::string>("path")};
+        GitRepository::findRepo().checkout(ref, path);
+    }
+    
     else {
         std::cout << argparser.getHelp() << '\n';
     }
