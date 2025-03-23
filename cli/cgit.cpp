@@ -16,7 +16,7 @@
 
 namespace fs = std::filesystem;
 
-std::string readTextFile(const fs::path &path) {
+[[nodiscard]] std::string readTextFile(const fs::path &path) {
     std::ifstream ifs{path};
     std::ostringstream oss;
     oss << ifs.rdbuf();
@@ -59,9 +59,11 @@ class GitCommit: public GitObject {
         std::chrono::system_clock::time_point commitUTC;
 
     public:
-        GitCommit(const std::string &sha, const std::string &raw): 
-            GitObject(sha, "commit") { deserialize(raw); }
+        // We will be reusing this for GitTag hence fmt is kept as a variable
+        GitCommit(const std::string &sha, const std::string &raw, const std::string &fmt = "commit"): 
+            GitObject(sha, fmt) { deserialize(raw); }
 
+        void set(const std::string &key, std::vector<std::string> &&value) { data[key] = value; }
         std::vector<std::string> get(const std::string &key) const {
             return data.find(key) != data.end()? data.at(key): std::vector<std::string>{};
         }
@@ -100,12 +102,14 @@ class GitCommit: public GitObject {
             // Add the body with empty string as header
             data[""] = {acc};
 
-            // Set the commit time UTC
-            std::string committerMsg {data["committer"][0]};
-            std::size_t tzStartPos {committerMsg.rfind(' ')};
-            std::size_t tsStartPos {committerMsg.rfind(' ', tzStartPos - 1)};
-            std::string ts {committerMsg.substr(tsStartPos + 1, tzStartPos - tsStartPos)};
-            commitUTC = std::chrono::system_clock::from_time_t(std::stol(ts));
+            // Set the commit time UTC if found
+            if (data.find("committer") != data.end()) {
+                std::string committerMsg {data["committer"][0]};
+                std::size_t tzStartPos {committerMsg.rfind(' ')};
+                std::size_t tsStartPos {committerMsg.rfind(' ', tzStartPos - 1)};
+                std::string ts {committerMsg.substr(tsStartPos + 1, tzStartPos - tsStartPos)};
+                commitUTC = std::chrono::system_clock::from_time_t(std::stol(ts));
+            } else commitUTC = std::chrono::system_clock::now();
         }
 
         [[nodiscard]] std::string serialize() const override {
@@ -250,17 +254,12 @@ class GitTree: public GitObject {
         }
 };
 
-class GitTag: public GitObject {
+class GitTag: public GitCommit {
     public:
-        GitTag(const std::string &sha, const std::string&): GitObject(sha, "tag") {}
-
-        void deserialize(const std::string&) {
-
-        }
-
-        [[nodiscard]] std::string serialize() const {
-
-        }
+        using GitCommit::serialize, GitCommit::deserialize; 
+        using GitCommit::get, GitCommit::set;
+        GitTag(const std::string &sha, const std::string& raw): 
+            GitCommit(sha, raw, "tag") {}
 };
 
 class GitRepository {
@@ -513,6 +512,60 @@ class GitRepository {
                 }
             }
         }
+
+        // Recursively resolve ref until we have a sha hash
+        std::string refResolve(const std::string &path) const {
+            std::string currRef {"ref: " + path};
+            while (currRef.starts_with("ref: ")) {
+                fs::path path {repoFile({currRef.substr(5)})};
+                if (!fs::is_regular_file(path)) return "";
+                currRef = readTextFile(path);
+                currRef.pop_back();
+            }
+
+            return currRef;
+        }
+
+        // Start - starting path; withHash - whether to display the sha post resolving; prefix - sometimes
+        // we require that we cut the prefix short or have a custom prefix diplayed, hence sep variable is used
+        [[nodiscard]] std::string showAllRefs(const std::string &start, bool withHash, const std::string &prefix) const {
+            // Gather all refs starting from prefix
+            fs::path startPath {repoPath({start})};
+            std::vector<std::string> paths;
+            for (const fs::directory_entry &entry: fs::recursive_directory_iterator(startPath))
+                if (entry.is_regular_file()) paths.emplace_back(prefix / fs::relative(entry, startPath));
+
+            // Sort alphabetically
+            std::sort(paths.begin(), paths.end());
+
+            std::ostringstream oss;
+            for (const std::string &path: paths) {
+                if (withHash)
+                    oss << refResolve(path) << ' ';
+                oss << path << '\n';
+            }
+
+            std::string result {oss.str()};
+            if (!result.empty()) result.pop_back();
+            return result;
+        }
+
+        void createTag(const std::string &name, const std::string &ref, bool createTagObj = false) const {
+            std::string sha {findObject(ref)};
+            if (createTagObj) {
+                std::ostringstream oss;
+                oss << "object " << sha << '\n'
+                    << "type commit\n"
+                    << "tag " << name << '\n'
+                    << "tagger CGit user@example.com\n\n"
+                    << "A tag created by CGit.\n";
+                sha = writeObject(std::make_unique<GitTag>("", oss.str()), true);
+            }
+
+            // Write the contents to the file
+            sha.push_back('\n');
+            writeTextFile(sha, repoFile({"refs", "tags", name}));
+        }
 };
 
 int main(int argc, char **argv) {
@@ -566,6 +619,19 @@ int main(int argc, char **argv) {
     checkoutParser.addArgument(argparse::Argument("path", argparse::POSITIONAL)
             .help("The EMPTY directory to checkout on.").required());
 
+    // show-ref command
+    argparse::ArgumentParser showRefParser{"show-ref"};
+    showRefParser.description("List all references.");
+
+    // tag command
+    argparse::ArgumentParser tagParser{"tag"};
+    tagParser.description("List and create tags.");
+    tagParser.addArgument(argparse::Argument("create-tag-object", argparse::NAMED).alias("a")
+        .help("Whether to create a tag object.").defaultValue(false).implicitValue(true));
+    tagParser.addArgument(argparse::Argument("name").help("The new tag's name."));
+    tagParser.addArgument(argparse::Argument("object").help("The object the new tag will point to")
+        .defaultValue("HEAD"));
+
     // Add all the subcommands
     argparser.addSubcommand(initParser);
     argparser.addSubcommand(catFileParser);
@@ -573,6 +639,8 @@ int main(int argc, char **argv) {
     argparser.addSubcommand(logParser);
     argparser.addSubcommand(lsTreeParser);
     argparser.addSubcommand(checkoutParser);
+    argparser.addSubcommand(showRefParser);
+    argparser.addSubcommand(tagParser);
     argparser.parseArgs(argc, argv);
 
     if (initParser.ok()) {
@@ -624,6 +692,24 @@ int main(int argc, char **argv) {
         std::string ref {checkoutParser.get<std::string>("commit")}, 
             path {checkoutParser.get<std::string>("path")};
         GitRepository::findRepo().checkout(ref, path);
+    }
+
+    else if (showRefParser.ok()) {
+        std::cout << GitRepository::findRepo().showAllRefs("refs", true, "refs") << '\n';
+    }
+
+    else if (tagParser.ok()) {
+        GitRepository repo {GitRepository::findRepo()};
+        if (tagParser.exists("name")) {
+            bool createTagObj {tagParser.get<bool>("create-tag-object")};
+            std::string name {tagParser.get<std::string>("name")}, 
+                ref {tagParser.get<std::string>("object")};
+            repo.createTag(name, ref, createTagObj);
+        } else {
+            std::string result {repo.showAllRefs("refs/tags", false, "")};
+            std::cout << result;
+            if (!result.empty()) std::cout << '\n';
+        }
     }
     
     else {
