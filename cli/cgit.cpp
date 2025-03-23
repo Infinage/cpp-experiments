@@ -1,8 +1,10 @@
+#include <cctype>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <initializer_list>
 #include <memory>
+#include <regex>
 #include <sstream>
 #include <stack>
 #include <stdexcept>
@@ -365,11 +367,66 @@ class GitRepository {
         }
 
         std::string findObject(const std::string &name, const std::string &fmt = "", bool follow = true) const {
-            return name;
+            std::vector<std::string> candidates;
+            if (name == "HEAD") candidates.emplace_back(refResolve("HEAD"));
+            else {
+                // Check if name matches hash format - small or full hash
+                std::regex hashRegex{R"(^[0-9A-Fa-f]{4,40}$)"}; 
+                if (std::regex_match(name, hashRegex)) {
+                    std::string part;
+                    for (const char &ch: name) part.push_back(static_cast<char>(std::tolower(ch)));
+                    std::string prefix {part.substr(0, 2)};
+                    fs::path path {repoFile({"objects", prefix})};
+                    std::string remaining {part.substr(2)};
+                    if (fs::exists(path)) {
+                        for (const fs::directory_entry &entry: fs::directory_iterator(path)) {
+                            const std::string fname {entry.path().filename()};
+                            if (fname.starts_with(remaining))
+                                candidates.emplace_back(prefix + fname);
+                        }
+                    }
+                }
+
+                // Check for tag match
+                std::string asTag {refResolve("refs/tags/" + name)};
+                if (!asTag.empty()) candidates.emplace_back(asTag);
+
+                // Check for branch match
+                std::string asBranch {refResolve("refs/heads/" + name)};
+                if (!asBranch.empty()) candidates.emplace_back(asBranch);
+            }
+
+            if (candidates.size() != 1)
+                throw std::runtime_error("Expected to have only 1 matching candidate, found " + std::to_string(candidates.size()));
+
+            std::string sha {candidates[0]};
+            if (fmt.empty()) return sha;
+
+            while (1) {
+                std::string objFmt {readObjectType(sha)};
+                if (objFmt == fmt) 
+                    return sha;
+                else if (!follow) 
+                    return "";
+                else if (objFmt == "tag")
+                    sha = readObject<GitTag>(sha)->get("object")[0];
+                else if (objFmt == "commit" || fmt == "tree")
+                    sha = readObject<GitCommit>(sha)->get("tree")[0];
+                else 
+                    return "";
+            }
+
+            return "";
         }
 
-        std::unique_ptr<GitObject> readObject(const std::string &objectHashPart) const {
-            std::string objectHash {findObject(objectHashPart)};
+        std::string readObjectType(const std::string &objectHash) const {
+            fs::path path {repoFile({"objects", objectHash.substr(0, 2), objectHash.substr(2)})};
+            std::string raw {zhelper::zread(path)};
+            std::size_t fmtEndPos {raw.find(' ')};
+            return raw.substr(0, fmtEndPos);
+        }
+
+        std::unique_ptr<GitObject> readObject(const std::string &objectHash) const {
             fs::path path {repoFile({"objects", objectHash.substr(0, 2), objectHash.substr(2)})};
             std::string raw {zhelper::zread(path)};
 
@@ -632,6 +689,14 @@ int main(int argc, char **argv) {
     tagParser.addArgument(argparse::Argument("object").help("The object the new tag will point to")
         .defaultValue("HEAD"));
 
+    // rev-parse command
+    argparse::ArgumentParser revPParser{"rev-parse"};
+    revPParser.description("Parse revision (or other objects) identifiers");
+    revPParser.addArgument(argparse::Argument("name", argparse::POSITIONAL)
+            .help("The name to parse.").required());
+    revPParser.addArgument(argparse::Argument("type", argparse::NAMED).alias("t").defaultValue("")
+            .help("Specify the expected type - ['blob', 'commit', 'tag', 'tree']"));
+
     // Add all the subcommands
     argparser.addSubcommand(initParser);
     argparser.addSubcommand(catFileParser);
@@ -641,22 +706,25 @@ int main(int argc, char **argv) {
     argparser.addSubcommand(checkoutParser);
     argparser.addSubcommand(showRefParser);
     argparser.addSubcommand(tagParser);
+    argparser.addSubcommand(revPParser);
     argparser.parseArgs(argc, argv);
 
     if (initParser.ok()) {
-        std::string path {initParser.get<std::string>("path")};
+        std::string path {initParser.get("path")};
         GitRepository repo(path, true);
         std::cout << "Initialized empty Git repository in " << repo.repoDir() << '\n';
     }
 
     else if (catFileParser.ok()) {
-        std::string objectHash {catFileParser.get<std::string>("object")};
-        std::cout << GitRepository::findRepo().readObject(objectHash)->serialize() << '\n';
+        std::string objectHashPart {catFileParser.get("object")};
+        GitRepository repo {GitRepository::findRepo()};
+        std::string objectHash {repo.findObject(objectHashPart)};
+        std::cout << repo.readObject(objectHash)->serialize() << '\n';
     }
 
     else if (hashObjectParser.ok()) {
         bool writeFile {catFileParser.get<bool>("write")};
-        std::string fmt {catFileParser.get<std::string>("type")}, path {catFileParser.get<std::string>("path")};
+        std::string fmt {catFileParser.get("type")}, path {catFileParser.get("path")};
         std::string data {readTextFile(path)};
 
         std::unique_ptr<GitObject> obj;
@@ -676,7 +744,7 @@ int main(int argc, char **argv) {
 
     else if (logParser.ok()) {
         long maxCount {logParser.get<long>("max-count")};
-        std::string objectHash {logParser.get<std::string>("commit")};
+        std::string objectHash {logParser.get("commit")};
         GitRepository repo {GitRepository::findRepo()}; 
         std::cout << repo.getLog(objectHash, maxCount);
         if (maxCount != 0) std::cout << '\n';
@@ -684,13 +752,13 @@ int main(int argc, char **argv) {
 
     else if (lsTreeParser.ok()) {
         bool recurse {lsTreeParser.get<bool>("recursive")};
-        std::string ref {lsTreeParser.get<std::string>("tree")};
+        std::string ref {lsTreeParser.get("tree")};
         std::cout << GitRepository::findRepo().lsTree(ref, recurse) << '\n';
     }
 
     else if (checkoutParser.ok()) {
-        std::string ref {checkoutParser.get<std::string>("commit")}, 
-            path {checkoutParser.get<std::string>("path")};
+        std::string ref {checkoutParser.get("commit")}, 
+            path {checkoutParser.get("path")};
         GitRepository::findRepo().checkout(ref, path);
     }
 
@@ -702,14 +770,22 @@ int main(int argc, char **argv) {
         GitRepository repo {GitRepository::findRepo()};
         if (tagParser.exists("name")) {
             bool createTagObj {tagParser.get<bool>("create-tag-object")};
-            std::string name {tagParser.get<std::string>("name")}, 
-                ref {tagParser.get<std::string>("object")};
+            std::string name {tagParser.get("name")}, 
+                ref {tagParser.get("object")};
             repo.createTag(name, ref, createTagObj);
         } else {
             std::string result {repo.showAllRefs("refs/tags", false, "")};
             std::cout << result;
             if (!result.empty()) std::cout << '\n';
         }
+    }
+
+    else if (revPParser.ok()) {
+        std::string name {revPParser.get("name")}, 
+            type {revPParser.get("type")};
+        std::string result {GitRepository::findRepo().findObject(name, type, true)};
+        std::cout << result;
+        if (!result.empty()) std::cout << '\n';
     }
     
     else {

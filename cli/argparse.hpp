@@ -310,7 +310,7 @@ namespace argparse {
                 _epilog = message; return *this;
             }
 
-            template<typename T>
+            template<typename T=std::string>
             T get(const std::string &key) const {
                 if constexpr (std::is_same_v<T, ArgumentParser>) {
                     auto it {subcommands.find(key)};
