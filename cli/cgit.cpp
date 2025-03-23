@@ -127,16 +127,126 @@ class GitCommit: public GitObject {
         }
 };
 
-class GitTree: public GitObject {
+class GitLeaf {
+    private:
+        static std::string sha2Binary(const std::string &sha) {
+            std::string binSha;
+            binSha.reserve(20);
+            for (std::size_t i {0}; i < 40; i++) {
+                std::string hexDigit {sha.substr(i, 2)};
+                binSha.push_back(static_cast<char>(std::stoi(hexDigit, nullptr, 16)));
+            }
+            return binSha;
+        }
+
+        static std::string binary2Sha(const std::string &binSha) {
+            std::ostringstream oss;
+            oss << std::hex << std::setfill('0');
+            for (const char &ch: binSha)
+                oss << std::setw(2) << static_cast<int>(static_cast<unsigned char>(ch));
+            return oss.str();
+        }
+
+        static int pathCompare(const GitLeaf &l1, const GitLeaf &l2) {
+            std::string_view path1 {l1.path}, path2 {l2.path};
+            std::string modPath1, modPath2;
+            if (!l1.mode.starts_with("10")) { 
+                modPath1 = l1.path + '/';
+                path1 = modPath1; 
+            }
+            if (!l2.mode.starts_with("10")) { 
+                modPath2 = l2.path + '/'; 
+                path2 = modPath2; 
+            }
+            return path1.compare(path2);
+        }
+
     public:
-        GitTree(const std::string &sha, const std::string&): GitObject(sha, "tree") {}
+        std::string mode, path, sha;
 
-        void deserialize(const std::string&) {
+        GitLeaf(const std::string &mode, const std::string &path, const std::string &binSha):
+            mode(mode), path(path), sha(binary2Sha(binSha)) {}
 
+        // Move constructor
+        GitLeaf(GitLeaf &&other): 
+            mode(std::move(other.mode)), 
+            path(std::move(other.path)), 
+            sha(std::move(other.sha))
+        { }
+
+        // Move assignment
+        inline GitLeaf& operator= (GitLeaf &&other) noexcept {
+           if (this != &other) {
+                mode = std::move(other.mode); 
+                path = std::move(other.path); 
+                sha = std::move(other.sha); 
+           }
+           return *this;
+        }
+
+        inline std::string serialize() const {
+            return mode + ' ' + path + '\x00' + sha2Binary(sha);
+        }
+
+        // Comparators
+        inline bool operator< (const GitLeaf &other) const { return pathCompare(*this, other)  < 0; }
+        inline bool operator> (const GitLeaf &other) const { return pathCompare(*this, other)  > 0; }
+        inline bool operator==(const GitLeaf &other) const { return pathCompare(*this, other) == 0; }
+};
+
+class GitTree: public GitObject {
+    private:
+        mutable std::vector<GitLeaf> data;
+
+    public:
+        GitTree(const std::string &sha, const std::string& raw): 
+            GitObject(sha, "tree") { deserialize(raw); }
+
+        // Iterators
+        inline std::vector<GitLeaf>::const_iterator begin() const { return data.cbegin(); }
+        inline std::vector<GitLeaf>::const_iterator end() const { return data.cend(); }
+
+        void deserialize(const std::string &raw) {
+            enum states: short {START, MODE_DONE, PATH_DONE};
+            std::string acc, mode, path;
+            short state {START};
+            std::size_t i {0}, len {raw.size()};
+            while (i < len) {
+                const char &ch {raw[i]};
+                if ((state == START && ch != ' ') || (state == MODE_DONE && ch != '\x00')) {
+                    acc.push_back(ch);
+                } 
+
+                else if (state == START && ch == ' ') {
+                    mode = acc; acc.clear(); state = MODE_DONE;
+                    if (mode.size() == 5) mode = '0' + mode;
+                } 
+
+                else if (state == MODE_DONE && ch == '\x00') {
+                    path = acc; acc.clear(); state = PATH_DONE;
+                } 
+
+                else if (state == PATH_DONE) {
+                    if (i + 20 > len) 
+                        throw std::runtime_error("Expected to have 20 bytes of char for SHA");
+                    acc.assign(raw, i, 20); i += 19;
+                    data.emplace_back(mode, path, acc);
+                    mode.clear(); path.clear(); acc.clear();
+                    state = START;
+                }
+
+                // Update for each loop
+                i++;
+            }
         }
 
         std::string serialize() const {
-
+            std::ostringstream oss;
+            std::sort(data.begin(), data.end());
+            for (const GitLeaf &leaf: data) {
+                oss << leaf.serialize();
+            }
+            return oss.str();
         }
 };
 
@@ -319,7 +429,41 @@ class GitRepository {
                     << commit->serialize() << "\n\n";
             }
 
-            // Remove extra spaces
+            // Remove extra space
+            std::string result {oss.str()};
+            while (!result.empty() && result.back() == '\n') 
+                result.pop_back();
+
+            return result;
+        }
+
+        std::string lsTree(const std::string &ref, bool recurse, const fs::path &prefix = "") const {
+            std::string sha {findObject(ref, "tree")};
+            std::unique_ptr<GitObject> obj {readObject(sha)};
+            std::unique_ptr<GitTree> tree {dynamic_cast<GitTree*>(obj.release())};
+
+            std::ostringstream oss;
+            for (const GitLeaf &leaf: *tree) {
+                std::string type;
+                if (leaf.mode.starts_with("04"))
+                    type = "tree"; // directory
+                else if (leaf.mode.starts_with("10"))
+                    type = "blob"; // regular file
+                else if (leaf.mode.starts_with("12"))
+                    type = "blob"; // symlinked contents
+                else if (leaf.mode.starts_with("16"))
+                    type = "commit"; // Submodule
+                else
+                    throw std::runtime_error("Unkwown tree mode: " + leaf.mode);
+
+                fs::path leafPath {prefix / leaf.path};
+                if (!recurse || type != "tree")
+                    oss << leaf.mode << ' ' << type << ' ' << leaf.sha << '\t' << leafPath.string() << '\n';
+                else
+                    oss << lsTree(leaf.sha, recurse, leafPath);
+            }
+
+            // Remove extra space
             std::string result {oss.str()};
             while (!result.empty() && result.back() == '\n') 
                 result.pop_back();
@@ -363,11 +507,20 @@ int main(int argc, char **argv) {
     logParser.addArgument(argparse::Argument("max-count").scan<long>().defaultValue(-1l)
             .alias("n").help("Limit the number of commits displayed."));
 
+    // ls-tree command
+    argparse::ArgumentParser lsTreeParser{"ls-tree"};
+    lsTreeParser.description("Pretty-print a tree object.");
+    lsTreeParser.addArgument(argparse::Argument("tree", argparse::POSITIONAL)
+            .help("A tree-ish object").required());
+    lsTreeParser.addArgument(argparse::Argument("recursive", argparse::NAMED).alias("r")
+            .defaultValue(false).implicitValue(true).help("Recurse into subtrees"));
+
     // Add all the subcommands
     argparser.addSubcommand(initParser);
     argparser.addSubcommand(catFileParser);
     argparser.addSubcommand(hashObjectParser);
     argparser.addSubcommand(logParser);
+    argparser.addSubcommand(lsTreeParser);
     argparser.parseArgs(argc, argv);
 
     if (initParser.ok()) {
@@ -407,6 +560,12 @@ int main(int argc, char **argv) {
         GitRepository repo {GitRepository::findRepo()}; 
         std::cout << repo.getLog(objectHash, maxCount);
         if (maxCount != 0) std::cout << '\n';
+    }
+
+    else if (lsTreeParser.ok()) {
+        bool recurse {lsTreeParser.get<bool>("recursive")};
+        std::string ref {lsTreeParser.get<std::string>("tree")};
+        std::cout << GitRepository::findRepo().lsTree(ref, recurse) << '\n';
     }
 
     else {
