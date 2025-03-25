@@ -12,6 +12,7 @@
 #include <stdexcept>
 #include <string_view>
 #include <type_traits>
+#include <unordered_map>
 #include <unordered_set>
 #include <ranges>
 
@@ -916,6 +917,61 @@ class GitRepository {
 
             return GitIgnore{absolute, scoped};
         }
+
+        std::string getStatus() const {
+            // Accumulate to string stream
+            std::ostringstream oss;
+
+            // Get current branch details
+            std::string headContents {readTextFile(repoFile({"HEAD"}))};
+            if (headContents.starts_with("ref: refs/heads/"))
+                oss << "On branch " << headContents.substr(16, headContents.size() - 17) << '.';
+            else
+                oss << "HEAD detached at " << headContents.substr(headContents.size() - 1) << '.';
+
+            // Get a flat map of all tree entires in head recursively with its sha
+            std::unordered_map<std::string, std::string> head;
+            std::stack<std::pair<std::string, std::string>> stk {{{"HEAD", ""}}};
+            while (!stk.empty()) {
+                std::string ref, prefix;
+                std::tie(ref, prefix) = std::move(stk.top()); stk.pop();
+                std::unique_ptr<GitTree> tree {readObject<GitTree>(findObject(ref, "tree"))};
+                for (const GitLeaf &leaf: *tree) {
+                    std::string fullPath {(fs::path(prefix) / leaf.path).string()};
+                    if (leaf.mode.starts_with("04"))
+                        stk.emplace(leaf.sha, fullPath);
+                    else
+                        head.emplace(fullPath, leaf.sha);
+                }
+            }
+
+            // Compare diff between HEAD and index
+            oss << "Changes to be committed:\n";
+            fs::path indexFilePath {repoFile({"index"})};
+            GitIndex index {GitIndex::readFromFile(indexFilePath)};
+            for (const GitIndex::GitIndexEntry &entry: index.getEntries()) {
+                auto it {head.find(entry.name)};
+                if (it != head.end()) {
+                    if (it->second != entry.sha)
+                        oss << "  modified: " << entry.name << '\n';
+                    head.erase(it);
+                } else {
+                    oss << "  added: " << entry.name << '\n';
+                }
+            }
+
+            // Keys still left head are ones that weren't found in the index
+            for (const std::pair<const std::string, std::string> &kv: head)
+                oss << "  deleted: " << kv.first << '\n';
+
+            // Compare index and worktree - TODO
+            oss << "Changes not staged for commit:\n";
+
+            std::string result {oss.str()};
+            if (!result.empty() && result.back() == '\n')
+                result.pop_back();
+            return result;
+        }
 };
 
 int main(int argc, char **argv) {
@@ -996,6 +1052,10 @@ int main(int argc, char **argv) {
     checkIgnoreParser.addArgument("path", argparse::POSITIONAL).required()
         .scan<std::vector<std::string>>().help("Paths to check.");
 
+    // status command
+    argparse::ArgumentParser statusParser{"status"};
+    statusParser.description("Show the working tree status.");
+
     // Add all the subcommands
     argparser.addSubcommand(initParser);
     argparser.addSubcommand(catFileParser);
@@ -1008,6 +1068,7 @@ int main(int argc, char **argv) {
     argparser.addSubcommand(revPParser);
     argparser.addSubcommand(lsFilesParser);
     argparser.addSubcommand(checkIgnoreParser);
+    argparser.addSubcommand(statusParser);
     argparser.parseArgs(argc, argv);
 
     if (initParser.ok()) {
@@ -1100,6 +1161,10 @@ int main(int argc, char **argv) {
         for (const std::string &path: paths)
             if (rules.check(path))
                 std::cout << path << '\n';
+    }
+
+    else if (statusParser.ok()) {
+        std::cout << GitRepository::findRepo().getStatus() << '\n';
     }
     
     else {
