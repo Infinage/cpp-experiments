@@ -451,10 +451,11 @@ class GitIgnore {
             // Check scoped rules
             std::optional<bool> result;
             while (!curr.empty() && curr != curr.root_path()) {
-                auto it {scoped.find(curr.string())};
+                fs::path parent {curr.parent_path()};
+                auto it {scoped.find(parent.string())};
                 if (it != scoped.end() && (result = checkIgnore(it->second, curr.string())) && result.has_value())
                     return result.value();
-                curr = curr.parent_path();
+                curr = parent;
             }
 
             // Check absolute rules, if no match return false as default
@@ -554,7 +555,7 @@ class GitRepository {
             fs::path path {fs::absolute(path_)};
             if (fs::exists(path / ".git"))
                 return GitRepository(path);
-            else if (!path.has_parent_path())
+            else if (!path.has_parent_path() || path == path.parent_path())
                 throw std::runtime_error("No git directory");
             else
                 return findRepo(path.parent_path());
