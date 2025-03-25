@@ -286,7 +286,7 @@ namespace argparse {
                 };
                 if (!helpAliasName.empty()) 
                     help.alias(helpAliasName);
-                addArgument(help);
+                addArgument(std::move(help));
             }
 
             // Check if all arguments contained inside the parser are satisifed
@@ -442,6 +442,12 @@ namespace argparse {
                     aliasedArgs.emplace(aliasName, allArgs.at(argName));
 
                 return *this;
+            }
+
+            // Overload addArgument to directly take in two strings
+            Argument &addArgument(const std::string &name, const ARGTYPE &type = ARGTYPE::BOTH) {
+                addArgument(Argument{name, type});
+                return allArgs.at(name);
             }
 
             // Add subcommand into the parser, check if name is not already taken
