@@ -1,5 +1,7 @@
 #include <cctype>
 #include <chrono>
+#include <cmath>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <initializer_list>
@@ -9,6 +11,7 @@
 #include <stack>
 #include <stdexcept>
 #include <string_view>
+#include <type_traits>
 #include <unordered_set>
 
 #include "argparse.hpp"
@@ -34,6 +37,48 @@ void writeTextFile(const std::string &data, const fs::path &path) {
 
 // Explictly disallow second parameter as a string to prevent errors
 void writeTextFile(const std::string&, const std::string&) = delete;
+
+// Util to convert sha to binary hex string
+[[nodiscard]] std::string sha2Binary(std::string_view sha) {
+    std::string binSha;
+    binSha.reserve(20);
+    for (std::size_t i {0}; i < 40; i++) {
+        std::string hexDigit {sha.substr(i, 2)};
+        binSha.push_back(static_cast<char>(std::stoi(hexDigit, nullptr, 16)));
+    }
+    return binSha;
+}
+
+// Util to convert binary sha to hex string
+[[nodiscard]] std::string binary2Sha(std::string_view binSha) {
+    std::ostringstream oss;
+    oss << std::hex << std::setfill('0');
+    for (const char &ch: binSha)
+        oss << std::setw(2) << static_cast<int>(static_cast<unsigned char>(ch));
+    return oss.str();
+}
+
+// Utils to read input as Big Endian int*
+template<typename T> requires std::integral<T>
+void readBigEndian(std::ifstream &ifs, T &val) {
+    using UT = std::make_unsigned_t<T>;
+    unsigned char buffer[sizeof(T)];
+    ifs.read(reinterpret_cast<char *>(&buffer), sizeof(T));
+    val = 0;
+    for (size_t i = 0; i < sizeof(T); ++i)
+        val = static_cast<UT>((val << 8) | buffer[i]);
+}
+
+// Utils to write input as Big Endian int*
+template <typename T> requires std::integral<T>
+void writeBigEndian(std::ofstream &ofs, const T &val) {
+    unsigned char buffer[sizeof(T)];
+    for (size_t i = 0; i < sizeof(T); ++i) {
+        buffer[sizeof(T) - 1 - i] = val & 0xFF;
+        val >>= 8;
+    }
+    ofs.write(reinterpret_cast<char *>(buffer), sizeof(T));
+}
 
 class GitObject {
     public:
@@ -135,24 +180,6 @@ class GitCommit: public GitObject {
 
 class GitLeaf {
     private:
-        static std::string sha2Binary(const std::string &sha) {
-            std::string binSha;
-            binSha.reserve(20);
-            for (std::size_t i {0}; i < 40; i++) {
-                std::string hexDigit {sha.substr(i, 2)};
-                binSha.push_back(static_cast<char>(std::stoi(hexDigit, nullptr, 16)));
-            }
-            return binSha;
-        }
-
-        static std::string binary2Sha(const std::string &binSha) {
-            std::ostringstream oss;
-            oss << std::hex << std::setfill('0');
-            for (const char &ch: binSha)
-                oss << std::setw(2) << static_cast<int>(static_cast<unsigned char>(ch));
-            return oss.str();
-        }
-
         static int pathCompare(const GitLeaf &l1, const GitLeaf &l2) {
             std::string_view path1 {l1.path}, path2 {l2.path};
             std::string modPath1, modPath2;
@@ -262,6 +289,134 @@ class GitTag: public GitCommit {
         using GitCommit::get, GitCommit::set;
         GitTag(const std::string &sha, const std::string& raw): 
             GitCommit(sha, raw, "tag") {}
+};
+
+class GitIndex {
+    public:
+        struct GitTimeStamp { 
+            unsigned int seconds, nanoseconds; 
+
+            friend std::ostream &operator<<(std::ostream &os, const GitTimeStamp &ts) {
+                std::time_t t = ts.seconds;
+                std::tm *tm_info = std::gmtime(&t);
+                os << std::put_time(tm_info, "%Y-%m-%d %H:%M:%S") << '.' 
+                   << std::setfill('0') << std::setw(9) << ts.nanoseconds;
+                return os;
+            }
+        };
+
+        struct GitIndexEntry {
+            GitTimeStamp ctime;
+            GitTimeStamp mtime;
+            unsigned int dev;
+            unsigned int inode;
+            unsigned short modeType;
+            unsigned short modePerms;
+            unsigned int uid;
+            unsigned int gid;
+            unsigned int fsize;
+            std::string sha;
+            unsigned short flagStage;
+            bool assumeValid;
+            std::string name;
+        };
+
+    private:
+        const unsigned int version;
+        std::vector<GitIndexEntry> entries;
+
+    public:
+        // Getters for downstream consumers
+        unsigned int getVersion() const { return version; }
+        const std::vector<GitIndexEntry> &getEntries() const { return entries; }
+
+        GitIndex(const unsigned int version = 2, const std::vector<GitIndexEntry> &entries = {}):
+            version(version), entries(entries) { }
+
+        static GitIndex readFromFile(const fs::path &path) {
+            if (!fs::exists(path)) return GitIndex{};
+
+            std::ifstream ifs{path, std::ios::binary};
+            char signature[4]; unsigned int version, count;
+
+            ifs.read(signature, 4);
+            if (std::strcmp(signature, "DIRC") != 0) throw std::runtime_error("Not a valid GitIndex file.");
+            
+            readBigEndian(ifs, version); readBigEndian(ifs, count);
+            if (version != 2) throw std::runtime_error("CGit only supports Index file version 2.");
+
+            std::vector<GitIndexEntry> entries;
+            for (unsigned int i {0}; i < count; i++) {
+                // Read timestamps as seconds, nano pairs
+                unsigned int ctimes, ctimens, mtimes, mtimens;
+                readBigEndian(ifs, ctimes); readBigEndian(ifs, ctimens);
+                readBigEndian(ifs, mtimes); readBigEndian(ifs, mtimens);
+                GitTimeStamp ctime {.seconds=ctimes, .nanoseconds=ctimens};
+                GitTimeStamp mtime {.seconds=mtimes, .nanoseconds=mtimens};
+
+                // Straightforward read
+                unsigned int dev, inode;
+                readBigEndian(ifs, dev); readBigEndian(ifs, inode);
+
+                // Skip 2 bytes
+                ifs.seekg(2, std::ios::cur);
+
+                // Read modeType, modePerms
+                unsigned short mode, modeType, modePerms; readBigEndian(ifs, mode);
+                modeType = mode >> 12; modePerms = mode & 0b0000000111111111;
+
+                // Read user ID, Gid, File size
+                unsigned int uid, gid, fsize;
+                readBigEndian(ifs, uid); readBigEndian(ifs, gid); readBigEndian(ifs, fsize);
+
+                // Read the 20 char long binary sha and convert to hex 
+                // string 40 char long with padding
+                char shaBin[20];  ifs.read(shaBin, 20);
+                std::string sha {binary2Sha(std::string_view{shaBin, 20})};
+
+                // Read the flags
+                unsigned short flags, flagStage, nameLength; bool assumeValid;
+                readBigEndian(ifs, flags);
+                assumeValid = (flags & 0b1000000000000000) != 0;
+                flagStage = flags & 0b0011000000000000;
+                nameLength = flags & 0b0000111111111111;
+
+                // Read the name, if name size is 0xFF git assumes name 
+                // is > 4095 char long & searches until we hit 0x00
+                char rawName[0xFF + 1] {}; ifs.read(rawName, nameLength + 1);
+                std::string name {rawName, nameLength};
+                if (nameLength == 0xFF) {
+                    unsigned char ch;
+                    while ((ch = static_cast<unsigned char>(ifs.get())) != 0x00)
+                        name.push_back(static_cast<char>(ch));
+                }
+
+                // Seek bytes until we are in multiples of 8 
+                // 62 bytes read until we started parsing the name
+                std::streamoff readBytes {static_cast<std::streamoff>(ifs.tellg()) - 12};
+                std::streamoff offset {(8 - (readBytes % 8)) % 8};
+                ifs.seekg(offset, std::ios::cur);
+
+                // Create the index entry
+                entries.emplace_back(GitIndexEntry{
+                    .ctime=ctime, 
+                    .mtime=mtime, 
+                    .dev=dev, 
+                    .inode=inode, 
+                    .modeType=modeType, 
+                    .modePerms=modePerms, 
+                    .uid=uid, 
+                    .gid=gid, 
+                    .fsize=fsize, 
+                    .sha=sha, 
+                    .flagStage=flagStage,
+                    .assumeValid=assumeValid,
+                    .name=name
+                });
+            }
+
+            return GitIndex{version, entries};
+        }
 };
 
 class GitRepository {
@@ -623,6 +778,42 @@ class GitRepository {
             sha.push_back('\n');
             writeTextFile(sha, repoFile({"refs", "tags", name}));
         }
+
+        std::string lsFiles(bool verbose = false) const {
+            std::ostringstream oss;
+            fs::path indexFilePath {repoFile({"index"})};
+            GitIndex index{GitIndex::readFromFile(indexFilePath)};
+            const std::vector<GitIndex::GitIndexEntry> &indexEntries {index.getEntries()};
+
+            if (verbose)
+                oss << "Index file format v" << index.getVersion() 
+                    << ", containing " << indexEntries.size() << " entires.\n";
+
+            for (const GitIndex::GitIndexEntry &entry: indexEntries) {
+                oss << entry.name << '\n';
+                if (verbose) {
+                    std::string entryType;
+                    switch (entry.modeType) {
+                        case 0b1000: entryType = "regular file"; break;
+                        case 0b1010: entryType = "symlink"; break;
+                        case 0b1110: entryType = "gitlink"; break;
+                    }
+
+                    // Write to string output stream
+                    oss << "  " << entryType << " with perms: " << entry.modePerms << '\n';
+                    oss << "  on blob: " << entry.sha << '\n';
+                    oss << "  created: " << entry.ctime << ", modified: " << entry.mtime << '\n';
+                    oss << "  device: " << entry.dev << ", inode: " << entry.inode << '\n';
+                    oss << "  user: (" << entry.uid << ") group: (" << entry.gid << ")\n";
+                    oss << "  flags: stage=" << entry.flagStage << " assume valid=" << entry.assumeValid << "\n\n";
+                }
+            }
+
+            std::string result {oss.str()};
+            while (!result.empty() && result.back() == '\n')
+                result.pop_back();
+            return result;
+        }
 };
 
 int main(int argc, char **argv) {
@@ -697,6 +888,12 @@ int main(int argc, char **argv) {
     revPParser.addArgument(argparse::Argument("type", argparse::NAMED).alias("t").defaultValue("")
             .help("Specify the expected type - ['blob', 'commit', 'tag', 'tree']"));
 
+    // ls-files command
+    argparse::ArgumentParser lsFilesParser{"ls-files"};
+    lsFilesParser.description("List all staged files.");
+    lsFilesParser.addArgument(argparse::Argument("verbose", argparse::NAMED)
+            .alias("v").defaultValue(false).implicitValue(true).help("Show everything."));
+
     // Add all the subcommands
     argparser.addSubcommand(initParser);
     argparser.addSubcommand(catFileParser);
@@ -707,6 +904,7 @@ int main(int argc, char **argv) {
     argparser.addSubcommand(showRefParser);
     argparser.addSubcommand(tagParser);
     argparser.addSubcommand(revPParser);
+    argparser.addSubcommand(lsFilesParser);
     argparser.parseArgs(argc, argv);
 
     if (initParser.ok()) {
@@ -786,6 +984,11 @@ int main(int argc, char **argv) {
         std::string result {GitRepository::findRepo().findObject(name, type, true)};
         std::cout << result;
         if (!result.empty()) std::cout << '\n';
+    }
+
+    else if (lsFilesParser.ok()) {
+        bool verbose {lsFilesParser.get<bool>("verbose")};
+        std::cout << GitRepository::findRepo().lsFiles(verbose) << '\n';
     }
     
     else {
