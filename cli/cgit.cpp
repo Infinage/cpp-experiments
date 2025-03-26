@@ -610,7 +610,9 @@ class GitRepository {
             }
 
             if (candidates.size() != 1)
-                throw std::runtime_error("Expected to have only 1 matching candidate, found " + std::to_string(candidates.size()));
+                throw std::runtime_error(
+                    "Name resolution failed: " + name + ".\nExpected to have only 1 matching"
+                    " candidate, found " + std::to_string(candidates.size()));
 
             std::string sha {candidates[0]};
             if (fmt.empty()) return sha;
@@ -925,9 +927,9 @@ class GitRepository {
             // Get current branch details
             std::string headContents {readTextFile(repoFile({"HEAD"}))};
             if (headContents.starts_with("ref: refs/heads/"))
-                oss << "On branch " << headContents.substr(16, headContents.size() - 17) << '.';
+                oss << "On branch " << headContents.substr(16, headContents.size() - 17) << ".\n";
             else
-                oss << "HEAD detached at " << headContents.substr(headContents.size() - 1) << '.';
+                oss << "HEAD detached at " << headContents.substr(headContents.size() - 1) << ".\n";
 
             // Get a flat map of all tree entires in head recursively with its sha
             std::unordered_map<std::string, std::string> head;
@@ -946,7 +948,7 @@ class GitRepository {
             }
 
             // Compare diff between HEAD and index
-            oss << "Changes to be committed:\n";
+            oss << "\nChanges to be committed:\n";
             fs::path indexFilePath {repoFile({"index"})};
             GitIndex index {GitIndex::readFromFile(indexFilePath)};
             for (const GitIndex::GitIndexEntry &entry: index.getEntries()) {
@@ -964,8 +966,48 @@ class GitRepository {
             for (const std::pair<const std::string, std::string> &kv: head)
                 oss << "  deleted: " << kv.first << '\n';
 
-            // Compare index and worktree - TODO
-            oss << "Changes not staged for commit:\n";
+            // Compare index and worktree
+            oss << "\nChanges not staged for commit:\n";
+            stdx::ordered_map<std::string, short> allFiles;
+            for (const fs::directory_entry &entry: fs::recursive_directory_iterator(workTree)) {
+                fs::path relPath {fs::relative(entry, workTree)};
+                if (*relPath.begin() != ".git")
+                    allFiles.insert(relPath.string(), 1);
+            }
+
+            // Travel the index, comparing real files against cached versions
+            for (const GitIndex::GitIndexEntry &entry: index.getEntries()) {
+                fs::path fullPath {workTree / entry.name};
+                if (!fs::exists(fullPath))
+                    oss << "  deleted: " << entry.name << '\n';
+                else {
+                    std::chrono::duration fmtime {
+                        std::chrono::time_point_cast<std::chrono::nanoseconds>(
+                                fs::last_write_time(fullPath)).time_since_epoch()};
+
+                    long emtimeNS {static_cast<long>(entry.mtime.seconds * 10e9 + entry.mtime.nanoseconds)};
+                    long fmtimeNS {std::chrono::duration_cast<std::chrono::nanoseconds>(fmtime).count()};
+                    if (emtimeNS != fmtimeNS) {
+                        // Read as binary - create a blob and pass into writeObj func to get sha 
+                        std::ifstream ifs {fullPath, std::ios::binary};
+                        std::ostringstream ofs; ofs << ifs.rdbuf();
+                        std::string sha {writeObject(std::make_unique<GitBlob>("", ofs.str()))};
+                        if (sha != entry.sha)
+                            oss << "  modified: " << entry.name << '\n';
+                    }
+                }
+
+                // Remove visited entries, if something exists after the loop
+                // we know these are untracked ones not in the index
+                if (allFiles.exists(entry.name)) allFiles.erase(entry.name);
+            }
+
+            // List untracked files
+            GitIgnore ignore {gitIgnore()};
+            oss << "\nUntracked files:\n";
+            for (const std::pair<std::string, short> &kv: allFiles)
+                if (!ignore.check(kv.first))
+                    oss << "  " << kv.first << '\n';
 
             std::string result {oss.str()};
             if (!result.empty() && result.back() == '\n')

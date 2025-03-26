@@ -66,6 +66,8 @@ namespace stdx {
             
             bool empty() const { return data.empty(); }
 
+            bool exists(const K &key) const { return find(key) != end(); }
+
             iterator begin() { return data.begin(); }
             iterator end() { return data.end(); }
 

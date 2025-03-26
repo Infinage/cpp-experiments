@@ -234,6 +234,9 @@ namespace argparse {
             // Esp required in the context of subcommands
             bool touched {false}; 
 
+            // Variable to update references (update only once)
+            bool refUpdated {false};
+
             // Static utility to split based on '=' sign (named args with '--')
             static std::pair<std::string, std::string> splitArg(const std::string &arg) {
                 std::size_t pos {arg.find('=')};
@@ -262,6 +265,34 @@ namespace argparse {
                         throw std::runtime_error("Argparse Error: Invalid argument passed: " + arg);
 
                     return {arg.substr(0, pos), value};
+                }
+            }
+
+            // Once all set and done we recursively update the references 
+            // aliasedArgs, positionalArgs, namedArgs
+            void updateReferences() {
+                if (refUpdated) return;
+                else {
+                    for (const auto [_, arg]: allArgs) {
+                        // Update positional args and named args
+                        if (arg.getArgType() == ARGTYPE::POSITIONAL || arg.getArgType() == ARGTYPE::BOTH)
+                            positionalArgs.emplace(positionalArgs.size(), allArgs.at(arg.getName()));
+                        if (arg.getArgType() == ARGTYPE::NAMED || arg.getArgType() == ARGTYPE::BOTH)
+                            namedArgs.emplace(arg.getName(), allArgs.at(arg.getName()));
+
+                        // Updated alias map, error if alias already exists
+                        if (!arg.getAlias().empty()) {
+                            auto [it, inserted] = aliasedArgs.try_emplace(arg.getAlias(), allArgs.at(arg.getName()));
+                            if (!inserted)
+                                throw std::runtime_error("Argparse Error: Duplicate argument with alias: " + arg.getAlias());
+                        }
+                    }
+
+                    // Recurse into subcommands
+                    for (const std::pair<const std::string, ArgumentParser&> &kv: subcommands)
+                        kv.second.updateReferences();
+
+                    refUpdated = true;
                 }
             }
 
@@ -337,6 +368,9 @@ namespace argparse {
             // Bread and butter, recursively call subcommands if found
             // Skip parsing parent and validating parent if subcommand has been found
             void parseArgs(int argc, char** argv, std::size_t parseStartIdx = 0) {
+                // Update references if not already done
+                updateReferences();
+
                 // If this func was called, set touched as true
                 touched = true;
 
@@ -422,25 +456,15 @@ namespace argparse {
 
             // Add a new argument for the parser, no duplicates
             ArgumentParser &addArgument(const Argument& arg) {
-                const std::string argName {arg.getName()}, aliasName {arg.getAlias()};
+                const std::string argName {arg.getName()};
 
                 // Ensure no duplicates
                 if (allArgs.find(argName) != allArgs.end())
                     throw std::runtime_error("Argparse Error: Duplicate argument with name: " + argName);
                 if (subcommands.find(argName) != subcommands.end())
                     throw std::runtime_error("Argparse Error: Argument name conflicts with subcommand: " + argName);
-                if (aliasedArgs.find(aliasName) != aliasedArgs.end())
-                    throw std::runtime_error("Argparse Error: Duplicate argument with alias: " + aliasName);
 
-                // Assign according to argtype for later retreival
                 allArgs.emplace(argName, std::move(arg));
-                if (arg.getArgType() == ARGTYPE::POSITIONAL || arg.getArgType() == ARGTYPE::BOTH)
-                    positionalArgs.emplace(positionalArgs.size(), allArgs.at(argName));
-                if (arg.getArgType() == ARGTYPE::NAMED || arg.getArgType() == ARGTYPE::BOTH)
-                    namedArgs.emplace(argName, allArgs.at(argName));
-                if (!aliasName.empty())
-                    aliasedArgs.emplace(aliasName, allArgs.at(argName));
-
                 return *this;
             }
 
@@ -454,6 +478,9 @@ namespace argparse {
             ArgumentParser &addSubcommand(ArgumentParser &parser) {
                 if (allArgs.find(parser.name) != allArgs.end())
                     throw std::runtime_error("Argparse Error: Subcommand conflict with argument: " + parser.name);
+                if (subcommands.find(parser.name) != subcommands.end())
+                    throw std::runtime_error("Argparse Error: Duplicate subcommand with name: " + parser.name);
+
                 subcommands.emplace(parser.name, parser);
                 return *this;
             }
