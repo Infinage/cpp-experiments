@@ -1,7 +1,9 @@
+#include <sys/stat.h>
 #include <cctype>
 #include <chrono>
 #include <cmath>
 #include <cstring>
+#include <fcntl.h>
 #include <filesystem>
 #include <fstream>
 #include <initializer_list>
@@ -87,7 +89,7 @@ void readBigEndian(std::ifstream &ifs, T &val) {
 
 // Utils to write input as Big Endian int*
 template <typename T> requires std::integral<T>
-void writeBigEndian(std::ofstream &ofs, const T &val) {
+void writeBigEndian(std::ofstream &ofs, T val) {
     unsigned char buffer[sizeof(T)];
     for (size_t i = 0; i < sizeof(T); ++i) {
         buffer[sizeof(T) - 1 - i] = val & 0xFF;
@@ -345,6 +347,7 @@ class GitIndex {
         // Getters for downstream consumers
         unsigned int getVersion() const { return version; }
         const std::vector<GitIndexEntry> &getEntries() const { return entries; }
+        std::vector<GitIndexEntry> &getEntries() { return entries; }
 
         GitIndex(const unsigned int version = 2, const std::vector<GitIndexEntry> &entries = {}):
             version(version), entries(entries) { }
@@ -432,6 +435,49 @@ class GitIndex {
             }
 
             return GitIndex{version, entries};
+        }
+
+        void writeToFile(const fs::path &path) const {
+            std::ofstream ofs{path, std::ios::binary};
+            if (!ofs) throw std::runtime_error("Unable to write GitIndex to file: " + path.string());
+
+            // Write the header
+            unsigned int count {static_cast<unsigned int>(entries.size())};
+            ofs.write("DIRC", 4); writeBigEndian(ofs, version); writeBigEndian(ofs, count);
+
+            // Write the entries
+            for (const GitIndexEntry &entry: entries) {
+                // Create + Modified timestamp
+                writeBigEndian(ofs, entry.ctime.seconds); writeBigEndian(ofs, entry.ctime.nanoseconds);
+                writeBigEndian(ofs, entry.mtime.seconds); writeBigEndian(ofs, entry.mtime.nanoseconds);
+
+                // Dev, inode
+                writeBigEndian(ofs, entry.dev); writeBigEndian(ofs, entry.inode);
+                
+                // Write mode as unsigned int (4 bytes) + write uid, gid, fsize
+                unsigned int mode {(static_cast<unsigned int>(entry.modeType) << 12) | entry.modePerms};
+                writeBigEndian(ofs, mode); writeBigEndian(ofs, entry.uid); writeBigEndian(ofs, entry.gid);
+                writeBigEndian(ofs, entry.fsize);
+
+                // Write the 40 char long hex to binary
+                std::string shaBin {sha2Binary(entry.sha)};
+                ofs.write(shaBin.c_str(), 20);
+
+                // Write name length, flags together
+                unsigned short flagAssumeValid {static_cast<unsigned short>(entry.assumeValid? 0x1 << 15: 0)};
+                unsigned short nameLength {static_cast<unsigned short>(entry.name.size() >= 0xFFF? 0xFFF: entry.name.size())};
+                unsigned short flag {static_cast<unsigned short>(flagAssumeValid | entry.flagStage | nameLength)};
+                writeBigEndian(ofs, flag);
+
+                // Write the name along with 0x00
+                ofs.write(entry.name.data(), static_cast<std::streamsize>(entry.name.size())); 
+                ofs.put(0x00);
+
+                // Add neccessary padding
+                std::streamoff writtenBytes {static_cast<std::streamsize>(ofs.tellp()) - 12};
+                std::streamoff padCount {(8 - (writtenBytes % 8)) % 8};
+                for (int i {0}; i < padCount; i++) ofs.put(0x00);
+            }
         }
 };
 
@@ -997,7 +1043,7 @@ class GitRepository {
                     }
                 }
 
-                // Remove visited entries, if something exists after the loop
+                // Removed visited entries, if something exists after the loop
                 // we know these are untracked ones not in the index
                 if (allFiles.exists(entry.name)) allFiles.erase(entry.name);
             }
@@ -1013,6 +1059,97 @@ class GitRepository {
             if (!result.empty() && result.back() == '\n')
                 result.pop_back();
             return result;
+        }
+
+        GitIndex rm(const std::vector<std::string>& paths, bool delete_ = true, bool skipMissing = false) {
+            // Get list of abs paths to remove, ensure 
+            // no path exists outside of git workdir
+            std::unordered_set<fs::path> absPaths;
+            for (const std::string &path: paths) {
+                fs::path absPath {fs::absolute(path)};
+                std::string relativePath {std::filesystem::relative(path, workTree)};
+                if (relativePath.substr(0, 2) == "..")
+                    throw std::runtime_error("Cannot remove paths outside of worktree: " + path);
+                absPaths.insert(absPath);
+            }
+
+            // Iterate through index, check which files to remove and which to keep
+            GitIndex index{GitIndex::readFromFile(repoFile({"index"}))};
+            std::vector<GitIndex::GitIndexEntry> &entries{index.getEntries()};
+            std::vector<fs::path> toDelete;
+            for (auto it {entries.begin()}; it != entries.end();) {
+                fs::path fullPath {workTree / it->name}; 
+                if (absPaths.find(fullPath) != absPaths.end()) {
+                    toDelete.emplace_back(fullPath);
+                    it = entries.erase(it);
+                    absPaths.erase(fullPath);
+                } else {
+                    ++it;
+                }
+            }
+
+            // If we still have undeleted entries, user provided incorrect pathspec
+            if (!absPaths.empty() && !skipMissing)
+                throw std::runtime_error("Cannot remove paths not in index: " + absPaths.begin()->string());
+
+            // If delete flag set, remove from file system
+            if (delete_) for (const fs::path &path: toDelete) fs::remove(path);
+
+            // Write index to file
+            index.writeToFile(repoFile({"index"}));
+            return index;
+        }
+
+        GitIndex add(const std::vector<std::string>& paths) {
+            // Remove existing paths from index
+            GitIndex index {rm(paths, false, true)};
+
+            // Get list of abs paths to add, ensure 
+            // path exists within worktree & is a valid file
+            std::vector<std::pair<fs::path, fs::path>> absPaths;
+            for (const std::string &path: paths) {
+                fs::path absPath {fs::absolute(path)};
+                std::string relPath {std::filesystem::relative(path, workTree)};
+                if (relPath.substr(0, 2) == ".." || !fs::exists(absPath))
+                    throw std::runtime_error("Not a file inside the worktree: " + path);
+                absPaths.emplace_back(absPath, relPath);
+            }
+
+            std::vector<GitIndex::GitIndexEntry> &entries{index.getEntries()};
+            for (const auto &[fullPath, relPath]: absPaths) {
+                std::ifstream ifs {fullPath, std::ios::binary};
+                std::ostringstream ofs; ofs << ifs.rdbuf();
+                std::string sha {writeObject(std::make_unique<GitBlob>("", ofs.str()), true)};
+
+                // Get the file stat
+                struct stat statBuf; std::string fullPathStr {fullPath.string()};
+                if (stat(fullPath.c_str(), &statBuf) != 0) {
+                    throw std::runtime_error("Failed to stat file: " + fullPath.string());
+                }
+
+                // Extract Fields from file stat
+                unsigned int  ctime_s {static_cast<unsigned int>(statBuf.st_ctime)};
+                unsigned int  mtime_s {static_cast<unsigned int>(statBuf.st_mtime)};
+                unsigned int ctime_ns {static_cast<unsigned int>(statBuf.st_ctim.tv_nsec % 1'000'000'000)};
+                unsigned int mtime_ns {static_cast<unsigned int>(statBuf.st_mtim.tv_nsec % 1'000'000'000)};
+                unsigned int      dev {static_cast<unsigned int>(statBuf.st_dev)};
+                unsigned int    inode {static_cast<unsigned int>(statBuf.st_ino)};
+                unsigned int      uid {static_cast<unsigned int>(statBuf.st_uid)};
+                unsigned int      gid {static_cast<unsigned int>(statBuf.st_gid)};
+                unsigned int    fsize {static_cast<unsigned int>(statBuf.st_size)};
+
+                // Add to git index
+                entries.emplace_back(GitIndex::GitIndexEntry{
+                    .ctime={ctime_s, ctime_ns}, .mtime={mtime_s, mtime_ns}, 
+                    .dev=dev, .inode=inode, .modeType=0b1000, .modePerms=0644,
+                    .uid=uid, .gid=gid, .fsize=fsize, .sha=sha,
+                    .flagStage=false, .assumeValid=false, .name=relPath
+                });
+            }
+
+            // Write index to file
+            index.writeToFile(repoFile({"index"}));
+            return index;
         }
 };
 
@@ -1098,6 +1235,20 @@ int main(int argc, char **argv) {
     argparse::ArgumentParser statusParser{"status"};
     statusParser.description("Show the working tree status.");
 
+    // rm command
+    argparse::ArgumentParser rmParser{"rm"};
+    rmParser.description("Remove files from the working tree and the index.");
+    rmParser.addArgument("cached", argparse::NAMED).defaultValue(false).implicitValue(true)
+        .help("Unstage and remove paths only from the index.");
+    rmParser.addArgument("path", argparse::POSITIONAL).required().help("Files to remove.")
+        .scan<std::vector<std::string>>();
+
+    // add command
+    argparse::ArgumentParser addParser{"add"};
+    addParser.description("Add files contents to the index.");
+    addParser.addArgument("path", argparse::POSITIONAL).required().help("Files to add.")
+        .scan<std::vector<std::string>>();
+
     // Add all the subcommands
     argparser.addSubcommand(initParser);
     argparser.addSubcommand(catFileParser);
@@ -1111,6 +1262,7 @@ int main(int argc, char **argv) {
     argparser.addSubcommand(lsFilesParser);
     argparser.addSubcommand(checkIgnoreParser);
     argparser.addSubcommand(statusParser);
+    argparser.addSubcommand(rmParser);
     argparser.parseArgs(argc, argv);
 
     if (initParser.ok()) {
@@ -1207,6 +1359,17 @@ int main(int argc, char **argv) {
 
     else if (statusParser.ok()) {
         std::cout << GitRepository::findRepo().getStatus() << '\n';
+    }
+
+    else if (rmParser.ok()) {
+        bool cached {rmParser.get<bool>("cached")};
+        std::vector<std::string> paths {rmParser.get<std::vector<std::string>>("path")};
+        GitRepository::findRepo().rm(paths, cached);
+    }
+
+    else if (addParser.ok()) {
+        std::vector<std::string> paths {rmParser.get<std::vector<std::string>>("path")};
+        GitRepository::findRepo().add(paths);
     }
     
     else {

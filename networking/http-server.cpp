@@ -13,7 +13,7 @@
 #include <unistd.h>
 #include <unordered_set>
 
-#include "../misc/ThreadPool.cpp"
+#include "../misc/ThreadPool.hpp"
 
 // HTTP Server Thread running?
 std::atomic<bool> httpServerRunning {true};
@@ -38,7 +38,7 @@ void exitWithError (int socket_, const std::string &message) {
 }
 
 // Helper to handle interupts
-void handleInterrupt(int signal) {
+void handleInterrupt(int) {
     std::cout << "Keyboard interrupt received, exiting.\n";
     httpServerRunning = false; close(serverSocket); 
 
