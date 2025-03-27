@@ -139,7 +139,7 @@ namespace INI {
             }
 
             // Read into curr object from an input string
-            void reads(const std::string &raw) {
+            void reads(const std::string &raw, bool ignoreDuplicates = false) {
                 std::string currSectionName, prevKey, line; 
                 std::size_t prevFirstNonSpace {0}, emptyLines {0}, lineNo {1};
                 for (const char &ch: raw) {
@@ -166,8 +166,9 @@ namespace INI {
                             else if (line.size() >= 3 && line[0] == '[' && line.back() == ']') {
                                 prevKey = ""; prevFirstNonSpace = 0;
                                 currSectionName = line.substr(1, line.size() - 2);
-                                if (exists(currSectionName))
-                                    throw std::runtime_error("Line #: " + std::to_string(lineNo) + ": Section '" + currSectionName + "' already exists.");
+                                if (exists(currSectionName) && !ignoreDuplicates)
+                                    throw std::runtime_error("Line #: " + std::to_string(lineNo) + ": Section '" 
+                                            + currSectionName + "' already exists.");
                                 (*this)[currSectionName] = {};
                             }
 
@@ -175,9 +176,9 @@ namespace INI {
                             else if (firstKVSeperator != std::string::npos && firstKVSeperator > 0) {
                                 prevFirstNonSpace = firstNonSpace; std::string value;
                                 std::tie(prevKey, value) = extractKV(line, firstKVSeperator);
-                                if (exists(currSectionName, prevKey))
-                                    throw std::runtime_error("Line #: " + std::to_string(lineNo) + ": Option '" + prevKey + "' in section '" + 
-                                        currSectionName + "' already exists.");
+                                if (exists(currSectionName, prevKey) && !ignoreDuplicates)
+                                    throw std::runtime_error("Line #: " + std::to_string(lineNo) + ": Option '" + 
+                                            prevKey + "' in section '" + currSectionName + "' already exists.");
                                 (*this)[currSectionName][prevKey] = value;
                             }
 

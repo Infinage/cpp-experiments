@@ -13,6 +13,7 @@
 #include <stack>
 #include <stdexcept>
 #include <string_view>
+#include <tuple>
 #include <type_traits>
 #include <unordered_map>
 #include <unordered_set>
@@ -26,7 +27,12 @@
 
 /*
  * TODO:
- * 1. ls-files parse uid, gid to user name
+ * 1. cgit log - when repo is empty
+ * 2. cgit cat-file - add type parameter
+ * 3. cgit add - add a folder directly
+ * 4. Empty repo - differentiate added to index and not
+ * 5. cgit commit with nothing added
+ * 6. Support packfiles
  */
 
 namespace fs = std::filesystem;
@@ -52,7 +58,7 @@ void writeTextFile(const std::string&, const std::string&) = delete;
 [[nodiscard]] std::string sha2Binary(std::string_view sha) {
     std::string binSha;
     binSha.reserve(20);
-    for (std::size_t i {0}; i < 40; i++) {
+    for (std::size_t i {0}; i < 40; i += 2) {
         std::string hexDigit {sha.substr(i, 2)};
         binSha.push_back(static_cast<char>(std::stoi(hexDigit, nullptr, 16)));
     }
@@ -215,8 +221,11 @@ class GitLeaf {
     public:
         std::string mode, path, sha;
 
-        GitLeaf(const std::string &mode, const std::string &path, const std::string &binSha):
-            mode(mode), path(path), sha(binary2Sha(binSha)) {}
+        GitLeaf(const std::string &mode, const std::string &path, const std::string &sha, bool shaInBinary = true):
+            mode(mode), path(path), sha(shaInBinary? binary2Sha(sha): sha) {}
+
+        // Copy constructor
+        GitLeaf(const GitLeaf &other): mode(other.mode), path(other.path), sha(other.sha) {}
 
         // Move constructor
         GitLeaf(GitLeaf &&other): 
@@ -236,7 +245,10 @@ class GitLeaf {
         }
 
         [[nodiscard]] inline std::string serialize() const {
-            return mode + ' ' + path + '\x00' + sha2Binary(sha);
+            std::string result {mode + ' ' + path}; 
+            result.push_back('\x00');
+            result.append(sha2Binary(sha));
+            return result;
         }
 
         // Comparators
@@ -253,11 +265,14 @@ class GitTree: public GitObject {
         GitTree(const std::string &sha, const std::string& raw): 
             GitObject(sha, "tree") { deserialize(raw); }
 
+        GitTree(const std::vector<GitLeaf> &data): 
+            GitObject("", "tree"), data(data) {}
+
         // Iterators
         inline std::vector<GitLeaf>::const_iterator begin() const { return data.cbegin(); }
         inline std::vector<GitLeaf>::const_iterator end() const { return data.cend(); }
 
-        void deserialize(const std::string &raw) {
+        void deserialize(const std::string &raw) override {
             enum states: short {START, MODE_DONE, PATH_DONE};
             std::string acc, mode, path;
             short state {START};
@@ -291,13 +306,13 @@ class GitTree: public GitObject {
             }
         }
 
-        [[nodiscard]] std::string serialize() const {
-            std::ostringstream oss;
+        [[nodiscard]] std::string serialize() const override {
+            std::string result;
             std::sort(data.begin(), data.end());
             for (const GitLeaf &leaf: data) {
-                oss << leaf.serialize();
+                result.append(leaf.serialize());
             }
-            return oss.str();
+            return result;
         }
 };
 
@@ -535,6 +550,49 @@ class GitRepository {
             return result;
         }
 
+        std::string writeIndexAsTree() {
+            // Extract git index
+            GitIndex index{GitIndex::readFromFile(repoFile({"index"}))};
+            std::vector<GitIndex::GitIndexEntry> &entries{index.getEntries()};
+
+            // Create a directory tree like structure
+            std::unordered_map<fs::path, std::vector<fs::path>> directoryTree;
+            std::unordered_map<std::string, const GitIndex::GitIndexEntry*> lookup;
+            for (const GitIndex::GitIndexEntry &entry: entries) {
+                lookup.emplace(entry.name, &entry);
+                fs::path curr {fs::path(entry.name)};
+                while (!curr.empty() && curr != curr.parent_path()) {
+                    fs::path parent {curr.parent_path()};
+                    directoryTree[parent].emplace_back(curr);
+                    curr = parent;
+                }
+            }
+
+            // Recursive func to write tree nodes starting at root for gitdir
+            std::function<std::tuple<std::string, fs::path, std::string>(const fs::path&)> backtrack {[&](const fs::path &curr) {
+                // A simple file
+                if (directoryTree.find(curr) == directoryTree.end()) {
+                    const GitIndex::GitIndexEntry* entry {lookup.at(curr)};
+                    std::string modeStr {std::format("{:02o}{:04o}", entry->modeType, entry->modePerms)};
+                    return std::make_tuple(modeStr, curr.filename(), entry->sha);
+                } 
+
+                // A folder
+                else {
+                    std::vector<GitLeaf> leaves;
+                    for (const fs::path &child: directoryTree[curr]) {
+                        auto [childMode, childPath, childSha] = backtrack(child);
+                        leaves.emplace_back(GitLeaf{childMode, childPath, childSha, false});
+                    }
+                    std::string sha {writeObject(std::make_unique<GitTree>(leaves), true)};
+                    return std::make_tuple(std::string{"040000"}, curr.filename(), sha);
+                }
+            }};
+
+            auto [_, __, sha] = backtrack("");
+            return sha;
+        }
+
     public:
         GitRepository(const fs::path &path, bool force = false):
             workTree(path), gitDir(path / ".git")
@@ -721,7 +779,7 @@ class GitRepository {
             return std::unique_ptr<T>(static_cast<T*>(obj.release()));
         }
 
-        std::string getLog(const std::string &objectHash, long maxCount) const {
+        std::string getLog(const std::string &commit, long maxCount) const {
             // Stop early
             if (maxCount == 0) return "";
 
@@ -729,6 +787,7 @@ class GitRepository {
             std::vector<std::unique_ptr<GitCommit>> logs;
 
             // DFS to read all the commits (until maxCount)
+            std::string objectHash {findObject(commit, "commit")};
             std::stack<std::pair<std::string, int>> stk {{{objectHash, 1}}};
             std::unordered_set<std::string> visited {objectHash};
             while (!stk.empty()) {
@@ -746,7 +805,7 @@ class GitRepository {
             std::sort(logs.begin(), logs.end(), [](const auto &c1, const auto &c2) { return *c1 > *c2; });
 
             // Print out the logs
-            std::ostringstream oss; std::size_t mc {static_cast<std::size_t>(maxCount)};
+            std::ostringstream oss; std::size_t mc {std::min(logs.size(), static_cast<std::size_t>(maxCount))};
             for (std::size_t i {0}; i < mc; i++)  {
                 const std::unique_ptr<GitCommit> &commit {logs[i]};
                 oss << "commit " << commit->sha << '\n'
@@ -966,54 +1025,24 @@ class GitRepository {
             return GitIgnore{absolute, scoped};
         }
 
+        std::pair<bool, std::string> getActiveBranch() const {
+            std::string headContents {readTextFile(repoFile({"HEAD"}))};
+            if (headContents.starts_with("ref: refs/heads/"))
+                return {false, headContents.substr(16, headContents.size() - 17)};
+            return {true, headContents.substr(headContents.size() - 1)};
+        }
+
         std::string getStatus() const {
             // Accumulate to string stream
             std::ostringstream oss;
 
             // Get current branch details
-            std::string headContents {readTextFile(repoFile({"HEAD"}))};
-            if (headContents.starts_with("ref: refs/heads/"))
-                oss << "On branch " << headContents.substr(16, headContents.size() - 17) << ".\n";
-            else
-                oss << "HEAD detached at " << headContents.substr(headContents.size() - 1) << ".\n";
+            bool isDetached; std::string currentBranchDetails;
+            std::tie(isDetached, currentBranchDetails) = getActiveBranch();
+            if (isDetached) oss << "HEAD detached at " << currentBranchDetails << "\n";
+            else oss << "On branch " << currentBranchDetails << "\n";
 
-            // Get a flat map of all tree entires in head recursively with its sha
-            std::unordered_map<std::string, std::string> head;
-            std::stack<std::pair<std::string, std::string>> stk {{{"HEAD", ""}}};
-            while (!stk.empty()) {
-                std::string ref, prefix;
-                std::tie(ref, prefix) = std::move(stk.top()); stk.pop();
-                std::unique_ptr<GitTree> tree {readObject<GitTree>(findObject(ref, "tree"))};
-                for (const GitLeaf &leaf: *tree) {
-                    std::string fullPath {(fs::path(prefix) / leaf.path).string()};
-                    if (leaf.mode.starts_with("04"))
-                        stk.emplace(leaf.sha, fullPath);
-                    else
-                        head.emplace(fullPath, leaf.sha);
-                }
-            }
-
-            // Compare diff between HEAD and index
-            oss << "\nChanges to be committed:\n";
-            fs::path indexFilePath {repoFile({"index"})};
-            GitIndex index {GitIndex::readFromFile(indexFilePath)};
-            for (const GitIndex::GitIndexEntry &entry: index.getEntries()) {
-                auto it {head.find(entry.name)};
-                if (it != head.end()) {
-                    if (it->second != entry.sha)
-                        oss << "  modified: " << entry.name << '\n';
-                    head.erase(it);
-                } else {
-                    oss << "  added: " << entry.name << '\n';
-                }
-            }
-
-            // Keys still left head are ones that weren't found in the index
-            for (const std::pair<const std::string, std::string> &kv: head)
-                oss << "  deleted: " << kv.first << '\n';
-
-            // Compare index and worktree
-            oss << "\nChanges not staged for commit:\n";
+            // Get all the files in the repo into map for easy lookup
             stdx::ordered_map<std::string, short> allFiles;
             for (const fs::directory_entry &entry: fs::recursive_directory_iterator(workTree)) {
                 fs::path relPath {fs::relative(entry, workTree)};
@@ -1021,31 +1050,76 @@ class GitRepository {
                     allFiles.insert(relPath.string(), 1);
             }
 
-            // Travel the index, comparing real files against cached versions
-            for (const GitIndex::GitIndexEntry &entry: index.getEntries()) {
-                fs::path fullPath {workTree / entry.name};
-                if (!fs::exists(fullPath))
-                    oss << "  deleted: " << entry.name << '\n';
-                else {
-                    std::chrono::duration fmtime {
-                        std::chrono::time_point_cast<std::chrono::nanoseconds>(
-                                fs::last_write_time(fullPath)).time_since_epoch()};
+            // If HEAD cannot be resolved, it is a fresh repo. 
+            // We can skip most of these portions
+            if (!findObject("HEAD").empty()) {
 
-                    long emtimeNS {static_cast<long>(entry.mtime.seconds * 10e9 + entry.mtime.nanoseconds)};
-                    long fmtimeNS {std::chrono::duration_cast<std::chrono::nanoseconds>(fmtime).count()};
-                    if (emtimeNS != fmtimeNS) {
-                        // Read as binary - create a blob and pass into writeObj func to get sha 
-                        std::ifstream ifs {fullPath, std::ios::binary};
-                        std::ostringstream ofs; ofs << ifs.rdbuf();
-                        std::string sha {writeObject(std::make_unique<GitBlob>("", ofs.str()))};
-                        if (sha != entry.sha)
-                            oss << "  modified: " << entry.name << '\n';
+                // Get a flat map of all tree entires in head recursively with its sha
+                std::unordered_map<std::string, std::string> head;
+                std::stack<std::pair<std::string, std::string>> stk {{{"HEAD", ""}}};
+                while (!stk.empty()) {
+                    std::string ref, prefix;
+                    std::tie(ref, prefix) = std::move(stk.top()); stk.pop();
+                    std::unique_ptr<GitTree> tree {readObject<GitTree>(findObject(ref, "tree"))};
+                    for (const GitLeaf &leaf: *tree) {
+                        std::string fullPath {(fs::path(prefix) / leaf.path).string()};
+                        if (leaf.mode.starts_with("04"))
+                            stk.emplace(leaf.sha, fullPath);
+                        else
+                            head.emplace(fullPath, leaf.sha);
                     }
                 }
 
-                // Removed visited entries, if something exists after the loop
-                // we know these are untracked ones not in the index
-                if (allFiles.exists(entry.name)) allFiles.erase(entry.name);
+                // Compare diff between HEAD and index
+                oss << "\nChanges to be committed:\n";
+                fs::path indexFilePath {repoFile({"index"})};
+                GitIndex index {GitIndex::readFromFile(indexFilePath)};
+                for (const GitIndex::GitIndexEntry &entry: index.getEntries()) {
+                    auto it {head.find(entry.name)};
+                    if (it != head.end()) {
+                        if (it->second != entry.sha)
+                            oss << "  modified: " << entry.name << '\n';
+                        head.erase(it);
+                    } else {
+                        oss << "  added: " << entry.name << '\n';
+                    }
+                }
+
+                // Keys still left head are ones that weren't found in the index
+                for (const std::pair<const std::string, std::string> &kv: head)
+                    oss << "  deleted: " << kv.first << '\n';
+
+                // Travel the index, comparing real files against cached versions
+                oss << "\nChanges not staged for commit:\n";
+                for (const GitIndex::GitIndexEntry &entry: index.getEntries()) {
+                    fs::path fullPath {workTree / entry.name};
+                    if (!fs::exists(fullPath))
+                        oss << "  deleted: " << entry.name << '\n';
+                    else {
+                        std::chrono::duration fmtime {
+                            std::chrono::time_point_cast<std::chrono::nanoseconds>(
+                                    fs::last_write_time(fullPath)).time_since_epoch()};
+
+                        long emtimeNS {static_cast<long>(entry.mtime.seconds * 10e9 + entry.mtime.nanoseconds)};
+                        long fmtimeNS {std::chrono::duration_cast<std::chrono::nanoseconds>(fmtime).count()};
+                        if (emtimeNS != fmtimeNS) {
+                            // Read as binary - create a blob and pass into writeObj func to get sha 
+                            std::ifstream ifs {fullPath, std::ios::binary};
+                            std::ostringstream ofs; ofs << ifs.rdbuf();
+                            std::string sha {writeObject(std::make_unique<GitBlob>("", ofs.str()))};
+                            if (sha != entry.sha)
+                                oss << "  modified: " << entry.name << '\n';
+                        }
+                    }
+
+                    // Removed visited entries, if something exists after the loop
+                    // we know these are untracked ones not in the index
+                    if (allFiles.exists(entry.name)) allFiles.erase(entry.name);
+                }
+            } 
+
+            else {
+                oss << "\nNo commits yet\n";
             }
 
             // List untracked files
@@ -1151,6 +1225,49 @@ class GitRepository {
             index.writeToFile(repoFile({"index"}));
             return index;
         }
+
+        void commit(const std::string &message) {
+            std::string treeSha {writeIndexAsTree()}; 
+            std::string parentSha {findObject("HEAD")}; 
+
+            // Get user.name and user.email from ~/.gitconfig
+            char *HOME_DIR {std::getenv("HOME")};
+            INI::Parser parser; 
+            parser.reads(readTextFile(fs::path{HOME_DIR? HOME_DIR: ""} / ".gitconfig"));
+            parser.reads(readTextFile(gitDir / "config"), true); // ignore duplicates & override
+            if (!parser.exists("user", "name") || !parser.exists("user", "email"))
+                throw std::runtime_error("user.name / user.email not set.");
+
+            // Get the time related info
+            std::chrono::time_point now {std::chrono::system_clock::now()};
+            std::time_t now_c {std::chrono::system_clock::to_time_t(now)};
+            std::tm local_tm = *std::localtime(&now_c);
+            std::tm utc_tm = *std::gmtime(&now_c);
+            int offset_seconds = (local_tm.tm_hour - utc_tm.tm_hour) * 3600 + (local_tm.tm_min - utc_tm.tm_min) * 60;
+            std::string tz {std::format("{}{:02}{:02}", (offset_seconds >= 0 ? "+" : "-"), 
+                    std::abs(offset_seconds) / 3600, (std::abs(offset_seconds) % 3600) / 60)};
+
+            // Committer details
+            std::string author {std::format("{} <{}> {} {}", parser["user"]["name"], 
+                    parser["user"]["email"], now_c, tz)};
+
+            std::ostringstream oss;
+            oss << "tree " << treeSha << '\n';
+            if (!parentSha.empty()) 
+                oss << "parent " << parentSha << '\n';
+            oss << "author " << author << "\n"
+                << "committer " << author << "\n\n"
+                << (message | trim) << "\n";
+
+            // Write the commit object to disk
+            std::string commitSha {writeObject(std::make_unique<GitCommit>("", oss.str()), true)};
+
+            // Update HEAD if detached, else update active branch ref
+            bool isDetached; std::string currentBranchDetails;
+            std::tie(isDetached, currentBranchDetails) = getActiveBranch();
+            fs::path writePath {isDetached? repoFile({"HEAD"}): repoFile({"refs", "heads", currentBranchDetails})};
+            writeTextFile(commitSha + '\n', writePath);
+        }
 };
 
 int main(int argc, char **argv) {
@@ -1249,6 +1366,12 @@ int main(int argc, char **argv) {
     addParser.addArgument("path", argparse::POSITIONAL).required().help("Files to add.")
         .scan<std::vector<std::string>>();
 
+    // commit command
+    argparse::ArgumentParser commitParser{"commit"};
+    commitParser.description("Record changes to the repository.");
+    commitParser.addArgument("message", argparse::NAMED).required().alias("m")
+        .help("Message to associate with this commit.");
+
     // Add all the subcommands
     argparser.addSubcommand(initParser);
     argparser.addSubcommand(catFileParser);
@@ -1263,6 +1386,10 @@ int main(int argc, char **argv) {
     argparser.addSubcommand(checkIgnoreParser);
     argparser.addSubcommand(statusParser);
     argparser.addSubcommand(rmParser);
+    argparser.addSubcommand(addParser);
+    argparser.addSubcommand(commitParser);
+
+    // Parser the arguments
     argparser.parseArgs(argc, argv);
 
     if (initParser.ok()) {
@@ -1368,8 +1495,12 @@ int main(int argc, char **argv) {
     }
 
     else if (addParser.ok()) {
-        std::vector<std::string> paths {rmParser.get<std::vector<std::string>>("path")};
+        std::vector<std::string> paths {addParser.get<std::vector<std::string>>("path")};
         GitRepository::findRepo().add(paths);
+    }
+
+    else if (commitParser.ok()) {
+        GitRepository::findRepo().commit(commitParser.get("message"));
     }
     
     else {
