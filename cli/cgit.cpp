@@ -541,12 +541,12 @@ class GitIgnore {
         }
 };
 
-class GitPackIndex {
+class GitPack {
     private:
-        // Store all the pack indices from path
-        std::vector<fs::path> indexPaths;
+        // Store all the pack indices & files from path
+       std::vector<fs::path> indexPaths, packPaths;
 
-        static bool verifyHeader(std::ifstream &ifs) {
+        static bool verifyIndexHeader(std::ifstream &ifs) {
             // Verify magic byte header
             char header[4]; 
             ifs.read(header, 4); 
@@ -559,8 +559,8 @@ class GitPackIndex {
             return version == 2;
         }
 
-        // Binary search to find *first* offset at with part matches
-        unsigned int getIdxOffset(unsigned int start, unsigned int end, 
+        // Binary search to find *first* offset from the .idx file where `part` starts at
+        unsigned int getPackIdxOffset(unsigned int start, unsigned int end, 
                 const std::string &part, std::ifstream &ifs) const 
         {
             unsigned int skip {8 + 256 * 4}; 
@@ -578,14 +578,13 @@ class GitPackIndex {
             return start;
         }
 
-        void getHashMatchFromIndex(const std::string &part, const fs::path &path, 
-            std::vector<std::string> &matches) const 
-        {
+        // Returns a vector of resolved hashes along with the index
+        std::vector<std::pair<std::string, unsigned int>> getHashMatchFromIndex(const std::string &part, const fs::path &path) const {
             if (part.size() < 2)
                 throw std::runtime_error("Hex passed into PackIndex must be atleast 2 chars long.");
 
             std::ifstream ifs {path, std::ios::binary};
-            if (!verifyHeader(ifs))
+            if (!verifyIndexHeader(ifs))
                 throw std::runtime_error("Not a valid pack idx file: " + path.string());
 
             // Check fanout table layer 1 - 256 entries, 4 bytes each
@@ -599,32 +598,77 @@ class GitPackIndex {
             }
             
             // If hashes exist in the pack
+            std::vector<std::pair<std::string, unsigned int>> matches;
             if (curr - prev > 0) {
-                unsigned int skip {8 + 256 * 4}, startOffset {getIdxOffset(prev, curr, part, ifs)};
+                unsigned int skip {8 + 256 * 4}, startOffset {getPackIdxOffset(prev, curr, part, ifs)};
                 ifs.seekg(skip + (startOffset * 20), std::ios::beg);
-                while (startOffset++ <= curr) {
+                while (startOffset <= curr) {
                     char shaBin[20];  ifs.read(shaBin, 20);
                     std::string sha {binary2Sha(std::string_view{shaBin, 20})};
-                    if (sha.starts_with(part)) matches.emplace_back(sha);
+                    if (sha.starts_with(part)) matches.emplace_back(sha, startOffset);
+                    startOffset++;
                 }
             }
+
+            return matches;
+        }
+
+        unsigned long getPackOffset(const std::string &objectHash) const {
+            std::vector<std::pair<fs::path, unsigned int>> matches;
+            for (const fs::path &path: indexPaths) {
+                for (const std::pair<std::string, unsigned int> &match: getHashMatchFromIndex(objectHash, path)) {
+                    matches.emplace_back(path, match.second);
+                }
+            }
+
+            if (matches.size() != 1)
+                throw std::runtime_error(objectHash + ": Expected candidates to be 1, got: " + std::to_string(matches.size()));
+
+            // Get the Pack offset along with count of records
+            std::ifstream ifs {matches[0].first, std::ios::binary};
+            unsigned int offset {matches[0].second}, total;
+            ifs.seekg(8 + (255 * 4), std::ios::beg);
+            readBigEndian(ifs, total);
+
+            // Read from first offset layer
+            ifs.seekg(1032 + (total * 24) + (offset * 4), std::ios::beg);
+            unsigned long result;
+            unsigned int r1, mask {1u << 31}; 
+            readBigEndian(ifs, r1);
+
+            // First layer contains direct entries
+            if (!(r1 & mask))
+                result = static_cast<unsigned long>(r1);
+
+            // First layer points to second layer
+            else {
+                r1 &= ~mask; ifs.seekg(1032 + (total * 28) + (r1 * 8), std::ios::beg);
+                readBigEndian(ifs, result);
+            } 
+
+            return result;
         }
 
     public:
-        GitPackIndex (const fs::path &path) {
+        GitPack (const fs::path &path) {
             if (fs::exists(path)) {
                 for (const fs::directory_entry &entry: fs::directory_iterator(path)) {
                     if (entry.path().extension() == ".idx")
                         indexPaths.emplace_back(entry);
+                    else if (entry.path().extension() == ".pack")
+                        packPaths.emplace_back(entry);
                 }
             }
         }
 
         // Check for matches & return the full sha match if found
-        [[nodiscard]] std::vector<std::string> getHashMatches(const std::string &part) const {
+        [[nodiscard]] std::vector<std::string> refResolve(const std::string &part) const {
             std::vector<std::string> matches;
-            for (const fs::path &path: indexPaths)
-                getHashMatchFromIndex(part, path, matches);
+            for (const fs::path &path: indexPaths) {
+                for (const std::pair<std::string, unsigned int> &match: getHashMatchFromIndex(part, path)) {
+                    matches.emplace_back(match.first);
+                }
+            }
 
             return matches;
         }
@@ -796,7 +840,7 @@ class GitRepository {
                     }
 
                     // Insert from pack indices if match found
-                    std::vector<std::string> asPack {GitPackIndex(repoDir({"objects", "pack"})).getHashMatches(part)};
+                    std::vector<std::string> asPack {GitPack(repoDir({"objects", "pack"})).refResolve(part)};
                     candidates.insert(candidates.end(), asPack.begin(), asPack.end());
                 }
 
