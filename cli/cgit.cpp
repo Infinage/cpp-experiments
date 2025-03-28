@@ -33,6 +33,9 @@
  * 4. Empty repo - differentiate added to index and not
  * 5. cgit commit with nothing added
  * 6. Support packfiles
+ *   - findObject: name resolution failed
+ *   - readObjectType: unable to locate object
+ *   - readObject<>: unable to locate object
  */
 
 namespace fs = std::filesystem;
@@ -538,6 +541,95 @@ class GitIgnore {
         }
 };
 
+class GitPackIndex {
+    private:
+        // Store all the pack indices from path
+        std::vector<fs::path> indexPaths;
+
+        static bool verifyHeader(std::ifstream &ifs) {
+            // Verify magic byte header
+            char header[4]; 
+            ifs.read(header, 4); 
+            if (std::strcmp(header, "\xfftOc") != 0) 
+                return false;
+
+            // Verify version number
+            unsigned int version;
+            readBigEndian(ifs, version);
+            return version == 2;
+        }
+
+        // Binary search to find *first* offset at with part matches
+        unsigned int getIdxOffset(unsigned int start, unsigned int end, 
+                const std::string &part, std::ifstream &ifs) const 
+        {
+            unsigned int skip {8 + 256 * 4}; 
+            while (start <= end) {
+                unsigned int mid = start + (end - start) / 2;
+                ifs.seekg(skip + (mid * 20), std::ios::beg);
+                char shaBin[20];  ifs.read(shaBin, 20);
+                std::string sha {binary2Sha(std::string_view{shaBin, 20})};
+                if (sha.compare(0, part.size(), part) >= 0) 
+                    end = mid - 1;
+                else 
+                    start = mid + 1;
+            }
+
+            return start;
+        }
+
+        void getHashMatchFromIndex(const std::string &part, const fs::path &path, 
+            std::vector<std::string> &matches) const 
+        {
+            if (part.size() < 2)
+                throw std::runtime_error("Hex passed into PackIndex must be atleast 2 chars long.");
+
+            std::ifstream ifs {path, std::ios::binary};
+            if (!verifyHeader(ifs))
+                throw std::runtime_error("Not a valid pack idx file: " + path.string());
+
+            // Check fanout table layer 1 - 256 entries, 4 bytes each
+            int hexInt {std::stoi(part.substr(0, 2), nullptr, 16)};
+            unsigned int curr, prev{0};
+            ifs.seekg(8 + (hexInt * 4), std::ios::beg);
+            readBigEndian(ifs, curr);
+            if (hexInt > 0) {
+                ifs.seekg(8 + ((hexInt - 1) * 4), std::ios::beg);
+                readBigEndian(ifs, prev);
+            }
+            
+            // If hashes exist in the pack
+            if (curr - prev > 0) {
+                unsigned int skip {8 + 256 * 4}, startOffset {getIdxOffset(prev, curr, part, ifs)};
+                ifs.seekg(skip + (startOffset * 20), std::ios::beg);
+                while (startOffset++ <= curr) {
+                    char shaBin[20];  ifs.read(shaBin, 20);
+                    std::string sha {binary2Sha(std::string_view{shaBin, 20})};
+                    if (sha.starts_with(part)) matches.emplace_back(sha);
+                }
+            }
+        }
+
+    public:
+        GitPackIndex (const fs::path &path) {
+            if (fs::exists(path)) {
+                for (const fs::directory_entry &entry: fs::directory_iterator(path)) {
+                    if (entry.path().extension() == ".idx")
+                        indexPaths.emplace_back(entry);
+                }
+            }
+        }
+
+        // Check for matches & return the full sha match if found
+        [[nodiscard]] std::vector<std::string> getHashMatches(const std::string &part) const {
+            std::vector<std::string> matches;
+            for (const fs::path &path: indexPaths)
+                getHashMatchFromIndex(part, path, matches);
+
+            return matches;
+        }
+};
+
 class GitRepository {
     private:
         mutable fs::path workTree, gitDir;
@@ -702,9 +794,13 @@ class GitRepository {
                                 candidates.emplace_back(prefix + fname);
                         }
                     }
+
+                    // Insert from pack indices if match found
+                    std::vector<std::string> asPack {GitPackIndex(repoDir({"objects", "pack"})).getHashMatches(part)};
+                    candidates.insert(candidates.end(), asPack.begin(), asPack.end());
                 }
 
-                // Check for tag match
+               // Check for tag match
                 std::string asTag {refResolve("refs/tags/" + name)};
                 if (!asTag.empty()) candidates.emplace_back(asTag);
 
@@ -740,6 +836,7 @@ class GitRepository {
 
         std::string readObjectType(const std::string &objectHash) const {
             fs::path path {repoFile({"objects", objectHash.substr(0, 2), objectHash.substr(2)})};
+            if (!fs::exists(path)) throw std::runtime_error("Unable to locate object: " + objectHash);
             std::string raw {zhelper::zread(path)};
             std::size_t fmtEndPos {raw.find(' ')};
             return raw.substr(0, fmtEndPos);
@@ -747,6 +844,7 @@ class GitRepository {
 
         std::unique_ptr<GitObject> readObject(const std::string &objectHash) const {
             fs::path path {repoFile({"objects", objectHash.substr(0, 2), objectHash.substr(2)})};
+            if (!fs::exists(path)) throw std::runtime_error("Unable to locate object: " + objectHash);
             std::string raw {zhelper::zread(path)};
 
             // Format: "<FMT> <SIZE>\x00<DATA...>"
@@ -891,7 +989,7 @@ class GitRepository {
         }
 
         // Recursively resolve ref until we have a sha hash
-        std::string refResolve(const std::string &path) const {
+        [[nodiscard]] std::string refResolve(const std::string &path) const {
             std::string currRef {"ref: " + path};
             while (currRef.starts_with("ref: ")) {
                 fs::path path {repoFile({currRef.substr(5)})};
