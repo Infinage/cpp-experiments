@@ -36,6 +36,7 @@
  *   - findObject: name resolution failed
  *   - readObjectType: unable to locate object
  *   - readObject<>: unable to locate object
+ * 7. Git status returns folders as untracked
  */
 
 namespace fs = std::filesystem;
@@ -655,6 +656,20 @@ class GitPack {
             return {matches[0].first.replace_extension(".pack"), result};
         }
 
+        static std::size_t readVarLenInt(std::basic_string_view<unsigned char> &sv) {
+            std::size_t pos{0}, result {0}; 
+            int shift {0};
+            while (true) {
+                unsigned char byte {sv[pos]};
+                result |= static_cast<std::size_t>((byte & 127) << shift);
+                shift += 7; pos++;
+                if (!(byte & 128)) break;
+            }
+
+            sv = sv.substr(pos);
+            return result;
+        }
+
     public:
         GitPack (const fs::path &path) {
             if (fs::exists(path)) {
@@ -682,47 +697,150 @@ class GitPack {
         [[nodiscard]] std::string extract(const std::string &objectHash) const {
             fs::path packFile; unsigned long offset;
             std::tie(packFile, offset) = getPackFileOffset(objectHash);
+
+            // Thin packs must be resolved already. We assume that a pack
+            // is self contained. All references point to same pack file
             std::ifstream ifs {packFile, std::ios::binary};
             if (!verifyHeader(ifs, "PACK", 2))
                 throw std::runtime_error("Not a valid pack file: " + packFile.string());
 
-            // type and length
-            bool msb {true}; short type{0}; 
-            std::size_t length; int shift;
-            ifs.seekg(static_cast<std::streamoff>(offset), std::ios::beg);
-            while (msb) {
-                int byte = ifs.get();
-                msb = byte & 128;
-                if (!type) {
-                    type = (byte >> 4) & 7;
-                    length = byte & 15;
-                    shift = 4;
-                } else {
-                    length |= static_cast<std::size_t>((byte & 127) << shift);
-                    shift += 7;
+            // Do we have additional objects left in the chain?
+            // Type, offset, size (size relevant only for base obj)
+            std::vector<std::tuple<short, unsigned int, unsigned int>> deltaChain;
+            while (true) {
+                // type and length
+                short type{0}; std::size_t length; int shift;
+                ifs.seekg(static_cast<std::streamoff>(offset), std::ios::beg);
+                bool msb {true};
+                while (msb) {
+                    int byte = ifs.get();
+                    msb = byte & 128;
+                    if (!type) {
+                        type = (byte >> 4) & 7;
+                        length = byte & 15;
+                        shift = 4;
+                    } else {
+                        length |= static_cast<std::size_t>((byte & 127) << shift);
+                        shift += 7;
+                    }
                 }
+
+                if (type >= 1 && type <= 4) {
+                    deltaChain.emplace_back(type, ifs.tellg(), length);
+                    break;
+                }
+
+                else if (type == 6) {
+                    // Big endian encoding
+                    std::size_t relOffset{0};
+                    while (true) {
+                        int byte = ifs.get();
+                        relOffset = (relOffset << 7) | static_cast<std::size_t>(byte & 127);
+                        if (!(byte & 128)) break;
+                        relOffset += 1;
+                    }
+
+                    deltaChain.emplace_back(0, ifs.tellg(), length);
+                    offset -= relOffset;
+                } 
+
+                else if (type == 7) {
+                    char shaBin[20];  ifs.read(shaBin, 20);
+                    std::string sha {binary2Sha(std::string_view{shaBin, 20})};
+                    deltaChain.emplace_back(0, ifs.tellg(), length);
+                    offset = getPackFileOffset(sha).second;
+                }
+
+                else {
+                    throw std::runtime_error(objectHash + 
+                            " has unexpected format: " + std::to_string(type));
+                }
+            }
+
+            // Process the delta chain
+            short baseType; std::string result;
+            while (!deltaChain.empty()) {
+                short type; unsigned int offset, size;
+                std::tie(type, offset, size) = std::move(deltaChain.back());
+                deltaChain.pop_back();
+                ifs.seekg(offset, std::ios::beg);
+                std::string decompressed {zhelper::zdecompress(ifs)};
+                if (size != decompressed.size())
+                    throw std::runtime_error("Incorrect decompressed object size.");
+
+                if (type == 0) {
+                    // We might end up copying multiple pieces from the base obj
+                    std::string baseObj {std::move(result)};
+
+                    std::basic_string_view<unsigned char> dsv {
+                        reinterpret_cast<const unsigned char*>(decompressed.data()), 
+                        decompressed.size()};
+
+                    std::size_t sourceLen {readVarLenInt(dsv)}; 
+                    size = static_cast<unsigned int>(readVarLenInt(dsv));
+
+                    // Assert source input size is correct
+                    if (baseObj.size() != sourceLen)
+                        throw std::runtime_error("Incorrect source object size.");
+
+                    // Quick helper for popping from front of the view
+                    auto pop_front{[](std::basic_string_view<unsigned char> &dsv){
+                        unsigned char front {dsv.front()};
+                        dsv = dsv.substr(1);
+                        return front;
+                    }};
+
+                    // Continue reading until end of the instruction set 
+                    // ** We can have multiple instructions **
+                    while (!dsv.empty()) {
+                        unsigned char op {pop_front(dsv)};
+
+                        // Copy from prev
+                        if (op & 128) {
+                            std::size_t copyOffset {0}, copySize {0};
+                            if (op &  1) copyOffset |= static_cast<std::size_t>(pop_front(dsv) <<  0);
+                            if (op &  2) copyOffset |= static_cast<std::size_t>(pop_front(dsv) <<  8);
+                            if (op &  4) copyOffset |= static_cast<std::size_t>(pop_front(dsv) << 16);
+                            if (op &  8) copyOffset |= static_cast<std::size_t>(pop_front(dsv) << 24);
+                            if (op & 16)   copySize |= static_cast<std::size_t>(pop_front(dsv) <<  0);
+                            if (op & 32)   copySize |= static_cast<std::size_t>(pop_front(dsv) <<  8);
+                            if (op & 64)   copySize |= static_cast<std::size_t>(pop_front(dsv) << 16);
+
+                            // If copy size is not set, set default size
+                            if (!copySize) copySize = 0x10000;
+                            result.append(baseObj.substr(copyOffset, copySize));
+                        }
+
+                        // Insert / add
+                        else {
+                            result.append(dsv.begin(), dsv.begin() + op);
+                            dsv = dsv.substr(op);
+                        }
+                    }
+                }
+
+                // Base object type, simply read it as it is
+                else {
+                    baseType = type;
+                    result = std::move(decompressed);
+                }
+
+                // Assert final output size is correct
+                if (result.size() != size)
+                    throw std::runtime_error("Incorrect dest object size.");
             }
 
             // Reformat to the way the other functions expect
             std::string fmt;
-            switch (type) {
+            switch (baseType) {
                 case 1: fmt = "commit"; break;
                 case 2: fmt = "tree"; break;
                 case 3: fmt = "blob"; break;
                 case 4: fmt = "tag"; break;
-                default: throw std::runtime_error("Unsupported format: " + std::to_string(type));
             }
 
-            // ZDecompress and compare the inflated 
-            // size against what we parsed
-            std::string decompressed {zhelper::zdecompress(ifs)};
-            if (decompressed.size() != length)
-                throw std::runtime_error("Incorrect obj size, expected: " + 
-                        std::to_string(length) + ", got: " + 
-                        std::to_string(decompressed.size()));
-
             // "<FMT> <SIZE>\x00<DATA...>
-            return fmt + ' ' + std::to_string(length) + '\x00' + decompressed;
+            return fmt + ' ' + std::to_string(result.size()) + '\x00' + result;
         }
 };
 
