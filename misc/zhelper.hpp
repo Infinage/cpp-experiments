@@ -21,33 +21,51 @@ namespace zhelper {
         return compressed;
     }
 
-    [[nodiscard]] inline std::string zdecompress(const std::vector<std::uint8_t> &compressed) {
-        std::size_t destLen {compressed.size() * 4};
-        std::vector<std::uint8_t> decompressed(destLen);
+    [[nodiscard]] inline std::string zdecompress(std::ifstream &ifs) {
+        constexpr std::size_t CHUNK_SIZE = 4096;
+        std::vector<char> inBuffer(CHUNK_SIZE);
+        std::vector<char> outBuffer(CHUNK_SIZE);
+        std::string decompressed;
 
-        int status;
-        while((status = uncompress(decompressed.data(), &destLen, compressed.data(), compressed.size())) == Z_BUF_ERROR) {
-            destLen *= 2; decompressed.resize(destLen);
+        z_stream strm{}; int ret;
+        strm.zalloc = Z_NULL; strm.zfree = Z_NULL; strm.opaque = Z_NULL;
+        if ((ret = inflateInit(&strm)) != Z_OK) {
+            throw std::runtime_error("ZError: Failed to initialize zlib inflater");
         }
 
-        if (status != Z_OK)
-            throw std::runtime_error("ZError: Decompression failed");
+        do {
+            ifs.read(inBuffer.data(), CHUNK_SIZE);
+            std::streampos bytesRead = ifs.gcount();
+            if (bytesRead == 0) break;
 
-        decompressed.resize(destLen);
-        return std::string{decompressed.begin(), decompressed.end()};
+            strm.avail_in = static_cast<uInt>(bytesRead);
+            strm.next_in = reinterpret_cast<Bytef *>(inBuffer.data());
+
+            do {
+                strm.avail_out = CHUNK_SIZE;
+                strm.next_out = reinterpret_cast<Bytef *>(outBuffer.data());
+
+                ret = inflate(&strm, Z_NO_FLUSH);
+                if (ret != Z_OK && ret != Z_STREAM_END && ret != Z_BUF_ERROR) {
+                    inflateEnd(&strm);
+                    throw std::runtime_error("ZError: Decompress failed: " + std::to_string(ret));
+                }
+
+                std::size_t have = CHUNK_SIZE - strm.avail_out;
+                decompressed.append(outBuffer.data(), have);
+
+            } while (strm.avail_out == 0);
+            
+        } while (ret != Z_STREAM_END);
+
+        inflateEnd(&strm);
+        return decompressed;
     }
 
     [[nodiscard]] inline std::string zread(const std::string &ifile) {
-        // Read the input as binary
-        std::ifstream ifs {ifile, std::ios::binary | std::ios::ate};
+        std::ifstream ifs {ifile, std::ios::binary | std::ios::binary};
         if (!ifs) throw std::runtime_error("ZError: Cannot open file for reading: " + ifile);
-        long fileSize {ifs.tellg()}; ifs.seekg(0, std::ios::beg);
-        std::vector<std::uint8_t> compressed(static_cast<std::size_t>(fileSize));
-        if (!ifs.read(reinterpret_cast<char*>(compressed.data()), fileSize))
-            throw std::runtime_error("ZError: Failed to read from file: " + ifile);
-
-        // Uncompress and return result
-        return zhelper::zdecompress(compressed);
+        return zdecompress(ifs);
     }
 
     inline void zwrite(const std::string &uncompressed, const std::string &ofile) {

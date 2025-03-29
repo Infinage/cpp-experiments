@@ -546,33 +546,38 @@ class GitPack {
         // Store all the pack indices & files from path
        std::vector<fs::path> indexPaths, packPaths;
 
-        static bool verifyIndexHeader(std::ifstream &ifs) {
+        static bool verifyHeader(std::ifstream &ifs, const std::string &expectedHeader, unsigned int expectedVersion) {
             // Verify magic byte header
             char header[4]; 
             ifs.read(header, 4); 
-            if (std::strcmp(header, "\xfftOc") != 0) 
+            if (std::strcmp(header, expectedHeader.c_str()) != 0) 
                 return false;
 
             // Verify version number
             unsigned int version;
             readBigEndian(ifs, version);
-            return version == 2;
+            return version == expectedVersion;
         }
 
         // Binary search to find *first* offset from the .idx file where `part` starts at
-        unsigned int getPackIdxOffset(unsigned int start, unsigned int end, 
+        unsigned int getPackIdxOffsetStart(unsigned int start, unsigned int end, 
                 const std::string &part, std::ifstream &ifs) const 
         {
-            unsigned int skip {8 + 256 * 4}; 
+            constexpr unsigned int skip {8 + 256 * 4}; 
             while (start <= end) {
                 unsigned int mid = start + (end - start) / 2;
                 ifs.seekg(skip + (mid * 20), std::ios::beg);
-                char shaBin[20];  ifs.read(shaBin, 20);
+
+                char shaBin[20]; ifs.read(shaBin, 20);
                 std::string sha {binary2Sha(std::string_view{shaBin, 20})};
-                if (sha.compare(0, part.size(), part) >= 0) 
+
+                // We check start == 0 to prevent underflow (uint)
+                if (sha.compare(0, part.size(), part) >= 0) {
+                    if (start == mid) break;
                     end = mid - 1;
-                else 
+                } else {
                     start = mid + 1;
+                }
             }
 
             return start;
@@ -584,7 +589,7 @@ class GitPack {
                 throw std::runtime_error("Hex passed into PackIndex must be atleast 2 chars long.");
 
             std::ifstream ifs {path, std::ios::binary};
-            if (!verifyIndexHeader(ifs))
+            if (!verifyHeader(ifs, "\xfftOc", 2))
                 throw std::runtime_error("Not a valid pack idx file: " + path.string());
 
             // Check fanout table layer 1 - 256 entries, 4 bytes each
@@ -600,12 +605,13 @@ class GitPack {
             // If hashes exist in the pack
             std::vector<std::pair<std::string, unsigned int>> matches;
             if (curr - prev > 0) {
-                unsigned int skip {8 + 256 * 4}, startOffset {getPackIdxOffset(prev, curr, part, ifs)};
+                unsigned int skip {8 + 256 * 4}, startOffset {getPackIdxOffsetStart(prev, curr, part, ifs)};
                 ifs.seekg(skip + (startOffset * 20), std::ios::beg);
                 while (startOffset <= curr) {
                     char shaBin[20];  ifs.read(shaBin, 20);
                     std::string sha {binary2Sha(std::string_view{shaBin, 20})};
-                    if (sha.starts_with(part)) matches.emplace_back(sha, startOffset);
+                    if (!sha.starts_with(part)) break;
+                    matches.emplace_back(sha, startOffset);
                     startOffset++;
                 }
             }
@@ -613,7 +619,7 @@ class GitPack {
             return matches;
         }
 
-        unsigned long getPackOffset(const std::string &objectHash) const {
+        std::pair<fs::path, unsigned long> getPackFileOffset(const std::string &objectHash) const {
             std::vector<std::pair<fs::path, unsigned int>> matches;
             for (const fs::path &path: indexPaths) {
                 for (const std::pair<std::string, unsigned int> &match: getHashMatchFromIndex(objectHash, path)) {
@@ -646,7 +652,7 @@ class GitPack {
                 readBigEndian(ifs, result);
             } 
 
-            return result;
+            return {matches[0].first.replace_extension(".pack"), result};
         }
 
     public:
@@ -672,11 +678,58 @@ class GitPack {
 
             return matches;
         }
+
+        [[nodiscard]] std::string extract(const std::string &objectHash) const {
+            fs::path packFile; unsigned long offset;
+            std::tie(packFile, offset) = getPackFileOffset(objectHash);
+            std::ifstream ifs {packFile, std::ios::binary};
+            if (!verifyHeader(ifs, "PACK", 2))
+                throw std::runtime_error("Not a valid pack file: " + packFile.string());
+
+            // type and length
+            bool msb {true}; short type{0}; 
+            std::size_t length; int shift;
+            ifs.seekg(static_cast<std::streamoff>(offset), std::ios::beg);
+            while (msb) {
+                int byte = ifs.get();
+                msb = byte & 128;
+                if (!type) {
+                    type = (byte >> 4) & 7;
+                    length = byte & 15;
+                    shift = 4;
+                } else {
+                    length |= static_cast<std::size_t>((byte & 127) << shift);
+                    shift += 7;
+                }
+            }
+
+            // Reformat to the way the other functions expect
+            std::string fmt;
+            switch (type) {
+                case 1: fmt = "commit"; break;
+                case 2: fmt = "tree"; break;
+                case 3: fmt = "blob"; break;
+                case 4: fmt = "tag"; break;
+                default: throw std::runtime_error("Unsupported format: " + std::to_string(type));
+            }
+
+            // ZDecompress and compare the inflated 
+            // size against what we parsed
+            std::string decompressed {zhelper::zdecompress(ifs)};
+            if (decompressed.size() != length)
+                throw std::runtime_error("Incorrect obj size, expected: " + 
+                        std::to_string(length) + ", got: " + 
+                        std::to_string(decompressed.size()));
+
+            // "<FMT> <SIZE>\x00<DATA...>
+            return fmt + ' ' + std::to_string(length) + '\x00' + decompressed;
+        }
 };
 
 class GitRepository {
     private:
         mutable fs::path workTree, gitDir;
+        std::unordered_map<std::string, std::string> packedRefs;
         INI::Parser conf;  
 
         fs::path repoPath(const std::initializer_list<std::string_view> &parts) const {
@@ -729,6 +782,11 @@ class GitRepository {
             return sha;
         }
 
+        std::string getPackedRef(const std::string &key) const {
+            auto it {packedRefs.find(key)};
+            return it == packedRefs.end()? "": it->second;
+        }
+
     public:
         GitRepository(const fs::path &path, bool force = false):
             workTree(path), gitDir(path / ".git")
@@ -744,6 +802,29 @@ class GitRepository {
                 std::string repoVersion {"** MISSING **"};
                 if (!conf.exists("core", "repositoryformatversion") || (repoVersion = conf["core"]["repositoryformatversion"]) != "0")
                     throw std::runtime_error("Unsupported repositoryformaversion: " + repoVersion);
+
+                // Parse packed-refs
+                fs::path parsedRefsFile {repoFile({"packed-refs"})};
+                if (fs::exists(parsedRefsFile)) {
+                    std::ifstream ifs {parsedRefsFile};
+                    std::string line;
+                    while (std::getline(ifs, line)) {
+                        line = line | trim;
+                        if (!line.empty() && line.at(0) != '#') {
+                            std::vector<std::string> splits = 
+                                line 
+                                | std::views::split(' ')
+                                | std::views::transform([&](auto &&split) { return split | trim; })
+                                | std::ranges::to<std::vector<std::string>>(); 
+
+                            if (splits.size() != 2)
+                                throw std::runtime_error("Invalid packed-refs format");
+
+                            // Add '<SHA> <ref> into the map'
+                            packedRefs[splits[1]] = splits[0];
+                        }
+                    }
+                }
             }
             
             else {
@@ -880,16 +961,35 @@ class GitRepository {
 
         std::string readObjectType(const std::string &objectHash) const {
             fs::path path {repoFile({"objects", objectHash.substr(0, 2), objectHash.substr(2)})};
-            if (!fs::exists(path)) throw std::runtime_error("Unable to locate object: " + objectHash);
-            std::string raw {zhelper::zread(path)};
-            std::size_t fmtEndPos {raw.find(' ')};
-            return raw.substr(0, fmtEndPos);
+            GitPack pack{repoDir({"objects", "pack"})};
+
+            // If neither loose object nor packed, return error
+            bool isLooseObj {fs::exists(path)};
+            bool isPackedObj {!isLooseObj && !pack.refResolve(objectHash).empty()};
+            if (!isLooseObj && !isPackedObj)
+                throw std::runtime_error("Unable to locate object: " + objectHash);
+
+            // Parse as a loose obj or a packed object and return the type
+            std::string raw;
+            if (isLooseObj) raw = zhelper::zread(path);
+            else raw = pack.extract(objectHash);
+            return raw.substr(0, raw.find(' '));
         }
 
         std::unique_ptr<GitObject> readObject(const std::string &objectHash) const {
             fs::path path {repoFile({"objects", objectHash.substr(0, 2), objectHash.substr(2)})};
-            if (!fs::exists(path)) throw std::runtime_error("Unable to locate object: " + objectHash);
-            std::string raw {zhelper::zread(path)};
+            GitPack pack{repoDir({"objects", "pack"})};
+
+            // If neither loose object nor packed, return error
+            bool isLooseObj {fs::exists(path)};
+            bool isPackedObj {!isLooseObj && !pack.refResolve(objectHash).empty()};
+            if (!isLooseObj && !isPackedObj)
+                throw std::runtime_error("Unable to locate object: " + objectHash);
+
+            // Parse as a loose obj or a packed object and return the type
+            std::string raw;
+            if (isLooseObj) raw = zhelper::zread(path);
+            else raw = pack.extract(objectHash);
 
             // Format: "<FMT> <SIZE>\x00<DATA...>"
             std::size_t fmtEndPos {raw.find(' ')};
@@ -1037,7 +1137,8 @@ class GitRepository {
             std::string currRef {"ref: " + path};
             while (currRef.starts_with("ref: ")) {
                 fs::path path {repoFile({currRef.substr(5)})};
-                if (!fs::is_regular_file(path)) return "";
+                if (!fs::is_regular_file(path))
+                    return getPackedRef(fs::relative(path, gitDir).string());
                 currRef = readTextFile(path);
                 currRef.pop_back();
             }
