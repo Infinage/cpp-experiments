@@ -87,7 +87,7 @@ namespace argparse {
                     return std::get<T>(_value);
             }
 
-            std::string getHelp() const { 
+            std::string getHelp(const int width = 15) const { 
                 std::ostringstream oss, part;
 
                 // Handle the name portion with padding
@@ -96,7 +96,7 @@ namespace argparse {
                     part << ", -" << _alias;
 
                 // Insert name along with the actual help str
-                oss << std::left << std::setw(15) << part.str() 
+                oss << std::left << std::setw(width) << part.str() 
                     << "\t" << _helpStr;
 
                 if (_required) oss << " (REQUIRED)";
@@ -223,6 +223,7 @@ namespace argparse {
 
     class ArgumentParser {
         private:
+            int maxArgLen{15}, maxSubCmdLen{15};
             const std::string name, helpArgName, helpAliasName;
             std::optional<std::string> _description, _epilog;
             std::unordered_map<std::string, Argument> allArgs;
@@ -273,24 +274,29 @@ namespace argparse {
             void updateReferences() {
                 if (refUpdated) return;
                 else {
-                    for (const auto [_, arg]: allArgs) {
+                    for (const auto [argName, arg]: allArgs) {
                         // Update positional args and named args
                         if (arg.getArgType() == ARGTYPE::POSITIONAL || arg.getArgType() == ARGTYPE::BOTH)
-                            positionalArgs.emplace(positionalArgs.size(), allArgs.at(arg.getName()));
+                            positionalArgs.emplace(positionalArgs.size(), allArgs.at(argName));
                         if (arg.getArgType() == ARGTYPE::NAMED || arg.getArgType() == ARGTYPE::BOTH)
-                            namedArgs.emplace(arg.getName(), allArgs.at(arg.getName()));
+                            namedArgs.emplace(argName, allArgs.at(argName));
 
                         // Updated alias map, error if alias already exists
                         if (!arg.getAlias().empty()) {
-                            auto [it, inserted] = aliasedArgs.try_emplace(arg.getAlias(), allArgs.at(arg.getName()));
+                            auto [it, inserted] = aliasedArgs.try_emplace(arg.getAlias(), allArgs.at(argName));
                             if (!inserted)
                                 throw std::runtime_error("Argparse Error: Duplicate argument with alias: " + arg.getAlias());
                         }
+
+                        // Update maxArgLen for prettified help message
+                        maxArgLen = std::max(maxArgLen, static_cast<int>(argName.size() + 10));
                     }
 
                     // Recurse into subcommands
-                    for (const std::pair<const std::string, ArgumentParser&> &kv: subcommands)
+                    for (const std::pair<const std::string, ArgumentParser&> &kv: subcommands) {
+                        maxSubCmdLen = std::max(maxSubCmdLen, static_cast<int>(kv.first.size() + 10));
                         kv.second.updateReferences();
+                    }
 
                     refUpdated = true;
                 }
@@ -496,7 +502,7 @@ namespace argparse {
                 for (const auto& [_, command]: subcommands) {
                     subcommandsAvailable += command.name + ',';
                     std::string commandDesc {command._description? *command._description: "The '" + command.name + "' subcommand"};
-                    subcommandsHelp << ' ' << std::left << std::setw(15) 
+                    subcommandsHelp << ' ' << std::left << std::setw(maxSubCmdLen) 
                                     << command.name << "\t" << commandDesc 
                                     << '\n';
                 }
@@ -525,7 +531,7 @@ namespace argparse {
                 // Print out all the args with details
                 oss << "\n\nArguments:\n";
                 for (const auto& [_, arg]: allArgs)
-                    oss << " " << arg.getHelp() << '\n';
+                    oss << " " << arg.getHelp(maxArgLen) << '\n';
 
                 if (_epilog) 
                     oss << "\n" << *_epilog << '\n';

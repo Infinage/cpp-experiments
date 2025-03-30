@@ -26,12 +26,7 @@
 
 /*
  * TODO:
- * 0. cgit status - not listing cgit binary
- * 1. cgit log - when repo is empty
- * 2. cgit cat-file - add type parameter
- * 3. Empty repo - differentiate added to index and not
- * 4. cgit commit with nothing added
- * 5. Check git ignore listing .swp files
+ * 1. cgit cat-file - add type parameter
  */
 
 namespace fs = std::filesystem;
@@ -374,13 +369,16 @@ class GitIndex {
             if (!fs::exists(path)) return GitIndex{};
 
             std::ifstream ifs{path, std::ios::binary};
-            char signature[4]; unsigned int version, count;
+            char signature[5] {}; 
+            unsigned int version, count;
 
             ifs.read(signature, 4);
-            if (std::strcmp(signature, "DIRC") != 0) throw std::runtime_error("Not a valid GitIndex file: " + path.string());
+            if (std::strcmp(signature, "DIRC") != 0) 
+                throw std::runtime_error("Not a valid GitIndex file: " + path.string());
             
             readBigEndian(ifs, version); readBigEndian(ifs, count);
-            if (version != 2) throw std::runtime_error("CGit only supports Index file version 2: " + path.string());
+            if (version != 2) 
+                throw std::runtime_error("CGit only supports Index file version 2: " + path.string());
 
             std::vector<GitIndexEntry> entries;
             for (unsigned int i {0}; i < count; i++) {
@@ -553,7 +551,7 @@ class GitPack {
 
         static bool verifyHeader(std::ifstream &ifs, const std::string &expectedHeader, unsigned int expectedVersion) {
             // Verify magic byte header
-            char header[4]; 
+            char header[5] {}; 
             ifs.read(header, 4); 
             if (std::strcmp(header, expectedHeader.c_str()) != 0) 
                 return false;
@@ -687,6 +685,8 @@ class GitPack {
         }
 
         // Check for matches & return the full sha match if found
+        // refResolve("HEAD") can be used to determine if the repo is 
+        // 'fresh' without commits. If fresh, returns empty string
         [[nodiscard]] std::vector<std::string> refResolve(const std::string &part) const {
             std::vector<std::string> matches;
             for (const fs::path &path: indexPaths) {
@@ -870,15 +870,17 @@ class GitRepository {
             std::vector<GitIndex::GitIndexEntry> &entries{index.getEntries()};
 
             // Create a directory tree like structure
-            std::unordered_map<fs::path, std::vector<fs::path>> directoryTree;
+            std::unordered_map<fs::path, std::unordered_set<fs::path>> directoryTree;
             std::unordered_map<std::string, const GitIndex::GitIndexEntry*> lookup;
             for (const GitIndex::GitIndexEntry &entry: entries) {
                 lookup.emplace(entry.name, &entry);
                 fs::path curr {fs::path(entry.name)};
                 while (!curr.empty() && curr != curr.parent_path()) {
                     fs::path parent {curr.parent_path()};
-                    directoryTree[parent].emplace_back(curr);
-                    curr = parent;
+                    bool parentAlreadyExists {directoryTree.find(parent) != directoryTree.end()};
+                    directoryTree[parent].emplace(curr);
+                    if (parentAlreadyExists) break;
+                    else curr = parent;
                 }
             }
 
@@ -1150,6 +1152,10 @@ class GitRepository {
             // Stop early
             if (maxCount == 0) return "";
 
+            // Check if no commits
+            if (refResolve("HEAD").empty())
+                throw std::runtime_error("HEAD does not have any commits yet.");
+
             // Store the commit objects
             std::vector<std::unique_ptr<GitCommit>> logs;
 
@@ -1206,9 +1212,10 @@ class GitRepository {
 
                 fs::path leafPath {prefix / leaf.path};
                 if (!recurse || type != "tree")
-                    oss << leaf.mode << ' ' << type << ' ' << leaf.sha << '\t' << leafPath.string() << '\n';
+                    oss << leaf.mode << ' ' << type << ' ' << leaf.sha << '\t' << leafPath.string();
                 else
                     oss << lsTree(leaf.sha, recurse, leafPath);
+                oss << '\n';
             }
 
             // Remove extra space
@@ -1420,10 +1427,12 @@ class GitRepository {
 
             // If HEAD cannot be resolved, it is a fresh repo. 
             // We can skip most of these portions & jump to else
-            if (!findObject("HEAD").empty()) {
+            bool freshRepo {refResolve("HEAD").empty()};
+            if (freshRepo) oss << "\nNo commits yet\n";
 
-                // Get a flat map of all tree entires in head recursively with its sha
-                std::unordered_map<std::string, std::string> head;
+            // Get a flat map of all tree entires in head recursively with its sha
+            std::unordered_map<std::string, std::string> head;
+            if (!freshRepo) {
                 std::stack<std::pair<std::string, std::string>> stk {{{"HEAD", ""}}};
                 while (!stk.empty()) {
                     std::string ref, prefix;
@@ -1437,10 +1446,12 @@ class GitRepository {
                             head.emplace(fullPath, leaf.sha);
                     }
                 }
+            }
 
-                // Compare diff between HEAD and index
+            // Compare diff between HEAD and index
+            fs::path indexFilePath {repoFile({"index"})};
+            if (fs::exists(indexFilePath)) {
                 oss << "\nChanges to be committed:\n";
-                fs::path indexFilePath {repoFile({"index"})};
                 GitIndex index {GitIndex::readFromFile(indexFilePath)};
                 for (const GitIndex::GitIndexEntry &entry: index.getEntries()) {
                     auto it {head.find(entry.name)};
@@ -1492,10 +1503,6 @@ class GitRepository {
                 }
             }
 
-            else {
-                oss << "\nNo commits yet\n";
-            }
-
             // List untracked files
             std::unordered_set<std::string> untracked;
             GitIgnore ignore {gitIgnore()};
@@ -1525,16 +1532,38 @@ class GitRepository {
             // When adding directories we skip gitignored files
             GitIgnore ignore {gitIgnore()};
 
-            for (const std::string &path: paths) {
+            for (std::string path: paths) {
+                if (path.empty()) 
+                    throw std::runtime_error("Path input provided cannot be empty.");
+
+                // Expand dot to CWD
+                if (path == ".") path = fs::current_path();
+
                 fs::path absPath {fs::absolute(path)};
                 fs::path relativePath {fs::relative(path, workTree)};
                 if (relativePath.string().substr(0, 2) == "..")
                     throw std::runtime_error("Cannot include paths outside of worktree: " + path);
 
                 if (fs::is_directory(absPath)) {
-                    for (const fs::directory_entry &entry: fs::recursive_directory_iterator(absPath)) {
+                    for (fs::recursive_directory_iterator it {absPath}, end; it != end; it++) {
+                        const fs::directory_entry &entry {*it};
                         fs::path currAbsPath{fs::absolute(entry)}, currRelPath{fs::relative(entry, workTree)};
-                        if (!ignore.check(currRelPath) && !fs::is_directory(currAbsPath))
+
+                        // Skip any path that contains ".git/" at any level
+                        bool skip {ignore.check(currRelPath)};
+                        if (!skip && fs::is_directory(entry)) {
+                            for (const fs::path &pathComponent: currRelPath) {
+                                if (pathComponent == ".git") {
+                                    skip = true; break;
+                                }
+                            }
+                        }
+
+                        // Disable backtracking into it
+                        if (skip) it.disable_recursion_pending();
+
+                        // Only include files not skipped
+                        else if (!skip && !fs::is_directory(currAbsPath))
                             result.emplace_back(currAbsPath, currRelPath);
                     }
                 }
@@ -1890,7 +1919,7 @@ int main(int argc, char **argv) {
             bool cached {rmParser.get<bool>("cached")};
             std::vector<std::string> paths {rmParser.get<std::vector<std::string>>("path")};
             GitRepository repo {GitRepository::findRepo()};
-            repo.rm(repo.collectFiles(paths), cached);
+            repo.rm(repo.collectFiles(paths), !cached);
         }
 
         else if (addParser.ok()) {
