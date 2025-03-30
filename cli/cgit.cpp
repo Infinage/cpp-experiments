@@ -1,9 +1,7 @@
-#include <sys/stat.h>
 #include <cctype>
 #include <chrono>
 #include <cmath>
 #include <cstring>
-#include <fcntl.h>
 #include <filesystem>
 #include <fstream>
 #include <initializer_list>
@@ -18,6 +16,7 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <ranges>
+#include <sys/stat.h>
 
 #include "argparse.hpp"
 #include "../misc/iniparser.hpp"
@@ -29,17 +28,13 @@
  * TODO:
  * 1. cgit log - when repo is empty
  * 2. cgit cat-file - add type parameter
- * 3. cgit add - add a folder directly
- * 4. Empty repo - differentiate added to index and not
- * 5. cgit commit with nothing added
- * 6. Support packfiles
- *   - findObject: name resolution failed
- *   - readObjectType: unable to locate object
- *   - readObject<>: unable to locate object
- * 7. Git status returns folders as untracked
+ * 3. Empty repo - differentiate added to index and not
+ * 4. cgit commit with nothing added
+ * 5. Check git ignore listing .swp files
  */
 
 namespace fs = std::filesystem;
+namespace cr = std::chrono;
 
 [[nodiscard]] std::string readTextFile(const fs::path &path) {
     std::ifstream ifs{path};
@@ -131,7 +126,7 @@ class GitBlob: public GitObject {
 class GitCommit: public GitObject {
     private:
         stdx::ordered_map<std::string, std::vector<std::string>> data;
-        std::chrono::system_clock::time_point commitUTC;
+        cr::system_clock::time_point commitUTC;
 
     public:
         // We will be reusing this for GitTag hence fmt is kept as a variable
@@ -183,8 +178,8 @@ class GitCommit: public GitObject {
                 std::size_t tzStartPos {committerMsg.rfind(' ')};
                 std::size_t tsStartPos {committerMsg.rfind(' ', tzStartPos - 1)};
                 std::string ts {committerMsg.substr(tsStartPos + 1, tzStartPos - tsStartPos)};
-                commitUTC = std::chrono::system_clock::from_time_t(std::stol(ts));
-            } else commitUTC = std::chrono::system_clock::now();
+                commitUTC = cr::system_clock::from_time_t(std::stol(ts));
+            } else commitUTC = cr::system_clock::now();
         }
 
         [[nodiscard]] std::string serialize() const override {
@@ -298,7 +293,7 @@ class GitTree: public GitObject {
 
                 else if (state == PATH_DONE) {
                     if (i + 20 > len) 
-                        throw std::runtime_error("Expected to have 20 bytes of char for SHA");
+                        throw std::runtime_error("Failed to deserialized tree - Expected to have 20 bytes of char for SHA");
                     acc.assign(raw, i, 20); i += 19;
                     data.emplace_back(mode, path, acc);
                     mode.clear(); path.clear(); acc.clear();
@@ -378,10 +373,10 @@ class GitIndex {
             char signature[4]; unsigned int version, count;
 
             ifs.read(signature, 4);
-            if (std::strcmp(signature, "DIRC") != 0) throw std::runtime_error("Not a valid GitIndex file.");
+            if (std::strcmp(signature, "DIRC") != 0) throw std::runtime_error("Not a valid GitIndex file: " + path.string());
             
             readBigEndian(ifs, version); readBigEndian(ifs, count);
-            if (version != 2) throw std::runtime_error("CGit only supports Index file version 2.");
+            if (version != 2) throw std::runtime_error("CGit only supports Index file version 2: " + path.string());
 
             std::vector<GitIndexEntry> entries;
             for (unsigned int i {0}; i < count; i++) {
@@ -512,7 +507,7 @@ class GitIgnore {
         bool check(const std::string &path) const {
             fs::path curr {path};
             if (!curr.is_relative())
-                throw std::runtime_error("Input paths provided must be relative to the repo's root.");
+                throw std::runtime_error("Input path must be relative to the repo's root, got: " + curr.string());
 
             // Check scoped rules
             std::optional<bool> result;
@@ -587,7 +582,7 @@ class GitPack {
         // Returns a vector of resolved hashes along with the index
         std::vector<std::pair<std::string, unsigned int>> getHashMatchFromIndex(const std::string &part, const fs::path &path) const {
             if (part.size() < 2)
-                throw std::runtime_error("Hex passed into PackIndex must be atleast 2 chars long.");
+                throw std::runtime_error("PackIndex: Hex must be atleast 2 chars long, got: " + part);
 
             std::ifstream ifs {path, std::ios::binary};
             if (!verifyHeader(ifs, "\xfftOc", 2))
@@ -766,7 +761,8 @@ class GitPack {
                 ifs.seekg(offset, std::ios::beg);
                 std::string decompressed {zhelper::zdecompress(ifs)};
                 if (size != decompressed.size())
-                    throw std::runtime_error("Incorrect decompressed object size.");
+                    throw std::runtime_error("Resolving delta chain failed for " 
+                            + objectHash + ".\nIncorrect decompressed object size.");
 
                 if (type == 0) {
                     // We might end up copying multiple pieces from the base obj
@@ -781,7 +777,8 @@ class GitPack {
 
                     // Assert source input size is correct
                     if (baseObj.size() != sourceLen)
-                        throw std::runtime_error("Incorrect source object size.");
+                        throw std::runtime_error("Resolving delta chain failed for " 
+                                + objectHash + ".\nIncorrect source object size.");
 
                     // Quick helper for popping from front of the view
                     auto pop_front{[](std::basic_string_view<unsigned char> &dsv){
@@ -827,7 +824,8 @@ class GitPack {
 
                 // Assert final output size is correct
                 if (result.size() != size)
-                    throw std::runtime_error("Incorrect dest object size.");
+                    throw std::runtime_error("Resolving delta chain failed for " 
+                            + objectHash + ".\nIncorrect dest object size.");
             }
 
             // Reformat to the way the other functions expect
@@ -913,13 +911,13 @@ class GitRepository {
                 if (!fs::is_directory(gitDir))
                     throw std::runtime_error("Not a Git Repository: " + fs::canonical(gitDir).string());
                 if (!fs::is_regular_file(gitDir / "config"))
-                    throw std::runtime_error("Configuration file missing");
+                    throw std::runtime_error("Configuration file missing: " + repoFile({"config"}).string());
 
                 // Read the config file
                 conf.reads(readTextFile(gitDir / "config"));
                 std::string repoVersion {"** MISSING **"};
                 if (!conf.exists("core", "repositoryformatversion") || (repoVersion = conf["core"]["repositoryformatversion"]) != "0")
-                    throw std::runtime_error("Unsupported repositoryformaversion: " + repoVersion);
+                    throw std::runtime_error("Unsupported `repositoryformatversion`: " + repoVersion);
 
                 // Parse packed-refs
                 fs::path parsedRefsFile {repoFile({"packed-refs"})};
@@ -996,7 +994,7 @@ class GitRepository {
             if (fs::exists(path / ".git"))
                 return GitRepository(path);
             else if (!path.has_parent_path() || path == path.parent_path())
-                throw std::runtime_error("No git directory");
+                throw std::runtime_error("Not a git directory");
             else
                 return findRepo(path.parent_path());
         }
@@ -1135,7 +1133,7 @@ class GitRepository {
         std::unique_ptr<T> readObject(const std::string &objectHashPart) const {
             std::unique_ptr<GitObject> obj {readObject(objectHashPart)};
             T* casted {dynamic_cast<T*>(obj.get())};
-            if (!casted) throw std::runtime_error("Invalid cast: GitObject is not of requested type.");
+            if (!casted) throw std::runtime_error("Invalid cast: GitObject is not of requested type: " + objectHashPart);
             return std::unique_ptr<T>(static_cast<T*>(obj.release()));
         }
 
@@ -1195,7 +1193,7 @@ class GitRepository {
                 else if (leaf.mode.starts_with("16"))
                     type = "commit"; // Submodule
                 else
-                    throw std::runtime_error("Unkwown tree mode: " + leaf.mode);
+                    throw std::runtime_error(ref + ": Unknown tree mode: " + leaf.mode);
 
                 fs::path leafPath {prefix / leaf.path};
                 if (!recurse || type != "tree")
@@ -1412,7 +1410,7 @@ class GitRepository {
             }
 
             // If HEAD cannot be resolved, it is a fresh repo. 
-            // We can skip most of these portions
+            // We can skip most of these portions & jump to else
             if (!findObject("HEAD").empty()) {
 
                 // Get a flat map of all tree entires in head recursively with its sha
@@ -1457,12 +1455,12 @@ class GitRepository {
                     if (!fs::exists(fullPath))
                         oss << "  deleted: " << entry.name << '\n';
                     else {
-                        std::chrono::duration fmtime {
-                            std::chrono::time_point_cast<std::chrono::nanoseconds>(
+                        cr::duration fmtime {
+                            cr::time_point_cast<cr::nanoseconds>(
                                     fs::last_write_time(fullPath)).time_since_epoch()};
 
                         long emtimeNS {static_cast<long>(entry.mtime.seconds * 10e9 + entry.mtime.nanoseconds)};
-                        long fmtimeNS {std::chrono::duration_cast<std::chrono::nanoseconds>(fmtime).count()};
+                        long fmtimeNS {cr::duration_cast<cr::nanoseconds>(fmtime).count()};
                         if (emtimeNS != fmtimeNS) {
                             // Read as binary - create a blob and pass into writeObj func to get sha 
                             std::ifstream ifs {fullPath, std::ios::binary};
@@ -1474,21 +1472,35 @@ class GitRepository {
                     }
 
                     // Removed visited entries, if something exists after the loop
-                    // we know these are untracked ones not in the index
-                    if (allFiles.exists(entry.name)) allFiles.erase(entry.name);
+                    // These are untracked ones not in the index - erase until parent dir
+                    if (allFiles.exists(entry.name)) {
+                        fs::path curr {entry.name};
+                        while (!curr.empty() && curr.parent_path() != curr) {
+                            allFiles.erase(curr);
+                            curr = curr.parent_path();
+                        }
+                    }
                 }
-            } 
+            }
 
             else {
                 oss << "\nNo commits yet\n";
             }
 
             // List untracked files
+            std::unordered_set<std::string> untracked;
             GitIgnore ignore {gitIgnore()};
             oss << "\nUntracked files:\n";
-            for (const std::pair<std::string, short> &kv: allFiles)
-                if (!ignore.check(kv.first))
-                    oss << "  " << kv.first << '\n';
+            for (const std::pair<std::string, short> &kv: allFiles) {
+                const std::string &entry {kv.first}, topParent {*fs::path(kv.first).begin()};
+                if (untracked.find(topParent) == untracked.end() && 
+                        (!fs::is_directory(entry) || !fs::is_empty(entry)) && 
+                        !ignore.check(entry)) 
+                {
+                    untracked.insert(topParent);
+                    oss << "  " << entry << '\n';
+                }
+            }
 
             std::string result {oss.str()};
             if (!result.empty() && result.back() == '\n')
@@ -1496,16 +1508,42 @@ class GitRepository {
             return result;
         }
 
-        GitIndex rm(const std::vector<std::string>& paths, bool delete_ = true, bool skipMissing = false) {
-            // Get list of abs paths to remove, ensure 
-            // no path exists outside of git workdir
-            std::unordered_set<fs::path> absPaths;
+        // Returns absolute / relative path as a pair
+        std::vector<std::pair<fs::path, fs::path>> collectFiles(const std::vector<std::string> &paths) const {
+            std::vector<std::pair<fs::path, fs::path>> result;
+
+            // Explictly allow adding gitignored files if directly passed
+            // When adding directories we skip gitignored files
+            GitIgnore ignore {gitIgnore()};
+
             for (const std::string &path: paths) {
                 fs::path absPath {fs::absolute(path)};
-                std::string relativePath {std::filesystem::relative(path, workTree)};
-                if (relativePath.substr(0, 2) == "..")
-                    throw std::runtime_error("Cannot remove paths outside of worktree: " + path);
-                absPaths.insert(absPath);
+                fs::path relativePath {fs::relative(path, workTree)};
+                if (relativePath.string().substr(0, 2) == "..")
+                    throw std::runtime_error("Cannot include paths outside of worktree: " + path);
+
+                if (fs::is_directory(absPath)) {
+                    for (const fs::directory_entry &entry: fs::recursive_directory_iterator(absPath)) {
+                        fs::path currAbsPath{fs::absolute(entry)}, currRelPath{fs::relative(entry, workTree)};
+                        if (!ignore.check(currRelPath) && !fs::is_directory(currAbsPath))
+                            result.emplace_back(currAbsPath, currRelPath);
+                    }
+                }
+
+                else {
+                    result.emplace_back(absPath, relativePath);
+                }
+            }
+
+            return result;
+        }
+
+        GitIndex rm(const std::vector<std::pair<fs::path, fs::path>>& paths, bool delete_ = true, bool skipMissing = false) {
+            // Get list of abs paths to remove, ensure no path 
+            // exists outside of git workdir by using collectFiles
+            std::unordered_set<fs::path> absPaths;
+            for (const std::pair<fs::path, fs::path> &pathPair: paths) {
+                absPaths.insert(pathPair.first);
             }
 
             // Iterate through index, check which files to remove and which to keep
@@ -1535,23 +1573,12 @@ class GitRepository {
             return index;
         }
 
-        GitIndex add(const std::vector<std::string>& paths) {
+        GitIndex add(const std::vector<std::pair<fs::path, fs::path>>& paths) {
             // Remove existing paths from index
             GitIndex index {rm(paths, false, true)};
 
-            // Get list of abs paths to add, ensure 
-            // path exists within worktree & is a valid file
-            std::vector<std::pair<fs::path, fs::path>> absPaths;
-            for (const std::string &path: paths) {
-                fs::path absPath {fs::absolute(path)};
-                std::string relPath {std::filesystem::relative(path, workTree)};
-                if (relPath.substr(0, 2) == ".." || !fs::exists(absPath))
-                    throw std::runtime_error("Not a file inside the worktree: " + path);
-                absPaths.emplace_back(absPath, relPath);
-            }
-
             std::vector<GitIndex::GitIndexEntry> &entries{index.getEntries()};
-            for (const auto &[fullPath, relPath]: absPaths) {
+            for (const auto &[fullPath, relPath]: paths) {
                 std::ifstream ifs {fullPath, std::ios::binary};
                 std::ostringstream ofs; ofs << ifs.rdbuf();
                 std::string sha {writeObject(std::make_unique<GitBlob>("", ofs.str()), true)};
@@ -1600,8 +1627,8 @@ class GitRepository {
                 throw std::runtime_error("user.name / user.email not set.");
 
             // Get the time related info
-            std::chrono::time_point now {std::chrono::system_clock::now()};
-            std::time_t now_c {std::chrono::system_clock::to_time_t(now)};
+            cr::time_point now {cr::system_clock::now()};
+            std::time_t now_c {cr::system_clock::to_time_t(now)};
             std::tm local_tm = *std::localtime(&now_c);
             std::tm utc_tm = *std::gmtime(&now_c);
             int offset_seconds = (local_tm.tm_hour - utc_tm.tm_hour) * 3600 + (local_tm.tm_min - utc_tm.tm_min) * 60;
@@ -1632,241 +1659,249 @@ class GitRepository {
 };
 
 int main(int argc, char **argv) {
-    argparse::ArgumentParser argparser{"git"};
-    argparser.description("CGit: A lite C++ clone of Git");
+    try {
+        argparse::ArgumentParser argparser{"git"};
+        argparser.description("CGit: A lite C++ clone of Git");
 
-    // init command
-    argparse::ArgumentParser initParser{"init"};
-    initParser.description("Initialize a new, empty repository.");
-    initParser.addArgument("path", argparse::POSITIONAL)
-        .defaultValue(".").help("Where to create the repository.");
+        // init command
+        argparse::ArgumentParser initParser{"init"};
+        initParser.description("Initialize a new, empty repository.");
+        initParser.addArgument("path", argparse::POSITIONAL)
+            .defaultValue(".").help("Where to create the repository.");
 
-    // cat-file command
-    argparse::ArgumentParser catFileParser{"cat-file"};
-    catFileParser.description("Provide content of repository objects.");
-    catFileParser.addArgument("object", argparse::POSITIONAL)
-        .required().help("The object to display.");
+        // cat-file command
+        argparse::ArgumentParser catFileParser{"cat-file"};
+        catFileParser.description("Provide content of repository objects.");
+        catFileParser.addArgument("object", argparse::POSITIONAL)
+            .required().help("The object to display.");
 
-    // hash-object command
-    argparse::ArgumentParser hashObjectParser{"hash-object"};
-    hashObjectParser.description("Compute object ID and optionally creates a blob from a file.");
-    hashObjectParser.addArgument("type").alias("t").help("Specify the type.").defaultValue("blob");
-    hashObjectParser.addArgument("path").required().help("Read object from <path>.");
-    hashObjectParser.addArgument("write", argparse::NAMED).alias("w")
-        .help("Actually write the object into the database.")
-        .implicitValue(true).defaultValue(false);
+        // hash-object command
+        argparse::ArgumentParser hashObjectParser{"hash-object"};
+        hashObjectParser.description("Compute object ID and optionally creates a blob from a file.");
+        hashObjectParser.addArgument("type").alias("t").help("Specify the type.").defaultValue("blob");
+        hashObjectParser.addArgument("path").required().help("Read object from <path>.");
+        hashObjectParser.addArgument("write", argparse::NAMED).alias("w")
+            .help("Actually write the object into the database.")
+            .implicitValue(true).defaultValue(false);
 
-    // log command
-    argparse::ArgumentParser logParser{"log"};
-    logParser.description("Display history of a given commit.")
-        .epilog("Equivalent to `git log --pretty=raw`");
-    logParser.addArgument("commit").defaultValue("HEAD").help("Commit to start at.");
-    logParser.addArgument("max-count").scan<long>().defaultValue(-1l).alias("n").help("Limit the number of commits displayed.");
+        // log command
+        argparse::ArgumentParser logParser{"log"};
+        logParser.description("Display history of a given commit.")
+            .epilog("Equivalent to `git log --pretty=raw`");
+        logParser.addArgument("commit").defaultValue("HEAD").help("Commit to start at.");
+        logParser.addArgument("max-count").scan<long>().defaultValue(-1l).alias("n").help("Limit the number of commits displayed.");
 
-    // ls-tree command
-    argparse::ArgumentParser lsTreeParser{"ls-tree"};
-    lsTreeParser.description("Pretty-print a tree object.");
-    lsTreeParser.addArgument("tree", argparse::POSITIONAL).help("A tree-ish object.").required();
-    lsTreeParser.addArgument("recursive", argparse::NAMED).alias("r").defaultValue(false)
-        .implicitValue(true).help("Recurse into subtrees.");
+        // ls-tree command
+        argparse::ArgumentParser lsTreeParser{"ls-tree"};
+        lsTreeParser.description("Pretty-print a tree object.");
+        lsTreeParser.addArgument("tree", argparse::POSITIONAL).help("A tree-ish object.").required();
+        lsTreeParser.addArgument("recursive", argparse::NAMED).alias("r").defaultValue(false)
+            .implicitValue(true).help("Recurse into subtrees.");
 
-    // checkout commnad
-    argparse::ArgumentParser checkoutParser{"checkout"};
-    checkoutParser.description("Checkout a commit inside of a directory.");
-    checkoutParser.addArgument("commit", argparse::POSITIONAL)
-        .help("The commit or tree to checkout.").required();
-    checkoutParser.addArgument("path", argparse::POSITIONAL)
-        .help("The EMPTY directory to checkout on.").required();
+        // checkout commnad
+        argparse::ArgumentParser checkoutParser{"checkout"};
+        checkoutParser.description("Checkout a commit inside of a directory.");
+        checkoutParser.addArgument("commit", argparse::POSITIONAL)
+            .help("The commit or tree to checkout.").required();
+        checkoutParser.addArgument("path", argparse::POSITIONAL)
+            .help("The EMPTY directory to checkout on.").required();
 
-    // show-ref command
-    argparse::ArgumentParser showRefParser{"show-ref"};
-    showRefParser.description("List all references.");
+        // show-ref command
+        argparse::ArgumentParser showRefParser{"show-ref"};
+        showRefParser.description("List all references.");
 
-    // tag command
-    argparse::ArgumentParser tagParser{"tag"};
-    tagParser.description("List and create tags.");
-    tagParser.addArgument("create-tag-object", argparse::NAMED).alias("a")
-        .help("Whether to create a tag object.").defaultValue(false).implicitValue(true);
-    tagParser.addArgument("name").help("The new tag's name.");
-    tagParser.addArgument("object").help("The object the new tag will point to").defaultValue("HEAD");
+        // tag command
+        argparse::ArgumentParser tagParser{"tag"};
+        tagParser.description("List and create tags.");
+        tagParser.addArgument("create-tag-object", argparse::NAMED).alias("a")
+            .help("Whether to create a tag object.").defaultValue(false).implicitValue(true);
+        tagParser.addArgument("name").help("The new tag's name.");
+        tagParser.addArgument("object").help("The object the new tag will point to").defaultValue("HEAD");
 
-    // rev-parse command
-    argparse::ArgumentParser revPParser{"rev-parse"};
-    revPParser.description("Parse revision (or other objects) identifiers");
-    revPParser.addArgument("name", argparse::POSITIONAL).help("The name to parse.").required();
-    revPParser.addArgument("type", argparse::NAMED).alias("t").defaultValue("")
-        .help("Specify the expected type - ['blob', 'commit', 'tag', 'tree']");
+        // rev-parse command
+        argparse::ArgumentParser revPParser{"rev-parse"};
+        revPParser.description("Parse revision (or other objects) identifiers");
+        revPParser.addArgument("name", argparse::POSITIONAL).help("The name to parse.").required();
+        revPParser.addArgument("type", argparse::NAMED).alias("t").defaultValue("")
+            .help("Specify the expected type - ['blob', 'commit', 'tag', 'tree']");
 
-    // ls-files command
-    argparse::ArgumentParser lsFilesParser{"ls-files"};
-    lsFilesParser.description("List all staged files.");
-    lsFilesParser.addArgument("verbose", argparse::NAMED).alias("v")
-        .defaultValue(false).implicitValue(true).help("Show everything.");
+        // ls-files command
+        argparse::ArgumentParser lsFilesParser{"ls-files"};
+        lsFilesParser.description("List all staged files.");
+        lsFilesParser.addArgument("verbose", argparse::NAMED).alias("v")
+            .defaultValue(false).implicitValue(true).help("Show everything.");
 
-    // check-ignore command
-    argparse::ArgumentParser checkIgnoreParser{"check-ignore"};
-    checkIgnoreParser.description("Check path(s) against ignore rules.");
-    checkIgnoreParser.addArgument("path", argparse::POSITIONAL).required()
-        .scan<std::vector<std::string>>().help("Paths to check.");
+        // check-ignore command
+        argparse::ArgumentParser checkIgnoreParser{"check-ignore"};
+        checkIgnoreParser.description("Check path(s) against ignore rules.");
+        checkIgnoreParser.addArgument("path", argparse::POSITIONAL).required()
+            .scan<std::vector<std::string>>().help("Paths to check.");
 
-    // status command
-    argparse::ArgumentParser statusParser{"status"};
-    statusParser.description("Show the working tree status.");
+        // status command
+        argparse::ArgumentParser statusParser{"status"};
+        statusParser.description("Show the working tree status.");
 
-    // rm command
-    argparse::ArgumentParser rmParser{"rm"};
-    rmParser.description("Remove files from the working tree and the index.");
-    rmParser.addArgument("cached", argparse::NAMED).defaultValue(false).implicitValue(true)
-        .help("Unstage and remove paths only from the index.");
-    rmParser.addArgument("path", argparse::POSITIONAL).required().help("Files to remove.")
-        .scan<std::vector<std::string>>();
+        // rm command
+        argparse::ArgumentParser rmParser{"rm"};
+        rmParser.description("Remove files from the working tree and the index.");
+        rmParser.addArgument("cached", argparse::NAMED).defaultValue(false).implicitValue(true)
+            .help("Unstage and remove paths only from the index.");
+        rmParser.addArgument("path", argparse::POSITIONAL).required().help("Files to remove.")
+            .scan<std::vector<std::string>>();
 
-    // add command
-    argparse::ArgumentParser addParser{"add"};
-    addParser.description("Add files contents to the index.");
-    addParser.addArgument("path", argparse::POSITIONAL).required().help("Files to add.")
-        .scan<std::vector<std::string>>();
+        // add command
+        argparse::ArgumentParser addParser{"add"};
+        addParser.description("Add files contents to the index.");
+        addParser.addArgument("path", argparse::POSITIONAL).required().help("Files to add.")
+            .scan<std::vector<std::string>>();
 
-    // commit command
-    argparse::ArgumentParser commitParser{"commit"};
-    commitParser.description("Record changes to the repository.");
-    commitParser.addArgument("message", argparse::NAMED).required().alias("m")
-        .help("Message to associate with this commit.");
+        // commit command
+        argparse::ArgumentParser commitParser{"commit"};
+        commitParser.description("Record changes to the repository.");
+        commitParser.addArgument("message", argparse::NAMED).required().alias("m")
+            .help("Message to associate with this commit.");
 
-    // Add all the subcommands
-    argparser.addSubcommand(initParser);
-    argparser.addSubcommand(catFileParser);
-    argparser.addSubcommand(hashObjectParser);
-    argparser.addSubcommand(logParser);
-    argparser.addSubcommand(lsTreeParser);
-    argparser.addSubcommand(checkoutParser);
-    argparser.addSubcommand(showRefParser);
-    argparser.addSubcommand(tagParser);
-    argparser.addSubcommand(revPParser);
-    argparser.addSubcommand(lsFilesParser);
-    argparser.addSubcommand(checkIgnoreParser);
-    argparser.addSubcommand(statusParser);
-    argparser.addSubcommand(rmParser);
-    argparser.addSubcommand(addParser);
-    argparser.addSubcommand(commitParser);
+        // Add all the subcommands
+        argparser.addSubcommand(initParser);
+        argparser.addSubcommand(catFileParser);
+        argparser.addSubcommand(hashObjectParser);
+        argparser.addSubcommand(logParser);
+        argparser.addSubcommand(lsTreeParser);
+        argparser.addSubcommand(checkoutParser);
+        argparser.addSubcommand(showRefParser);
+        argparser.addSubcommand(tagParser);
+        argparser.addSubcommand(revPParser);
+        argparser.addSubcommand(lsFilesParser);
+        argparser.addSubcommand(checkIgnoreParser);
+        argparser.addSubcommand(statusParser);
+        argparser.addSubcommand(rmParser);
+        argparser.addSubcommand(addParser);
+        argparser.addSubcommand(commitParser);
 
-    // Parser the arguments
-    argparser.parseArgs(argc, argv);
+        // Parser the arguments
+        argparser.parseArgs(argc, argv);
 
-    if (initParser.ok()) {
-        std::string path {initParser.get("path")};
-        GitRepository repo(path, true);
-        std::cout << "Initialized empty Git repository in " << repo.repoDir() << '\n';
-    }
+        if (initParser.ok()) {
+            std::string path {initParser.get("path")};
+            GitRepository repo(path, true);
+            std::cout << "Initialized empty Git repository in " << repo.repoDir() << '\n';
+        }
 
-    else if (catFileParser.ok()) {
-        std::string objectHashPart {catFileParser.get("object")};
-        GitRepository repo {GitRepository::findRepo()};
-        std::string objectHash {repo.findObject(objectHashPart)};
-        std::cout << repo.readObject(objectHash)->serialize() << '\n';
-    }
+        else if (catFileParser.ok()) {
+            std::string objectHashPart {catFileParser.get("object")};
+            GitRepository repo {GitRepository::findRepo()};
+            std::string objectHash {repo.findObject(objectHashPart)};
+            std::cout << repo.readObject(objectHash)->serialize() << '\n';
+        }
 
-    else if (hashObjectParser.ok()) {
-        bool writeFile {catFileParser.get<bool>("write")};
-        std::string fmt {catFileParser.get("type")}, path {catFileParser.get("path")};
-        std::string data {readTextFile(path)};
+        else if (hashObjectParser.ok()) {
+            bool writeFile {catFileParser.get<bool>("write")};
+            std::string fmt {catFileParser.get("type")}, path {catFileParser.get("path")};
+            std::string data {readTextFile(path)};
 
-        std::unique_ptr<GitObject> obj;
-        if (fmt == "tag") 
-            obj =    std::make_unique<GitTag>("", data);
-        else if (fmt == "tree") 
-            obj =   std::make_unique<GitTree>("", data);
-        else if (fmt == "blob") 
-            obj =   std::make_unique<GitBlob>("", data);
-        else if (fmt == "commit") 
-            obj = std::make_unique<GitCommit>("", data);
-        else
-            throw std::runtime_error("Unknown type " + fmt + "!");
+            std::unique_ptr<GitObject> obj;
+            if (fmt == "tag") 
+                obj =    std::make_unique<GitTag>("", data);
+            else if (fmt == "tree") 
+                obj =   std::make_unique<GitTree>("", data);
+            else if (fmt == "blob") 
+                obj =   std::make_unique<GitBlob>("", data);
+            else if (fmt == "commit") 
+                obj = std::make_unique<GitCommit>("", data);
+            else
+                throw std::runtime_error("Unknown type " + fmt);
 
-        std::cout << GitRepository::findRepo().writeObject(obj, writeFile) << '\n';
-    }
+            std::cout << GitRepository::findRepo().writeObject(obj, writeFile) << '\n';
+        }
 
-    else if (logParser.ok()) {
-        long maxCount {logParser.get<long>("max-count")};
-        std::string objectHash {logParser.get("commit")};
-        GitRepository repo {GitRepository::findRepo()}; 
-        std::cout << repo.getLog(objectHash, maxCount);
-        if (maxCount != 0) std::cout << '\n';
-    }
+        else if (logParser.ok()) {
+            long maxCount {logParser.get<long>("max-count")};
+            std::string objectHash {logParser.get("commit")};
+            GitRepository repo {GitRepository::findRepo()}; 
+            std::cout << repo.getLog(objectHash, maxCount);
+            if (maxCount != 0) std::cout << '\n';
+        }
 
-    else if (lsTreeParser.ok()) {
-        bool recurse {lsTreeParser.get<bool>("recursive")};
-        std::string ref {lsTreeParser.get("tree")};
-        std::cout << GitRepository::findRepo().lsTree(ref, recurse) << '\n';
-    }
+        else if (lsTreeParser.ok()) {
+            bool recurse {lsTreeParser.get<bool>("recursive")};
+            std::string ref {lsTreeParser.get("tree")};
+            std::cout << GitRepository::findRepo().lsTree(ref, recurse) << '\n';
+        }
 
-    else if (checkoutParser.ok()) {
-        std::string ref {checkoutParser.get("commit")}, 
-            path {checkoutParser.get("path")};
-        GitRepository::findRepo().checkout(ref, path);
-    }
+        else if (checkoutParser.ok()) {
+            std::string ref {checkoutParser.get("commit")}, 
+                path {checkoutParser.get("path")};
+            GitRepository::findRepo().checkout(ref, path);
+        }
 
-    else if (showRefParser.ok()) {
-        std::cout << GitRepository::findRepo().showAllRefs("refs", true, "refs") << '\n';
-    }
+        else if (showRefParser.ok()) {
+            std::cout << GitRepository::findRepo().showAllRefs("refs", true, "refs") << '\n';
+        }
 
-    else if (tagParser.ok()) {
-        GitRepository repo {GitRepository::findRepo()};
-        if (tagParser.exists("name")) {
-            bool createTagObj {tagParser.get<bool>("create-tag-object")};
-            std::string name {tagParser.get("name")}, 
-                ref {tagParser.get("object")};
-            repo.createTag(name, ref, createTagObj);
-        } else {
-            std::string result {repo.showAllRefs("refs/tags", false, "")};
+        else if (tagParser.ok()) {
+            GitRepository repo {GitRepository::findRepo()};
+            if (tagParser.exists("name")) {
+                bool createTagObj {tagParser.get<bool>("create-tag-object")};
+                std::string name {tagParser.get("name")}, 
+                    ref {tagParser.get("object")};
+                repo.createTag(name, ref, createTagObj);
+            } else {
+                std::string result {repo.showAllRefs("refs/tags", false, "")};
+                std::cout << result;
+                if (!result.empty()) std::cout << '\n';
+            }
+        }
+
+        else if (revPParser.ok()) {
+            std::string name {revPParser.get("name")}, 
+                type {revPParser.get("type")};
+            std::string result {GitRepository::findRepo().findObject(name, type, true)};
             std::cout << result;
             if (!result.empty()) std::cout << '\n';
         }
-    }
 
-    else if (revPParser.ok()) {
-        std::string name {revPParser.get("name")}, 
-            type {revPParser.get("type")};
-        std::string result {GitRepository::findRepo().findObject(name, type, true)};
-        std::cout << result;
-        if (!result.empty()) std::cout << '\n';
-    }
+        else if (lsFilesParser.ok()) {
+            bool verbose {lsFilesParser.get<bool>("verbose")};
+            std::cout << GitRepository::findRepo().lsFiles(verbose) << '\n';
+        }
 
-    else if (lsFilesParser.ok()) {
-        bool verbose {lsFilesParser.get<bool>("verbose")};
-        std::cout << GitRepository::findRepo().lsFiles(verbose) << '\n';
-    }
+        else if (checkIgnoreParser.ok()) {
+            std::vector<std::string> paths {checkIgnoreParser.get<std::vector<std::string>>("path")};
+            GitIgnore rules {GitRepository::findRepo().gitIgnore()};
+            for (const std::string &path: paths)
+                if (rules.check(path))
+                    std::cout << path << '\n';
+        }
 
-    else if (checkIgnoreParser.ok()) {
-        std::vector<std::string> paths {checkIgnoreParser.get<std::vector<std::string>>("path")};
-        GitIgnore rules {GitRepository::findRepo().gitIgnore()};
-        for (const std::string &path: paths)
-            if (rules.check(path))
-                std::cout << path << '\n';
-    }
+        else if (statusParser.ok()) {
+            std::cout << GitRepository::findRepo().getStatus() << '\n';
+        }
 
-    else if (statusParser.ok()) {
-        std::cout << GitRepository::findRepo().getStatus() << '\n';
-    }
+        else if (rmParser.ok()) {
+            bool cached {rmParser.get<bool>("cached")};
+            std::vector<std::string> paths {rmParser.get<std::vector<std::string>>("path")};
+            GitRepository repo {GitRepository::findRepo()};
+            repo.rm(repo.collectFiles(paths), cached);
+        }
 
-    else if (rmParser.ok()) {
-        bool cached {rmParser.get<bool>("cached")};
-        std::vector<std::string> paths {rmParser.get<std::vector<std::string>>("path")};
-        GitRepository::findRepo().rm(paths, cached);
-    }
+        else if (addParser.ok()) {
+            std::vector<std::string> paths {addParser.get<std::vector<std::string>>("path")};
+            GitRepository repo {GitRepository::findRepo()};
+            repo.add(repo.collectFiles(paths));
+        }
 
-    else if (addParser.ok()) {
-        std::vector<std::string> paths {addParser.get<std::vector<std::string>>("path")};
-        GitRepository::findRepo().add(paths);
-    }
+        else if (commitParser.ok()) {
+            GitRepository::findRepo().commit(commitParser.get("message"));
+        }
+        
+        else {
+            std::cout << argparser.getHelp() << '\n';
+        }
+        return 0;
+    } 
 
-    else if (commitParser.ok()) {
-        GitRepository::findRepo().commit(commitParser.get("message"));
+    catch (std::exception &ex) {
+        std::cerr << "fatal: " << ex.what() << '\n';
+        return 1;
     }
-    
-    else {
-        std::cout << argparser.getHelp() << '\n';
-    }
-
-    return 0;
 }
