@@ -26,6 +26,7 @@
 
 /*
  * TODO:
+ * 0. cgit status - not listing cgit binary
  * 1. cgit log - when repo is empty
  * 2. cgit cat-file - add type parameter
  * 3. Empty repo - differentiate added to index and not
@@ -74,12 +75,15 @@ void writeTextFile(const std::string&, const std::string&) = delete;
 }
 
 // Utils to trim a line
-constexpr inline auto trim = 
-    std::views::drop_while(::isspace) 
-    | std::views::reverse 
-    | std::views::drop_while(::isspace) 
-    | std::views::reverse
-    | std::ranges::to<std::string>();
+std::string trim(const std::string &str) {
+    return 
+        str 
+        | std::views::drop_while(::isspace) 
+        | std::views::reverse 
+        | std::views::drop_while(::isspace) 
+        | std::views::reverse
+        | std::ranges::to<std::string>();
+}
 
 // Utils to read input as Big Endian int*
 template<typename T> requires std::integral<T>
@@ -504,6 +508,7 @@ class GitIgnore {
             const std::unordered_map<std::string, std::vector<std::pair<bool, std::string>>> &scoped = {}
         ): absolute(absolute), scoped(scoped) {}
 
+        // If file is to be ignored, return true; else false
         bool check(const std::string &path) const {
             fs::path curr {path};
             if (!curr.is_relative())
@@ -511,12 +516,14 @@ class GitIgnore {
 
             // Check scoped rules
             std::optional<bool> result;
-            while (!curr.empty() && curr != curr.root_path()) {
+            while (true) {
                 fs::path parent {curr.parent_path()};
                 auto it {scoped.find(parent.string())};
-                if (it != scoped.end() && (result = checkIgnore(it->second, curr.string())) && result.has_value())
+                if (it != scoped.end() && (result = checkIgnore(it->second, path)).has_value())
                     return result.value();
-                curr = parent;
+
+                if (curr == "") break;
+                else curr = parent;
             }
 
             // Check absolute rules, if no match return false as default
@@ -530,9 +537,11 @@ class GitIgnore {
         static std::optional<bool> checkIgnore(const std::vector<BS_PAIR> &rules, const std::string &path) {
             // Check all rules, last rule takes precedence
             std::optional<bool> result;
+            std::string fileName {fs::path(path).filename()};
             for (const BS_PAIR &rule: rules)
-                if (fnmatch::match(rule.second, path))
+                if (fnmatch::match(rule.second, path) || fnmatch::match(rule.second, fileName))
                     result = rule.first;
+
             return result;
         }
 };
@@ -925,12 +934,12 @@ class GitRepository {
                     std::ifstream ifs {parsedRefsFile};
                     std::string line;
                     while (std::getline(ifs, line)) {
-                        line = line | trim;
+                        line = trim(line);
                         if (!line.empty() && line.at(0) != '#') {
                             std::vector<std::string> splits = 
                                 line 
                                 | std::views::split(' ')
-                                | std::views::transform([&](auto &&split) { return split | trim; })
+                                | std::views::transform([&](auto &&split) { return trim(split | std::ranges::to<std::string>()); })
                                 | std::ranges::to<std::vector<std::string>>(); 
 
                             if (splits.size() != 2)
@@ -1344,8 +1353,8 @@ class GitRepository {
             std::unordered_map<std::string, std::vector<GitIgnore::BS_PAIR>> scoped;
 
             // Helper to categories a string into a pair<bool, string>
-            const std::function<GitIgnore::BS_PAIR(std::string_view)> parseLine {[](std::string_view line) -> GitIgnore::BS_PAIR {
-                line = line | trim;
+            const std::function<GitIgnore::BS_PAIR(const std::string&)> parseLine {[](const std::string &line_) -> GitIgnore::BS_PAIR {
+                std::string line {trim(line_)};
                 if (line.empty() || line.at(0) == '#') return GitIgnore::BS_PAIR{false, ""};
                 else {
                     char first {line.at(0)};
@@ -1374,7 +1383,7 @@ class GitRepository {
                     const std::string dirName {fs::path(entry.name).parent_path().string()};
                     std::string contents {readObject<GitBlob>(entry.sha)->serialize()};
                     for (auto view: std::views::split(contents, '\n')) {
-                        const GitIgnore::BS_PAIR p {parseLine(std::string_view{view})};
+                        const GitIgnore::BS_PAIR p {parseLine(view | std::ranges::to<std::string>())};
                         if (!p.second.empty())
                             scoped[dirName].emplace_back(p.first, p.second);
                     }
@@ -1492,12 +1501,12 @@ class GitRepository {
             GitIgnore ignore {gitIgnore()};
             oss << "\nUntracked files:\n";
             for (const std::pair<std::string, short> &kv: allFiles) {
-                const std::string &entry {kv.first}, topParent {*fs::path(kv.first).begin()};
-                if (untracked.find(topParent) == untracked.end() && 
-                        (!fs::is_directory(entry) || !fs::is_empty(entry)) && 
-                        !ignore.check(entry)) 
+                const std::string &entry {kv.first};
+                if (untracked.find(fs::path(entry).parent_path()) == untracked.end() 
+                    && (!fs::is_directory(entry) || !fs::is_empty(entry)) 
+                    && !ignore.check(entry)) 
                 {
-                    untracked.insert(topParent);
+                    untracked.insert(entry);
                     oss << "  " << entry << '\n';
                 }
             }
@@ -1645,7 +1654,7 @@ class GitRepository {
                 oss << "parent " << parentSha << '\n';
             oss << "author " << author << "\n"
                 << "committer " << author << "\n\n"
-                << (message | trim) << "\n";
+                << trim(message) << "\n";
 
             // Write the commit object to disk
             std::string commitSha {writeObject(std::make_unique<GitCommit>("", oss.str()), true)};
