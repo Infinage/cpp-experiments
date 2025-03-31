@@ -6,6 +6,7 @@
 #include "../../cryptography/hashlib.hpp"
 
 #include <sys/stat.h>
+#include <filesystem>
 #include <functional>
 #include <ranges>
 #include <regex>
@@ -745,10 +746,13 @@ std::string GitRepository::getStatus() const {
     else oss << "On branch " << currentBranchDetails << "\n";
 
     // Get all the files in the repo into map for easy lookup
+    GitIgnore ignore {gitIgnore()};
     stdx::ordered_map<std::string, short> allFiles;
-    for (const fs::directory_entry &entry: fs::recursive_directory_iterator(workTree)) {
-        fs::path relPath {fs::relative(entry, workTree)};
-        if (*relPath.begin() != ".git")
+    for (fs::recursive_directory_iterator it {workTree}, end; it != end; it++) {
+        fs::path relPath {fs::relative(*it, workTree)};
+        if (*relPath.begin() == ".git" || ignore.check(relPath))
+            it.disable_recursion_pending();
+        else
             allFiles.insert(relPath.string(), 1);
     }
 
@@ -832,17 +836,23 @@ std::string GitRepository::getStatus() const {
 
     // List untracked files
     std::unordered_set<std::string> untracked;
-    GitIgnore ignore {gitIgnore()};
     oss << "\nUntracked files:\n";
     for (const std::pair<std::string, short> &kv: allFiles) {
         const std::string &entry {kv.first};
+
+        // Skip ignored files
+        if (ignore.check(entry)) continue;
+
+        // If parent not untracked and is a file or a non empty folder
         if (untracked.find(fs::path(entry).parent_path()) == untracked.end() 
-            && (!fs::is_directory(entry) || !fs::is_empty(entry)) 
-            && !ignore.check(entry)) 
-        {
-            untracked.insert(entry);
-            oss << "  " << entry << '\n';
+            && (!fs::is_directory(entry) || !fs::is_empty(entry))) {
+            oss << "  " << entry;
+            if (fs::is_directory(entry)) oss << '/';
+            oss << '\n';
         }
+
+        // Always add
+        untracked.insert(entry);
     }
 
     std::string result {oss.str()};

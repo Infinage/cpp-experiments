@@ -39,7 +39,7 @@ Alternatively, you can use CMake to build and install CGit:
 ```sh
 mkdir build && cd build
 cmake ..
-cmake --build .
+cmake --build . --parallel
 cmake --install .
 ```
 
@@ -86,7 +86,7 @@ $ cgit log  # View commit history
 
 ## Custom Header-Only Libraries
 
-CGit is built with a collection of lightweight, custom header-only libraries:
+CGit is built with a collection of lightweight, header-only libraries of my own:
 
 - `misc/iniparser.hpp` - Parses INI files, similar to Python's `configparser`.
 - `cli/argparse.hpp` - Command-line argument parser.
