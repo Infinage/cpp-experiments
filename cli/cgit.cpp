@@ -24,11 +24,6 @@
 #include "../misc/fnmatch.hpp"
 #include "../cryptography/hashlib.hpp"
 
-/*
- * TODO:
- * 1. cgit cat-file - add type parameter
- */
-
 namespace fs = std::filesystem;
 namespace cr = std::chrono;
 
@@ -46,7 +41,7 @@ void writeTextFile(const std::string &data, const fs::path &path) {
     if (!ofs) throw std::runtime_error("Failed to write to file: " + path.string());
 }
 
-// Explictly disallow second parameter as a string to prevent errors
+// Explictly disallow second parameter as a string to prevent bugs
 void writeTextFile(const std::string&, const std::string&) = delete;
 
 // Util to convert sha to binary hex string
@@ -69,7 +64,7 @@ void writeTextFile(const std::string&, const std::string&) = delete;
     return oss.str();
 }
 
-// Utils to trim a line
+// Util to trim a line
 std::string trim(const std::string &str) {
     return 
         str 
@@ -80,7 +75,10 @@ std::string trim(const std::string &str) {
         | std::ranges::to<std::string>();
 }
 
-// Utils to read input as Big Endian int*
+// Util to read input as Big Endian int*
+// Git uses BigEndian for a lot of its binary file formats
+// This helper is system independent and works regardless 
+// of the endianness of the client
 template<typename T> requires std::integral<T>
 void readBigEndian(std::ifstream &ifs, T &val) {
     using UT = std::make_unsigned_t<T>;
@@ -92,6 +90,7 @@ void readBigEndian(std::ifstream &ifs, T &val) {
 }
 
 // Utils to write input as Big Endian int*
+// Independent of the endianness of the client
 template <typename T> requires std::integral<T>
 void writeBigEndian(std::ofstream &ofs, T val) {
     unsigned char buffer[sizeof(T)];
@@ -102,15 +101,20 @@ void writeBigEndian(std::ofstream &ofs, T val) {
     ofs.write(reinterpret_cast<char *>(buffer), sizeof(T));
 }
 
+// Base class for GitBlob, GitCommit, GitTree
 class GitObject {
     public:
+        // Fmt is used to identify the type of git object - blob, commit, tree, tag
         const std::string sha, fmt;
-        GitObject(const std::string &sha, const std::string &fmt): sha(sha), fmt(fmt) {}
+
+    public:
         virtual ~GitObject() = default;
+        GitObject(const std::string &sha, const std::string &fmt): sha(sha), fmt(fmt) {}
         virtual void deserialize(const std::string&) = 0;
         virtual std::string serialize() const = 0;
 };
 
+// Blob repr stores the file contents
 class GitBlob: public GitObject {
     private:
         std::string data;
@@ -118,29 +122,38 @@ class GitBlob: public GitObject {
     public:
         GitBlob(const std::string &sha, const std::string &data): 
             GitObject(sha, "blob") { deserialize(data); }
+
         void deserialize(const std::string &data) override { this->data = data; }
         [[nodiscard]] std::string serialize() const override { return data; }
 };
 
+// Storing Commit related information
 class GitCommit: public GitObject {
     private:
+        // Since multiple values can exist for a few keys such as parent, author
+        // we set the value type as a vector (could use variant but this is simpler)
         stdx::ordered_map<std::string, std::vector<std::string>> data;
         cr::system_clock::time_point commitUTC;
 
     public:
-        // We will be reusing this for GitTag hence fmt is kept as a variable
+        // This class will be inheritted by GitTag, so we store fmt as a variable instead of hardcoding
         GitCommit(const std::string &sha, const std::string &raw, const std::string &fmt = "commit"): 
             GitObject(sha, fmt) { deserialize(raw); }
 
+        // Set a key-value pair into `data`
         void set(const std::string &key, std::vector<std::string> &&value) { data[key] = value; }
+
+        // Get a value from `data`, if not found return an empty vector
         std::vector<std::string> get(const std::string &key) const {
             return data.find(key) != data.end()? data.at(key): std::vector<std::string>{};
         }
 
+        // For Sorting Git Commit objects
         inline bool operator<(GitCommit &other) const { return this->commitUTC < other.commitUTC; }
         inline bool operator>(GitCommit &other) const { return this->commitUTC > other.commitUTC; }
 
         void deserialize(const std::string &raw) override {
+            // State for parsing the text string
             enum states: short {START, KEY_DONE, MULTILINE_VAL, BODY_START};
             short state {START}; std::string acc {""}, key{""};
             for (const char &ch: raw) {
@@ -157,7 +170,7 @@ class GitCommit: public GitObject {
                 } else if (ch == '\n' && state == START) {
                     state = BODY_START; key = "";
                 } else if (ch == '\n' && state == KEY_DONE) {
-                    data[key].emplace_back(acc); 
+                    data[key].emplace_back(acc);
                     acc.clear(); state = START;
                 } else if (ch == '\n' && state == MULTILINE_VAL) {
                     data[key].back() += '\n' + acc;
@@ -171,7 +184,7 @@ class GitCommit: public GitObject {
             // Add the body with empty string as header
             data[""] = {acc};
 
-            // Set the commit time UTC if found
+            // Set the commit time UTC if found, else set curr sys time
             if (data.find("committer") != data.end()) {
                 std::string committerMsg {data["committer"][0]};
                 std::size_t tzStartPos {committerMsg.rfind(' ')};
@@ -200,8 +213,12 @@ class GitCommit: public GitObject {
         }
 };
 
+// This class abstracts a piece of the GitTree object
 class GitLeaf {
     private:
+        // Helper for creating comparators: ensures that when we have 
+        // identically named folders & files say `example.c` and `example`, 
+        // the folder comes before the file - `example/`
         static int pathCompare(const GitLeaf &l1, const GitLeaf &l2) {
             std::string_view path1 {l1.path}, path2 {l2.path};
             std::string modPath1, modPath2;
@@ -219,7 +236,12 @@ class GitLeaf {
     public:
         std::string mode, path, sha;
 
-        GitLeaf(const std::string &mode, const std::string &path, const std::string &sha, bool shaInBinary = true):
+        // Sometimes we set the sha as a binary str and other times sha 
+        // is directly set as a hex string. Support both with `shaInBinary`
+        GitLeaf(
+            const std::string &mode, const std::string &path, 
+            const std::string &sha, bool shaInBinary = true
+        ):
             mode(mode), path(path), sha(shaInBinary? binary2Sha(sha): sha) {}
 
         // Copy constructor
@@ -255,8 +277,10 @@ class GitLeaf {
         inline bool operator==(const GitLeaf &other) const { return pathCompare(*this, other) == 0; }
 };
 
+// This is analogous to folders, references other trees, blobs, etc
 class GitTree: public GitObject {
     private:
+        // Mutable since we sort it inside a const `serialize()`
         mutable std::vector<GitLeaf> data;
 
     public:
@@ -304,6 +328,7 @@ class GitTree: public GitObject {
             }
         }
 
+        // Simply sort the container and serialize the leaves
         [[nodiscard]] std::string serialize() const override {
             std::string result;
             std::sort(data.begin(), data.end());
@@ -314,14 +339,18 @@ class GitTree: public GitObject {
         }
 };
 
+// Same as GitCommit, only the fmt is different
 class GitTag: public GitCommit {
     public:
+        // Reuse parent functions
         using GitCommit::serialize, GitCommit::deserialize; 
         using GitCommit::get, GitCommit::set;
+
         GitTag(const std::string &sha, const std::string& raw): 
             GitCommit(sha, raw, "tag") {}
 };
 
+// Represents the Git Index .git/index
 class GitIndex {
     public:
         struct GitTimeStamp { 
@@ -362,9 +391,11 @@ class GitIndex {
         const std::vector<GitIndexEntry> &getEntries() const { return entries; }
         std::vector<GitIndexEntry> &getEntries() { return entries; }
 
+        // Default values to ensure default initialization
         GitIndex(const unsigned int version = 2, const std::vector<GitIndexEntry> &entries = {}):
             version(version), entries(entries) { }
 
+        // Parse from an index filepath and return GitIndex Object
         static GitIndex readFromFile(const fs::path &path) {
             if (!fs::exists(path)) return GitIndex{};
 
@@ -416,8 +447,8 @@ class GitIndex {
                 flagStage = flags & 0b0011000000000000;
                 nameLength = flags & 0b0000111111111111;
 
-                // Read the name, if name size is 0xFF git assumes name 
-                // is > 4095 char long & searches until we hit 0x00
+                // Read the name, if `nameLength` is 0xFF git assumes name 
+                // is more than 4095 chars & searches until we hit 0x00
                 char rawName[0xFF + 1] {}; ifs.read(rawName, nameLength + 1);
                 std::string name {rawName, nameLength};
                 if (nameLength == 0xFF) {
@@ -497,6 +528,7 @@ class GitIndex {
         }
 };
 
+// Contains combined rules of all gitignore files encountered
 class GitIgnore {
     public:
         using BS_PAIR = std::pair<bool, std::string>;
@@ -506,13 +538,16 @@ class GitIgnore {
             const std::unordered_map<std::string, std::vector<std::pair<bool, std::string>>> &scoped = {}
         ): absolute(absolute), scoped(scoped) {}
 
-        // If file is to be ignored, return true; else false
+        // Check if a file matches any of the .gitignore rules
+        // Return true if the file should be ignored, false otherwise.
         bool check(const std::string &path) const {
             fs::path curr {path};
             if (!curr.is_relative())
                 throw std::runtime_error("Input path must be relative to the repo's root, got: " + curr.string());
 
-            // Check scoped rules
+            // Scoped rule check: Start from the immediate folder's 
+            // .gitignore and move up. More specific rules take precedence 
+            // Eg: `./abc/def/.gitignore` applies before `./abc/.gitignore`
             std::optional<bool> result;
             while (true) {
                 fs::path parent {curr.parent_path()};
@@ -524,7 +559,8 @@ class GitIgnore {
                 else curr = parent;
             }
 
-            // Check absolute rules, if no match return false as default
+            // If no scoped rule matched, check global rules 
+            // and default to false if unmatched.
             return checkIgnore(absolute, path).value_or(false);
         }
 
@@ -532,8 +568,11 @@ class GitIgnore {
         std::vector<std::pair<bool, std::string>> absolute;
         std::unordered_map<std::string, std::vector<std::pair<bool, std::string>>> scoped;
 
+        // Checks if a file matches any of the given .gitignore rules.
+        // The last matching rule takes precedence, as later rules can override earlier ones.
+        // Each rule specifies whether to ignore (true) or include (false) a matching file.
+        // Rules is a list of patterns and their corresponding inclusion/exclusion flags.
         static std::optional<bool> checkIgnore(const std::vector<BS_PAIR> &rules, const std::string &path) {
-            // Check all rules, last rule takes precedence
             std::optional<bool> result;
             std::string fileName {fs::path(path).filename()};
             for (const BS_PAIR &rule: rules)
@@ -544,9 +583,10 @@ class GitIgnore {
         }
 };
 
+// Encapsulates logic to handle `.git/objects/pack/*.idx` and `.git/objects/pack/*.pack`
 class GitPack {
     private:
-        // Store all the pack indices & files from path
+        // Store all the pack indices & files from provided path
        std::vector<fs::path> indexPaths, packPaths;
 
         static bool verifyHeader(std::ifstream &ifs, const std::string &expectedHeader, unsigned int expectedVersion) {
@@ -574,7 +614,7 @@ class GitPack {
                 char shaBin[20]; ifs.read(shaBin, 20);
                 std::string sha {binary2Sha(std::string_view{shaBin, 20})};
 
-                // We check start == 0 to prevent underflow (uint)
+                // We check start == mid to prevent underflow (uint)
                 if (sha.compare(0, part.size(), part) >= 0) {
                     if (start == mid) break;
                     end = mid - 1;
@@ -586,7 +626,7 @@ class GitPack {
             return start;
         }
 
-        // Returns a vector of resolved hashes along with the index
+        // Returns a vector of resolved hashes along with their offsets
         std::vector<std::pair<std::string, unsigned int>> getHashMatchFromIndex(const std::string &part, const fs::path &path) const {
             if (part.size() < 2)
                 throw std::runtime_error("PackIndex: Hex must be atleast 2 chars long, got: " + part);
@@ -605,7 +645,8 @@ class GitPack {
                 readBigEndian(ifs, prev);
             }
             
-            // If hashes exist in the pack
+            // If hashes exist in the pack, continue linearly traversing until sha
+            // continues to match with part. Break immediately if it doesn't
             std::vector<std::pair<std::string, unsigned int>> matches;
             if (curr - prev > 0) {
                 unsigned int skip {8 + 256 * 4}, startOffset {getPackIdxOffsetStart(prev, curr, part, ifs)};
@@ -622,6 +663,7 @@ class GitPack {
             return matches;
         }
 
+        // Given sha1 hex string (40 char long), use .idx file to return {PackfilePath, offset}
         std::pair<fs::path, unsigned long> getPackFileOffset(const std::string &objectHash) const {
             std::vector<std::pair<fs::path, unsigned int>> matches;
             for (const fs::path &path: indexPaths) {
@@ -630,8 +672,12 @@ class GitPack {
                 }
             }
 
+            // 40 char sha will only return 1 match, since 40 char limit is not enforced
+            // this function can theoretically be used on partial hashes as long
+            // as they return a unique match
             if (matches.size() != 1)
-                throw std::runtime_error(objectHash + ": Expected candidates to be 1, got: " + std::to_string(matches.size()));
+                throw std::runtime_error(objectHash + ": Expected candidates to be 1, got: " 
+                        + std::to_string(matches.size()));
 
             // Get the Pack offset along with count of records
             std::ifstream ifs {matches[0].first, std::ios::binary};
@@ -658,6 +704,10 @@ class GitPack {
             return {matches[0].first.replace_extension(".pack"), result};
         }
 
+        // Read variable length int from a string_view, used during delta chain construction
+        // Continues reading while the most significant bit (MSB) is set.
+        // Each byte contributes 7 bits to result, with the MSB acting as a continuation flag.
+        // The input string_view is sliced to remove the consumed bytes.
         static std::size_t readVarLenInt(std::basic_string_view<unsigned char> &sv) {
             std::size_t pos{0}, result {0}; 
             int shift {0};
@@ -673,6 +723,7 @@ class GitPack {
         }
 
     public:
+        // Given '.git/objects/pack' path, pick all the '.idx' and '.pack' files
         GitPack (const fs::path &path) {
             if (fs::exists(path)) {
                 for (const fs::directory_entry &entry: fs::directory_iterator(path)) {
@@ -684,9 +735,7 @@ class GitPack {
             }
         }
 
-        // Check for matches & return the full sha match if found
-        // refResolve("HEAD") can be used to determine if the repo is 
-        // 'fresh' without commits. If fresh, returns empty string
+        // Analogous to refResolve of `GitRepository` but returns a vector of matches instead of just one
         [[nodiscard]] std::vector<std::string> refResolve(const std::string &part) const {
             std::vector<std::string> matches;
             for (const fs::path &path: indexPaths) {
@@ -698,6 +747,9 @@ class GitPack {
             return matches;
         }
 
+        // Extracts and returns the serialized content of an object given its hash.
+        // Auto resolves and constructs delta chains, ensuring the returned string 
+        // is fully reconstructed and ready for consumption.
         [[nodiscard]] std::string extract(const std::string &objectHash) const {
             fs::path packFile; unsigned long offset;
             std::tie(packFile, offset) = getPackFileOffset(objectHash);
@@ -729,11 +781,13 @@ class GitPack {
                     }
                 }
 
+                // Non-deltified objects
                 if (type >= 1 && type <= 4) {
                     deltaChain.emplace_back(type, ifs.tellg(), length);
                     break;
                 }
 
+                // OBJ_OFS_DELTA
                 else if (type == 6) {
                     // Big endian encoding
                     std::size_t relOffset{0};
@@ -741,6 +795,8 @@ class GitPack {
                         int byte = ifs.get();
                         relOffset = (relOffset << 7) | static_cast<std::size_t>(byte & 127);
                         if (!(byte & 128)) break;
+
+                        // Git specific
                         relOffset += 1;
                     }
 
@@ -748,6 +804,7 @@ class GitPack {
                     offset -= relOffset;
                 } 
 
+                // OBJ_REF_DELTA
                 else if (type == 7) {
                     char shaBin[20];  ifs.read(shaBin, 20);
                     std::string sha {binary2Sha(std::string_view{shaBin, 20})};
@@ -761,7 +818,7 @@ class GitPack {
                 }
             }
 
-            // Process the delta chain
+            // Resolve the delta chain
             short baseType; std::string result;
             while (!deltaChain.empty()) {
                 short type; unsigned int offset, size;
@@ -774,7 +831,8 @@ class GitPack {
                             + objectHash + ".\nIncorrect decompressed object size.");
 
                 if (type == 0) {
-                    // We might end up copying multiple pieces from the base obj
+                    // Store an unmodified copy - we might end up 
+                    // copying multiple pieces from the base obj
                     std::string baseObj {std::move(result)};
 
                     std::basic_string_view<unsigned char> dsv {
@@ -851,12 +909,23 @@ class GitPack {
         }
 };
 
+// The Orchestrator
 class GitRepository {
     private:
-        mutable fs::path workTree, gitDir;
-        std::unordered_map<std::string, std::string> packedRefs;
+        // workTree is parent folder containing `.git`
+        mutable fs::path workTree; 
+
+        // gitDir is the absolute path to `.git`
+        mutable fs::path gitDir;
+
+        // Parse the confs - repo local and global and store it here
         INI::Parser conf;  
 
+        // sometimes, git refs are packed into a single file `.git/packed-refs`
+        // Read the file and store the ref contents during init
+        std::unordered_map<std::string, std::string> packedRefs;
+
+        // What python's os.path.join("a", "b") does but inserts gitDir at front
         fs::path repoPath(const std::initializer_list<std::string_view> &parts) const {
             fs::path result {gitDir};
             for (const std::string_view &part: parts)
@@ -864,6 +933,37 @@ class GitRepository {
             return result;
         }
 
+        // Similar to refResolve, return if found else return an empty string
+        std::string getPackedRef(const std::string &key) const {
+            auto it {packedRefs.find(key)};
+            return it == packedRefs.end()? "": it->second;
+        }
+
+        // Parse 'packed-refs' and append to packedRefs container
+        // If file not found or file is missing, does nothing
+        void parsePackedRefs(const fs::path &parsedRefsFile) {
+            std::ifstream ifs {parsedRefsFile};
+            std::string line;
+            while (std::getline(ifs, line)) {
+                line = trim(line);
+                if (!line.empty() && line.at(0) != '#') {
+                    std::vector<std::string> splits = 
+                        line 
+                        | std::views::split(' ')
+                        | std::views::transform([&](auto &&split) { return trim(split | std::ranges::to<std::string>()); })
+                        | std::ranges::to<std::vector<std::string>>(); 
+
+                    if (splits.size() != 2)
+                        throw std::runtime_error("Invalid packed-refs format");
+
+                    // Add '<SHA> <ref> into the map'
+                    packedRefs[splits[1]] = splits[0];
+                }
+            }
+        }
+
+        // Constructs a Git tree from the index and writes to the repository.
+        // This func is critical for git commit operations
         std::string writeIndexAsTree() {
             // Extract git index
             GitIndex index{GitIndex::readFromFile(repoFile({"index"}))};
@@ -875,6 +975,8 @@ class GitRepository {
             for (const GitIndex::GitIndexEntry &entry: entries) {
                 lookup.emplace(entry.name, &entry);
                 fs::path curr {fs::path(entry.name)};
+
+                // Traverse up the parents until we encounter a parent already inserted
                 while (!curr.empty() && curr != curr.parent_path()) {
                     fs::path parent {curr.parent_path()};
                     bool parentAlreadyExists {directoryTree.find(parent) != directoryTree.end()};
@@ -884,7 +986,7 @@ class GitRepository {
                 }
             }
 
-            // Recursive func to write tree nodes starting at root for gitdir
+            // Recursively construct and write tree objects, ensuring child nodes are written before the parent
             std::function<std::tuple<std::string, fs::path, std::string>(const fs::path&)> backtrack {[&](const fs::path &curr) {
                 // A simple file
                 if (directoryTree.find(curr) == directoryTree.end()) {
@@ -905,16 +1007,13 @@ class GitRepository {
                 }
             }};
 
+            // Start from the root and return the SHA of the final tree object
             auto [_, __, sha] = backtrack("");
             return sha;
         }
 
-        std::string getPackedRef(const std::string &key) const {
-            auto it {packedRefs.find(key)};
-            return it == packedRefs.end()? "": it->second;
-        }
-
     public:
+        // Force is used when performing a `git init`
         GitRepository(const fs::path &path, bool force = false):
             workTree(path), gitDir(path / ".git")
         {
@@ -930,28 +1029,8 @@ class GitRepository {
                 if (!conf.exists("core", "repositoryformatversion") || (repoVersion = conf["core"]["repositoryformatversion"]) != "0")
                     throw std::runtime_error("Unsupported `repositoryformatversion`: " + repoVersion);
 
-                // Parse packed-refs
-                fs::path parsedRefsFile {repoFile({"packed-refs"})};
-                if (fs::exists(parsedRefsFile)) {
-                    std::ifstream ifs {parsedRefsFile};
-                    std::string line;
-                    while (std::getline(ifs, line)) {
-                        line = trim(line);
-                        if (!line.empty() && line.at(0) != '#') {
-                            std::vector<std::string> splits = 
-                                line 
-                                | std::views::split(' ')
-                                | std::views::transform([&](auto &&split) { return trim(split | std::ranges::to<std::string>()); })
-                                | std::ranges::to<std::vector<std::string>>(); 
-
-                            if (splits.size() != 2)
-                                throw std::runtime_error("Invalid packed-refs format");
-
-                            // Add '<SHA> <ref> into the map'
-                            packedRefs[splits[1]] = splits[0];
-                        }
-                    }
-                }
+                // Parse packed-refs - silently fails if missing
+                parsePackedRefs(repoFile({"packed-refs"}));
             }
             
             else {
@@ -981,25 +1060,31 @@ class GitRepository {
                 writeTextFile(conf.dumps(), gitDir / "config");
             }
 
-            // Guaranteed that the paths exist, lets clean em up
+            // Guaranteed that the paths exist now, lets clean em up
             gitDir = fs::canonical(gitDir);
             workTree = fs::canonical(workTree); 
         }
 
-        fs::path repoDir() const { return gitDir; }
-
+        // Given folder names, concats and returns full path starting at `.git`. Create parameter can be used to create the folders
         fs::path repoDir(const std::initializer_list<std::string_view> &parts, bool create = false) const {
             fs::path fpath {repoPath(parts)};
             if (create) fs::create_directories(fpath);
             return fpath;
         }
 
+        // If no parameter passed, simply return gitDir
+        // Useful for downstream clients using `GitRepository`
+        fs::path repoDir() const { return gitDir; }
+
+        // Same as repoDir but for files, assumes the end part is the name of the file
         fs::path repoFile(const std::initializer_list<std::string_view> &parts, bool create = false) const {
             fs::path fpath {repoPath(parts)};
             if (create) fs::create_directories(fpath.parent_path());
             return fpath;
         }
 
+        // Starting at curr directory, traverse up until we find a 
+        // level containing `.git`. If not found, throws an error
         static GitRepository findRepo(const fs::path &path_ = ".") {
             fs::path path {fs::absolute(path_)};
             if (fs::exists(path / ".git"))
@@ -1010,6 +1095,7 @@ class GitRepository {
                 return findRepo(path.parent_path());
         }
 
+        // Serializes the input `GitObject` and returns it sha1 hex. If `write` is true, write ObjectContents to disk 
         std::string writeObject(const std::unique_ptr<GitObject> &obj, bool write = false) const {
             // Serialize the object data
             std::string serialized {obj->serialize()};
@@ -1027,6 +1113,11 @@ class GitRepository {
             return objectHash;
         }
 
+        // Resolve a given `name` to its corresponding SHA-1 hash.
+        // Supports full or partial hashes, tags, branches, and HEAD references.
+        // If `name` is a partial hash, searches both loose objects and packfiles.
+        // If `fmt` is specified, ensures the resolved object is of the expected type.
+        // If `follow` is true, recursively resolves tags and commits to trees when needed.
         std::string findObject(const std::string &name, const std::string &fmt = "", bool follow = true) const {
             std::vector<std::string> candidates;
             if (name == "HEAD") candidates.emplace_back(refResolve("HEAD"));
@@ -1039,6 +1130,8 @@ class GitRepository {
                     std::string prefix {part.substr(0, 2)};
                     fs::path path {repoFile({"objects", prefix})};
                     std::string remaining {part.substr(2)};
+
+                    // Search for matching loose object
                     if (fs::exists(path)) {
                         for (const fs::directory_entry &entry: fs::directory_iterator(path)) {
                             const std::string fname {entry.path().filename()};
@@ -1047,20 +1140,21 @@ class GitRepository {
                         }
                     }
 
-                    // Insert from pack indices if match found
+                    // Search for matching packed object
                     std::vector<std::string> asPack {GitPack(repoDir({"objects", "pack"})).refResolve(part)};
                     candidates.insert(candidates.end(), asPack.begin(), asPack.end());
                 }
 
-               // Check for tag match
+               // Check if `name` matches a tag reference
                 std::string asTag {refResolve("refs/tags/" + name)};
                 if (!asTag.empty()) candidates.emplace_back(asTag);
 
-                // Check for branch match
+               // Check if `name` matches a branch reference
                 std::string asBranch {refResolve("refs/heads/" + name)};
                 if (!asBranch.empty()) candidates.emplace_back(asBranch);
             }
 
+            // Ensure only 1 candidate was found
             if (candidates.size() != 1)
                 throw std::runtime_error(
                     "Name resolution failed: " + name + ".\nExpected to have only 1 matching"
@@ -1069,7 +1163,8 @@ class GitRepository {
             std::string sha {candidates[0]};
             if (fmt.empty()) return sha;
 
-            while (1) {
+            // Follow references to match the expected object type
+            while (true) {
                 std::string objFmt {readObjectType(sha)};
                 if (objFmt == fmt) 
                     return sha;
@@ -1086,6 +1181,8 @@ class GitRepository {
             return "";
         }
 
+        // Determine the type of Git Object given its SHA-1 Hash as hex
+        // First checks if exists as loose obj first else checks inside packfiles
         std::string readObjectType(const std::string &objectHash) const {
             fs::path path {repoFile({"objects", objectHash.substr(0, 2), objectHash.substr(2)})};
             GitPack pack{repoDir({"objects", "pack"})};
@@ -1103,6 +1200,7 @@ class GitRepository {
             return raw.substr(0, raw.find(' '));
         }
 
+        // Extracts raw content, verifies format, and constructs the appropriate Git object
         std::unique_ptr<GitObject> readObject(const std::string &objectHash) const {
             fs::path path {repoFile({"objects", objectHash.substr(0, 2), objectHash.substr(2)})};
             GitPack pack{repoDir({"objects", "pack"})};
@@ -1140,131 +1238,17 @@ class GitRepository {
                 throw std::runtime_error("Unknown type " + fmt + " for object " + objectHash);
         }
 
-        template <typename T>
-        std::unique_ptr<T> readObject(const std::string &objectHashPart) const {
+        // Read a Git object and cast it to a specific subclass (GitTag, GitTree, GitBlob, or GitCommit).
+        template <typename T> std::unique_ptr<T> readObject(const std::string &objectHashPart) const {
             std::unique_ptr<GitObject> obj {readObject(objectHashPart)};
             T* casted {dynamic_cast<T*>(obj.get())};
             if (!casted) throw std::runtime_error("Invalid cast: GitObject is not of requested type: " + objectHashPart);
             return std::unique_ptr<T>(static_cast<T*>(obj.release()));
         }
 
-        std::string getLog(const std::string &commit, long maxCount) const {
-            // Stop early
-            if (maxCount == 0) return "";
-
-            // Check if no commits
-            if (refResolve("HEAD").empty())
-                throw std::runtime_error("HEAD does not have any commits yet.");
-
-            // Store the commit objects
-            std::vector<std::unique_ptr<GitCommit>> logs;
-
-            // DFS to read all the commits (until maxCount)
-            std::string objectHash {findObject(commit, "commit")};
-            std::stack<std::pair<std::string, int>> stk {{{objectHash, 1}}};
-            std::unordered_set<std::string> visited {objectHash};
-            while (!stk.empty()) {
-                std::pair<std::string, int> curr {std::move(stk.top())}; stk.pop();
-                logs.emplace_back(readObject<GitCommit>(curr.first));
-                for (const std::string &parent: logs.back()->get("parent")) {
-                    if ((maxCount == -1 || curr.second < maxCount) && visited.find(parent) == visited.end()) {
-                        visited.insert(parent); 
-                        stk.push({parent, curr.second + 1});
-                    }
-                }
-            }
-
-            // Sort based on committer date in desc order
-            std::sort(logs.begin(), logs.end(), [](const auto &c1, const auto &c2) { return *c1 > *c2; });
-
-            // Print out the logs
-            std::ostringstream oss; std::size_t mc {std::min(logs.size(), static_cast<std::size_t>(maxCount))};
-            for (std::size_t i {0}; i < mc; i++)  {
-                const std::unique_ptr<GitCommit> &commit {logs[i]};
-                oss << "commit " << commit->sha << '\n'
-                    << commit->serialize() << "\n\n";
-            }
-
-            // Remove extra space
-            std::string result {oss.str()};
-            while (!result.empty() && result.back() == '\n') 
-                result.pop_back();
-
-            return result;
-        }
-
-        std::string lsTree(const std::string &ref, bool recurse, const fs::path &prefix = "") const {
-            std::string sha {findObject(ref, "tree")};
-            std::unique_ptr<GitTree> tree {readObject<GitTree>(sha)};
-            std::ostringstream oss;
-            for (const GitLeaf &leaf: *tree) {
-                std::string type;
-                if (leaf.mode.starts_with("04"))
-                    type = "tree"; // directory
-                else if (leaf.mode.starts_with("10"))
-                    type = "blob"; // regular file
-                else if (leaf.mode.starts_with("12"))
-                    type = "blob"; // symlinked contents
-                else if (leaf.mode.starts_with("16"))
-                    type = "commit"; // Submodule
-                else
-                    throw std::runtime_error(ref + ": Unknown tree mode: " + leaf.mode);
-
-                fs::path leafPath {prefix / leaf.path};
-                if (!recurse || type != "tree")
-                    oss << leaf.mode << ' ' << type << ' ' << leaf.sha << '\t' << leafPath.string();
-                else
-                    oss << lsTree(leaf.sha, recurse, leafPath);
-                oss << '\n';
-            }
-
-            // Remove extra space
-            std::string result {oss.str()};
-            while (!result.empty() && result.back() == '\n') 
-                result.pop_back();
-
-            return result;
-        }
-
-        void checkout(const std::string &ref, const fs::path &checkoutPath) const {
-            // Ensure empty before proceeding
-            if (!fs::exists(checkoutPath)) fs::create_directories(checkoutPath);
-            else if (!fs::is_directory(checkoutPath)) throw std::runtime_error("Not a directory: " + checkoutPath.string());
-            else if (!fs::is_empty(checkoutPath)) throw std::runtime_error("checkoutPath is not empty: " + checkoutPath.string());
-
-            // Get the absolute path
-            fs::path basePath {fs::canonical(fs::absolute(checkoutPath))};
-
-            // Read the ref, if commit grab its tree
-            std::unique_ptr<GitObject> obj {readObject(findObject(ref))};
-            if (obj->fmt == "commit") {
-                std::unique_ptr<GitCommit> commit {static_cast<GitCommit*>(obj.release())};
-                obj = readObject(commit->get("tree")[0]);
-            }
-
-            // Recursively write the tree contents
-            std::stack<std::pair<std::unique_ptr<GitTree>, fs::path>> stk {};
-            stk.emplace(static_cast<GitTree*>(obj.release()), basePath);
-            while (!stk.empty()) {
-                std::unique_ptr<GitTree> tree {std::move(stk.top().first)};
-                fs::path path {std::move(stk.top().second)}; stk.pop();
-                for (const GitLeaf &leaf: *tree) {
-                    std::unique_ptr<GitObject> obj {readObject(leaf.sha)};
-                    fs::path dest {path / leaf.path};
-                    if (obj->fmt == "tree") {
-                        fs::create_directories(dest);
-                        stk.emplace(static_cast<GitTree*>(obj.release()), dest);
-                    } else if (obj->fmt == "blob") {
-                        std::unique_ptr<GitBlob> blob {static_cast<GitBlob*>(obj.release())};
-                        std::string blobData {blob->serialize()};
-                        std::ofstream ofs {dest, std::ios::binary};
-                        ofs.write(blobData.c_str(), static_cast<std::streamsize>(blobData.size()));
-                    }
-                }
-            }
-        }
-
-        // Recursively resolve ref until we have a sha hash
+        // Check for matches & return the full sha match if found
+        // refResolve("HEAD") can be used to determine if the repo is 
+        // 'fresh' without commits. If fresh, returns empty string
         [[nodiscard]] std::string refResolve(const std::string &path) const {
             std::string currRef {"ref: " + path};
             while (currRef.starts_with("ref: ")) {
@@ -1278,83 +1262,10 @@ class GitRepository {
             return currRef;
         }
 
-        // Start - starting path; withHash - whether to display the sha post resolving; prefix - sometimes
-        // we require that we cut the prefix short or have a custom prefix diplayed, hence sep variable is used
-        [[nodiscard]] std::string showAllRefs(const std::string &start, bool withHash, const std::string &prefix) const {
-            // Gather all refs starting from prefix
-            fs::path startPath {repoPath({start})};
-            std::vector<std::string> paths;
-            for (const fs::directory_entry &entry: fs::recursive_directory_iterator(startPath))
-                if (entry.is_regular_file()) paths.emplace_back(prefix / fs::relative(entry, startPath));
-
-            // Sort alphabetically
-            std::sort(paths.begin(), paths.end());
-
-            std::ostringstream oss;
-            for (const std::string &path: paths) {
-                if (withHash)
-                    oss << refResolve(path) << ' ';
-                oss << path << '\n';
-            }
-
-            std::string result {oss.str()};
-            if (!result.empty()) result.pop_back();
-            return result;
-        }
-
-        void createTag(const std::string &name, const std::string &ref, bool createTagObj = false) const {
-            std::string sha {findObject(ref)};
-            if (createTagObj) {
-                std::ostringstream oss;
-                oss << "object " << sha << '\n'
-                    << "type commit\n"
-                    << "tag " << name << '\n'
-                    << "tagger CGit user@example.com\n\n"
-                    << "A tag created by CGit.\n";
-                sha = writeObject(std::make_unique<GitTag>("", oss.str()), true);
-            }
-
-            // Write the contents to the file
-            sha.push_back('\n');
-            writeTextFile(sha, repoFile({"refs", "tags", name}));
-        }
-
-        std::string lsFiles(bool verbose = false) const {
-            std::ostringstream oss;
-            fs::path indexFilePath {repoFile({"index"})};
-            GitIndex index{GitIndex::readFromFile(indexFilePath)};
-            const std::vector<GitIndex::GitIndexEntry> &indexEntries {index.getEntries()};
-
-            if (verbose)
-                oss << "Index file format v" << index.getVersion() 
-                    << ", containing " << indexEntries.size() << " entires.\n";
-
-            for (const GitIndex::GitIndexEntry &entry: indexEntries) {
-                oss << entry.name << '\n';
-                if (verbose) {
-                    std::string entryType;
-                    switch (entry.modeType) {
-                        case 0b1000: entryType = "regular file"; break;
-                        case 0b1010: entryType = "symlink"; break;
-                        case 0b1110: entryType = "gitlink"; break;
-                    }
-
-                    // Write to string output stream
-                    oss << "  " << entryType << " with perms: " << entry.modePerms << '\n';
-                    oss << "  on blob: " << entry.sha << '\n';
-                    oss << "  created: " << entry.ctime << ", modified: " << entry.mtime << '\n';
-                    oss << "  device: " << entry.dev << ", inode: " << entry.inode << '\n';
-                    oss << "  user: (" << entry.uid << ") group: (" << entry.gid << ")\n";
-                    oss << "  flags: stage=" << entry.flagStage << " assume valid=" << entry.assumeValid << "\n\n";
-                }
-            }
-
-            std::string result {oss.str()};
-            while (!result.empty() && result.back() == '\n')
-                result.pop_back();
-            return result;
-        }
-
+        // Constructs a GitIgnore object containing global and per-directory ignore rules.
+        // Reads ignore patterns from:
+        // 1. `.git/info/exclude` for repository-wide ignore rules.
+        // 2. `.gitignore` files staged in the index for directory-scoped ignore rules.
         GitIgnore gitIgnore() const {
             std::vector<GitIgnore::BS_PAIR> absolute;
             std::unordered_map<std::string, std::vector<GitIgnore::BS_PAIR>> scoped;
@@ -1400,6 +1311,10 @@ class GitRepository {
             return GitIgnore{absolute, scoped};
         }
 
+        // Retrieves the currently active branch in the repository.
+        // Returns a pair: (bool isDetached, string ref):
+        // - `false, <branch_name>` if on a named branch.
+        // - ` true,  <commit_sha>` if in a detached HEAD state.
         std::pair<bool, std::string> getActiveBranch() const {
             std::string headContents {readTextFile(repoFile({"HEAD"}))};
             if (headContents.starts_with("ref: refs/heads/"))
@@ -1407,6 +1322,266 @@ class GitRepository {
             return {true, headContents.substr(headContents.size() - 1)};
         }
 
+        // Collects files from the given paths, returning absolute and relative paths as pairs.
+        //  -----
+        // - If a directory is provided, it recursively collects all non-gitignored files.
+        // - If a file is explicitly passed, it is included even if gitignored.
+        // - Throws an error if the path is empty or outside the worktree.
+        std::vector<std::pair<fs::path, fs::path>> collectFiles(const std::vector<std::string> &paths) const {
+            std::vector<std::pair<fs::path, fs::path>> result;
+
+            // Explictly allow adding gitignored files if directly passed
+            // When adding directories we skip gitignored files
+            GitIgnore ignore {gitIgnore()};
+
+            for (std::string path: paths) {
+                if (path.empty()) 
+                    throw std::runtime_error("Path input provided cannot be empty.");
+
+                // Expand dot to CWD
+                if (path == ".") path = fs::current_path();
+
+                fs::path absPath {fs::absolute(path)};
+                fs::path relativePath {fs::relative(path, workTree)};
+                if (relativePath.string().substr(0, 2) == "..")
+                    throw std::runtime_error("Cannot include paths outside of worktree: " + path);
+
+                if (fs::is_directory(absPath)) {
+                    for (fs::recursive_directory_iterator it {absPath}, end; it != end; it++) {
+                        const fs::directory_entry &entry {*it};
+                        fs::path currAbsPath{fs::absolute(entry)}, currRelPath{fs::relative(entry, workTree)};
+
+                        // Skip any path that contains ".git/" at any level
+                        bool skip {ignore.check(currRelPath)};
+                        if (!skip && fs::is_directory(entry)) {
+                            for (const fs::path &pathComponent: currRelPath) {
+                                if (pathComponent == ".git") {
+                                    skip = true; break;
+                                }
+                            }
+                        }
+
+                        // Disable backtracking into skipped folders
+                        if (skip) it.disable_recursion_pending();
+
+                        // Only include files not skipped
+                        else if (!skip && !fs::is_directory(currAbsPath))
+                            result.emplace_back(currAbsPath, currRelPath);
+                    }
+                }
+
+                else {
+                    result.emplace_back(absPath, relativePath);
+                }
+            }
+
+            return result;
+        }
+
+
+        // Command equivalent to `git log --pretty=raw -n <count>`
+        std::string getLog(const std::string &commit, long maxCount) const {
+            // Stop early
+            if (maxCount == 0) return "";
+
+            // Check if no commits
+            if (refResolve("HEAD").empty())
+                throw std::runtime_error("HEAD does not have any commits yet.");
+
+            // Store the commit objects
+            std::vector<std::unique_ptr<GitCommit>> logs;
+
+            // DFS to read all the commits (until maxCount)
+            std::string objectHash {findObject(commit, "commit")};
+            std::stack<std::pair<std::string, int>> stk {{{objectHash, 1}}};
+            std::unordered_set<std::string> visited {objectHash};
+            while (!stk.empty()) {
+                std::pair<std::string, int> curr {std::move(stk.top())}; stk.pop();
+                logs.emplace_back(readObject<GitCommit>(curr.first));
+                for (const std::string &parent: logs.back()->get("parent")) {
+                    if ((maxCount == -1 || curr.second < maxCount) && visited.find(parent) == visited.end()) {
+                        visited.insert(parent); 
+                        stk.push({parent, curr.second + 1});
+                    }
+                }
+            }
+
+            // Sort based on committer date in desc order
+            std::sort(logs.begin(), logs.end(), [](const auto &c1, const auto &c2) { return *c1 > *c2; });
+
+            // Print out the logs
+            std::ostringstream oss; std::size_t mc {std::min(logs.size(), static_cast<std::size_t>(maxCount))};
+            for (std::size_t i {0}; i < mc; i++)  {
+                const std::unique_ptr<GitCommit> &commit {logs[i]};
+                oss << "commit " << commit->sha << '\n'
+                    << commit->serialize() << "\n\n";
+            }
+
+            // Remove extra space
+            std::string result {oss.str()};
+            while (!result.empty() && result.back() == '\n') 
+                result.pop_back();
+
+            return result;
+        }
+
+        // Command equivalent to `git ls-tree -r <tree>`
+        std::string lsTree(const std::string &ref, bool recurse, const fs::path &prefix = "") const {
+            std::string sha {findObject(ref, "tree")};
+            std::unique_ptr<GitTree> tree {readObject<GitTree>(sha)};
+            std::ostringstream oss;
+            for (const GitLeaf &leaf: *tree) {
+                std::string type;
+                if (leaf.mode.starts_with("04"))
+                    type = "tree";   // directory
+                else if (leaf.mode.starts_with("10"))
+                    type = "blob";   // regular file
+                else if (leaf.mode.starts_with("12"))
+                    type = "blob";   // symlinked contents
+                else if (leaf.mode.starts_with("16"))
+                    type = "commit"; // Submodule
+                else
+                    throw std::runtime_error(ref + ": Unknown tree mode: " + leaf.mode);
+
+                fs::path leafPath {prefix / leaf.path};
+                if (!recurse || type != "tree")
+                    oss << leaf.mode << ' ' << type << ' ' << leaf.sha << '\t' << leafPath.string();
+                else
+                    oss << lsTree(leaf.sha, recurse, leafPath);
+                oss << '\n';
+            }
+
+            // Remove extra space
+            std::string result {oss.str()};
+            while (!result.empty() && result.back() == '\n') 
+                result.pop_back();
+
+            return result;
+        }
+
+        // Performs a checkout of the given reference into a *EMPTY* new folder.
+        // If the reference points to a commit, it retrieves the associated tree.
+        void checkout(const std::string &ref, const fs::path &checkoutPath) const {
+            // Ensure empty before proceeding
+            if (!fs::exists(checkoutPath)) fs::create_directories(checkoutPath);
+            else if (!fs::is_directory(checkoutPath)) throw std::runtime_error("Not a directory: " + checkoutPath.string());
+            else if (!fs::is_empty(checkoutPath)) throw std::runtime_error("checkoutPath is not empty: " + checkoutPath.string());
+
+            // Get the absolute path
+            fs::path basePath {fs::canonical(fs::absolute(checkoutPath))};
+
+            // Read the ref, if commit grab its tree
+            std::unique_ptr<GitObject> obj {readObject(findObject(ref))};
+            if (obj->fmt == "commit") {
+                std::unique_ptr<GitCommit> commit {static_cast<GitCommit*>(obj.release())};
+                obj = readObject(commit->get("tree")[0]);
+            }
+
+            // Recursively write the tree contents
+            std::stack<std::pair<std::unique_ptr<GitTree>, fs::path>> stk {};
+            stk.emplace(static_cast<GitTree*>(obj.release()), basePath);
+            while (!stk.empty()) {
+                std::unique_ptr<GitTree> tree {std::move(stk.top().first)};
+                fs::path path {std::move(stk.top().second)}; stk.pop();
+                for (const GitLeaf &leaf: *tree) {
+                    std::unique_ptr<GitObject> obj {readObject(leaf.sha)};
+                    fs::path dest {path / leaf.path};
+                    if (obj->fmt == "tree") {
+                        fs::create_directories(dest);
+                        stk.emplace(static_cast<GitTree*>(obj.release()), dest);
+                    } else if (obj->fmt == "blob") {
+                        std::unique_ptr<GitBlob> blob {static_cast<GitBlob*>(obj.release())};
+                        std::string blobData {blob->serialize()};
+                        std::ofstream ofs {dest, std::ios::binary};
+                        ofs.write(blobData.c_str(), static_cast<std::streamsize>(blobData.size()));
+                    }
+                }
+            }
+        }
+
+        // Displays all references (branches, tags, etc.) in the repository.
+        // ----
+        // - `start` specifies the starting path for reference lookup.
+        // - `withHash` determines whether to include the resolved SHA1 hash.
+        // - `prefix` allows customization of the displayed path format.
+        std::string showAllRefs(const std::string &start, bool withHash, const std::string &prefix) const {
+            // Gather all refs starting from prefix
+            fs::path startPath {repoPath({start})};
+            std::vector<std::string> paths;
+            for (const fs::directory_entry &entry: fs::recursive_directory_iterator(startPath))
+                if (entry.is_regular_file()) paths.emplace_back(prefix / fs::relative(entry, startPath));
+
+            // Sort alphabetically
+            std::sort(paths.begin(), paths.end());
+
+            std::ostringstream oss;
+            for (const std::string &path: paths) {
+                if (withHash)
+                    oss << refResolve(path) << ' ';
+                oss << path << '\n';
+            }
+
+            std::string result {oss.str()};
+            if (!result.empty()) result.pop_back();
+            return result;
+        }
+
+        // Creates a tag in the repository. `createTagObj` determines whether to create a tag object (annotated tag).
+        void createTag(const std::string &name, const std::string &ref, bool createTagObj = false) const {
+            std::string sha {findObject(ref)};
+            if (createTagObj) {
+                std::ostringstream oss;
+                oss << "object " << sha << '\n'
+                    << "type commit\n"
+                    << "tag " << name << '\n'
+                    << "tagger CGit user@example.com\n\n"
+                    << "A tag created by CGit.\n";
+                sha = writeObject(std::make_unique<GitTag>("", oss.str()), true);
+            }
+
+            // Write the contents to the file
+            sha.push_back('\n');
+            writeTextFile(sha, repoFile({"refs", "tags", name}));
+        }
+
+        // Command similar to  `git ls-files -v`
+        std::string lsFiles(bool verbose = false) const {
+            std::ostringstream oss;
+            fs::path indexFilePath {repoFile({"index"})};
+            GitIndex index{GitIndex::readFromFile(indexFilePath)};
+            const std::vector<GitIndex::GitIndexEntry> &indexEntries {index.getEntries()};
+
+            if (verbose)
+                oss << "Index file format v" << index.getVersion() 
+                    << ", containing " << indexEntries.size() << " entires.\n";
+
+            for (const GitIndex::GitIndexEntry &entry: indexEntries) {
+                oss << entry.name << '\n';
+                if (verbose) {
+                    std::string entryType;
+                    switch (entry.modeType) {
+                        case 0b1000: entryType = "regular file"; break;
+                        case 0b1010: entryType = "symlink"; break;
+                        case 0b1110: entryType = "gitlink"; break;
+                    }
+
+                    // Write to string output stream
+                    oss << "  " << entryType << " with perms: " << entry.modePerms << '\n';
+                    oss << "  on blob: " << entry.sha << '\n';
+                    oss << "  created: " << entry.ctime << ", modified: " << entry.mtime << '\n';
+                    oss << "  device: " << entry.dev << ", inode: " << entry.inode << '\n';
+                    oss << "  user: (" << entry.uid << ") group: (" << entry.gid << ")\n";
+                    oss << "  flags: stage=" << entry.flagStage << " assume valid=" << entry.assumeValid << "\n\n";
+                }
+            }
+
+            std::string result {oss.str()};
+            while (!result.empty() && result.back() == '\n')
+                result.pop_back();
+            return result;
+        }
+
+        // Command - `git status`. Unlike the git version, always lists paths from root of the worktree
         std::string getStatus() const {
             // Accumulate to string stream
             std::ostringstream oss;
@@ -1524,58 +1699,11 @@ class GitRepository {
             return result;
         }
 
-        // Returns absolute / relative path as a pair
-        std::vector<std::pair<fs::path, fs::path>> collectFiles(const std::vector<std::string> &paths) const {
-            std::vector<std::pair<fs::path, fs::path>> result;
-
-            // Explictly allow adding gitignored files if directly passed
-            // When adding directories we skip gitignored files
-            GitIgnore ignore {gitIgnore()};
-
-            for (std::string path: paths) {
-                if (path.empty()) 
-                    throw std::runtime_error("Path input provided cannot be empty.");
-
-                // Expand dot to CWD
-                if (path == ".") path = fs::current_path();
-
-                fs::path absPath {fs::absolute(path)};
-                fs::path relativePath {fs::relative(path, workTree)};
-                if (relativePath.string().substr(0, 2) == "..")
-                    throw std::runtime_error("Cannot include paths outside of worktree: " + path);
-
-                if (fs::is_directory(absPath)) {
-                    for (fs::recursive_directory_iterator it {absPath}, end; it != end; it++) {
-                        const fs::directory_entry &entry {*it};
-                        fs::path currAbsPath{fs::absolute(entry)}, currRelPath{fs::relative(entry, workTree)};
-
-                        // Skip any path that contains ".git/" at any level
-                        bool skip {ignore.check(currRelPath)};
-                        if (!skip && fs::is_directory(entry)) {
-                            for (const fs::path &pathComponent: currRelPath) {
-                                if (pathComponent == ".git") {
-                                    skip = true; break;
-                                }
-                            }
-                        }
-
-                        // Disable backtracking into it
-                        if (skip) it.disable_recursion_pending();
-
-                        // Only include files not skipped
-                        else if (!skip && !fs::is_directory(currAbsPath))
-                            result.emplace_back(currAbsPath, currRelPath);
-                    }
-                }
-
-                else {
-                    result.emplace_back(absPath, relativePath);
-                }
-            }
-
-            return result;
-        }
-
+        // Removes files from the Git index and optionally deletes them from the filesystem.
+        // ----
+        // - `paths` contains the absolute and relative paths of files to remove.
+        // - `delete_` controls whether the files are also removed from the working directory.
+        // - `skipMissing` determines whether to ignore missing files instead of throwing an error.
         GitIndex rm(const std::vector<std::pair<fs::path, fs::path>>& paths, bool delete_ = true, bool skipMissing = false) {
             // Get list of abs paths to remove, ensure no path 
             // exists outside of git workdir by using collectFiles
@@ -1611,8 +1739,11 @@ class GitRepository {
             return index;
         }
 
+        // Adds files to the Git index.
         GitIndex add(const std::vector<std::pair<fs::path, fs::path>>& paths) {
-            // Remove existing paths from index
+            // Remove existing paths from index before writing them back
+            // Two bool paramters to not physically delete them 
+            // & to silently fail if missing few paths
             GitIndex index {rm(paths, false, true)};
 
             std::vector<GitIndex::GitIndexEntry> &entries{index.getEntries()};
@@ -1652,8 +1783,14 @@ class GitRepository {
             return index;
         }
 
+        // Creates a new commit with the given message.
+        // Equivalent to `git commit --allow-empty -m <message>`
+        // Writes the commit object to disk and updates HEAD or the active branch.
         void commit(const std::string &message) {
-            std::string treeSha {writeIndexAsTree()}; 
+            // Write the index as loose tree objects to disk
+            std::string treeSha {writeIndexAsTree()};
+
+            // Below logic to create the actual commit object
             std::string parentSha {findObject("HEAD")}; 
 
             // Get user.name and user.email from ~/.gitconfig
@@ -1935,8 +2072,9 @@ int main(int argc, char **argv) {
         else {
             std::cout << argparser.getHelp() << '\n';
         }
+
         return 0;
-    } 
+    }
 
     catch (std::exception &ex) {
         std::cerr << "fatal: " << ex.what() << '\n';
