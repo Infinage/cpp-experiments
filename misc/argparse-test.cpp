@@ -13,7 +13,7 @@ int main(int argc, char **argv) {
         program.description("A command-line fitness tracker to log workouts and track progress.");
 
         // Subcommand: Log workout
-        argparse::ArgumentParser logWorkout{"log"};
+        argparse::ArgumentParser &logWorkout {program.addSubcommand("log")};
         logWorkout.addArgument(argparse::Argument("exercise").help("Type of workout").required());
         logWorkout.addArgument(argparse::Argument("duration").help("Duration in minutes").scan<int>().required());
         logWorkout.addArgument(argparse::Argument("calories").help("Calories burned").scan<int>().defaultValue(0));
@@ -21,19 +21,14 @@ int main(int argc, char **argv) {
         logWorkout.description("Log a new workout session.");
 
         // Subcommand: View progress
-        argparse::ArgumentParser progress{"progress"};
+        argparse::ArgumentParser &progress{program.addSubcommand("progress")};
         progress.addArgument(argparse::Argument("days").help("Show logs for last N days").scan<int>().defaultValue(7));
 
         progress.description("View workout logs for a given number of days.");
 
         // Subcommand: Sync data
-        argparse::ArgumentParser sync{"sync"};
+        argparse::ArgumentParser &sync{program.addSubcommand("sync")};
         sync.description("Sync workout data with cloud storage.");
-
-        // Add subcommands
-        program.addSubcommand(logWorkout);
-        program.addSubcommand(progress);
-        program.addSubcommand(sync);
 
         // Parse arguments
         program.parseArgs(argc, argv);

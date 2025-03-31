@@ -19,6 +19,14 @@ namespace argparse {
         bool, short, int, long, float, long long, double, 
         std::string, std::vector<std::string>>;
 
+    template<typename T>
+    concept ValidValueType = 
+    std::same_as<T,   bool> || std::same_as<T,       short> ||
+    std::same_as<T,    int> || std::same_as<T,        long> ||
+    std::same_as<T,  float> || std::same_as<T,   long long> ||
+    std::same_as<T, double> || std::same_as<T, std::string> ||
+    std::same_as<T, std::vector<std::string>>;
+
     // Helper to print variant directly to outputstream
     inline std::ostream &operator<<(std::ostream &oss, const VALUE_TYPE &val) {
         std::visit([&oss](const auto &arg) {
@@ -229,7 +237,7 @@ namespace argparse {
             std::unordered_map<std::string, Argument> allArgs;
             std::unordered_map<std::size_t, Argument&> positionalArgs;
             std::unordered_map<std::string, Argument&> namedArgs, aliasedArgs;
-            std::unordered_map<std::string, ArgumentParser&> subcommands;
+            std::unordered_map<std::string, ArgumentParser> subcommands;
 
             // Check if the parser was called at all
             // Esp required in the context of subcommands
@@ -274,7 +282,7 @@ namespace argparse {
             void updateReferences() {
                 if (refUpdated) return;
                 else {
-                    for (const auto [argName, arg]: allArgs) {
+                    for (const auto &[argName, arg]: allArgs) {
                         // Update positional args and named args
                         if (arg.getArgType() == ARGTYPE::POSITIONAL || arg.getArgType() == ARGTYPE::BOTH)
                             positionalArgs.emplace(positionalArgs.size(), allArgs.at(argName));
@@ -293,7 +301,7 @@ namespace argparse {
                     }
 
                     // Recurse into subcommands
-                    for (const std::pair<const std::string, ArgumentParser&> &kv: subcommands) {
+                    for (std::pair<const std::string, ArgumentParser> &kv: subcommands) {
                         maxSubCmdLen = std::max(maxSubCmdLen, static_cast<int>(kv.first.size() + 10));
                         kv.second.updateReferences();
                     }
@@ -347,21 +355,21 @@ namespace argparse {
                 _epilog = message; return *this;
             }
 
-            template<typename T=std::string>
+            // Template specialization to get the arg value
+            template<ValidValueType T=std::string>
             T get(const std::string &key) const {
-                if constexpr (std::is_same_v<T, ArgumentParser>) {
-                    auto it {subcommands.find(key)};
-                    if (it == subcommands.end())
-                        throw std::runtime_error("Argparse Error: Subcommand with name '" + key + "' does not exist");
-                    return it->second;
-                }
+                auto it {allArgs.find(key)};
+                if (it == allArgs.end())
+                    throw std::runtime_error("Argparse Error: Argument with name '" + key + "' does not exist");
+                return it->second.get<T>();
+            }
 
-                else {
-                    auto it {allArgs.find(key)};
-                    if (it == allArgs.end())
-                        throw std::runtime_error("Argparse Error: Argument with name '" + key + "' does not exist");
-                    return it->second.get<T>();
-                }
+            // Command to retreive child parsers aka subcommands
+            ArgumentParser& getChildParser(const std::string &key) {
+                auto it {subcommands.find(key)};
+                if (it == subcommands.end())
+                    throw std::runtime_error("Argparse Error: Subcommand with name '" + key + "' does not exist");
+                return it->second;
             }
 
             // Return true/false based on whether a key is retreivable
@@ -481,14 +489,18 @@ namespace argparse {
             }
 
             // Add subcommand into the parser, check if name is not already taken
-            ArgumentParser &addSubcommand(ArgumentParser &parser) {
-                if (allArgs.find(parser.name) != allArgs.end())
-                    throw std::runtime_error("Argparse Error: Subcommand conflict with argument: " + parser.name);
-                if (subcommands.find(parser.name) != subcommands.end())
-                    throw std::runtime_error("Argparse Error: Duplicate subcommand with name: " + parser.name);
+            ArgumentParser &addSubcommand(
+                const std::string &name, 
+                const std::string &helpArgName = "help", 
+                const std::string &helpAliasName = "") 
+            {
+                if (allArgs.find(name) != allArgs.end())
+                    throw std::runtime_error("Argparse Error: Subcommand conflict with argument: " + name);
+                if (subcommands.find(name) != subcommands.end())
+                    throw std::runtime_error("Argparse Error: Duplicate subcommand with name: " + name);
 
-                subcommands.emplace(parser.name, parser);
-                return *this;
+                subcommands.emplace(name, ArgumentParser{name, helpArgName, helpAliasName});
+                return subcommands.at(name);
             }
 
             // Processes and returns the help message
@@ -530,7 +542,7 @@ namespace argparse {
 
                 // Print out all the args with details
                 oss << "\n\nArguments:\n";
-                for (const auto& [_, arg]: allArgs)
+                for (const auto &[_, arg]: allArgs)
                     oss << " " << arg.getHelp(maxArgLen) << '\n';
 
                 if (_epilog) 

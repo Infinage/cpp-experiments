@@ -1,4 +1,5 @@
 #include "../include/utils.hpp"
+
 #include <ranges>
 
 [[nodiscard]] std::string readTextFile(const fs::path &path) {

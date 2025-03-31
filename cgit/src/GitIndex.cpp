@@ -1,7 +1,7 @@
-#include <fstream>
-
-#include "../include/utils.hpp"
 #include "../include/GitIndex.hpp"
+#include "../include/utils.hpp"
+
+#include <fstream>
 
 std::ostream &operator<<(std::ostream &os, const GitIndex::GitTimeStamp &ts) {
     std::time_t t = ts.seconds;
