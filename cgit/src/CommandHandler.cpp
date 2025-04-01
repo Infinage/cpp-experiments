@@ -80,7 +80,7 @@ void CommandHandler::handleArgs(int argc, char **argv) {
     }
 
     else if (showRefParser.ok()) {
-        std::cout << GitRepository::findRepo().showAllRefs("refs", true, "refs") << '\n';
+        std::cout << GitRepository::findRepo().showAllRefs() << '\n';
     }
 
     else if (tagParser.ok()) {
@@ -91,7 +91,7 @@ void CommandHandler::handleArgs(int argc, char **argv) {
                 ref {tagParser.get("object")};
             repo.createTag(name, ref, createTagObj);
         } else {
-            std::string result {repo.showAllRefs("refs/tags", false, "")};
+            std::string result {repo.showAllTags()};
             std::cout << result;
             if (!result.empty()) std::cout << '\n';
         }

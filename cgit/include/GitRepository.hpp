@@ -135,12 +135,11 @@ class GitRepository {
         // Command equivalent to `git ls-tree -r <tree>`
         std::string lsTree(const std::string &ref, bool recurse, const fs::path &prefix = "") const;
 
-        // Displays all references (branches, tags, etc.) in the repository.
-        // ----
-        // - `start` specifies the starting path for reference lookup.
-        // - `withHash` determines whether to include the resolved SHA1 hash.
-        // - `prefix` allows customization of the displayed path format.
-        std::string showAllRefs(const std::string &start, bool withHash, const std::string &prefix) const;
+        // Displays all references (branches, tags, etc.) in the repository including the hash
+        std::string showAllRefs() const;
+
+        // Displays all tags
+        std::string showAllTags() const;
 
         // Command similar to  `git ls-files -v`
         std::string lsFiles(bool verbose = false) const;

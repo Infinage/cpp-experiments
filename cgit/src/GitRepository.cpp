@@ -637,11 +637,7 @@ std::string GitRepository::getLog(const std::string &commit, long maxCount) cons
     }
 
     // Remove extra space
-    std::string result {oss.str()};
-    while (!result.empty() && result.back() == '\n') 
-        result.pop_back();
-
-    return result;
+    return trim(oss.str());
 }
 
 std::string GitRepository::lsTree(const std::string &ref, bool recurse, const fs::path &prefix) const {
@@ -670,33 +666,60 @@ std::string GitRepository::lsTree(const std::string &ref, bool recurse, const fs
     }
 
     // Remove extra space
-    std::string result {oss.str()};
-    while (!result.empty() && result.back() == '\n') 
-        result.pop_back();
-
-    return result;
+    return trim(oss.str());
 }
 
-std::string GitRepository::showAllRefs(const std::string &start, bool withHash, const std::string &prefix) const {
+std::string GitRepository::showAllTags() const {
     // Gather all refs starting from prefix
-    fs::path startPath {repoPath({start})};
+    fs::path startPath {repoPath({"refs", "tags"})};
     std::vector<std::string> paths;
-    for (const fs::directory_entry &entry: fs::recursive_directory_iterator(startPath))
-        if (entry.is_regular_file()) paths.emplace_back(prefix / fs::relative(entry, startPath));
+    for (const fs::directory_entry &entry: fs::recursive_directory_iterator(startPath)) {
+        if (entry.is_regular_file()) 
+            paths.emplace_back(fs::relative(entry, startPath));
+    }
 
-    // Sort alphabetically
+    // Gather all packed refs
+    for (const std::pair<const std::string, std::string> &kv: packedRefs) {
+        if (kv.first.starts_with("refs/tags/")) 
+            paths.emplace_back(kv.first.substr(10));
+    }
+
+    // Sort alphabetically & write to stream
     std::sort(paths.begin(), paths.end());
-
     std::ostringstream oss;
     for (const std::string &path: paths) {
-        if (withHash)
-            oss << refResolve(path) << ' ';
         oss << path << '\n';
     }
 
-    std::string result {oss.str()};
-    if (!result.empty()) result.pop_back();
-    return result;
+    // Remove extra space
+    return trim(oss.str());
+}
+
+std::string GitRepository::showAllRefs() const {
+    // Gather all refs starting from prefix
+    fs::path startPath {repoPath({"refs"})};
+    std::vector<std::pair<std::string, std::string>> paths;
+    for (const fs::directory_entry &entry: fs::recursive_directory_iterator(startPath))
+        if (entry.is_regular_file()) {
+            fs::path relPath {"refs" / fs::relative(entry, startPath)};
+            paths.emplace_back(relPath, refResolve(relPath));
+        }
+
+    // Gather all packed refs
+    for (const std::pair<const std::string, std::string> &kv: packedRefs) {
+        if (kv.first.starts_with("refs/")) 
+            paths.emplace_back(kv.first, kv.second);
+    }
+
+    // Sort alphabetically
+    std::sort(paths.begin(), paths.end(), [](auto p1, auto p2) { return p1.first < p2.first; });
+    std::ostringstream oss;
+    for (const std::pair<std::string, std::string> &p: paths) {
+        oss << p.second << ' ' << p.first << '\n';
+    }
+
+    // Remove extra space
+    return trim(oss.str());
 }
 
 std::string GitRepository::lsFiles(bool verbose) const {
@@ -729,10 +752,8 @@ std::string GitRepository::lsFiles(bool verbose) const {
         }
     }
 
-    std::string result {oss.str()};
-    while (!result.empty() && result.back() == '\n')
-        result.pop_back();
-    return result;
+    // Remove extra space
+    return trim(oss.str());
 }
 
 std::string GitRepository::getStatus() const {
@@ -855,8 +876,6 @@ std::string GitRepository::getStatus() const {
         untracked.insert(entry);
     }
 
-    std::string result {oss.str()};
-    if (!result.empty() && result.back() == '\n')
-        result.pop_back();
-    return result;
+    // Remove extra space
+    return trim(oss.str());
 }
