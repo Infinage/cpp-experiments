@@ -1,7 +1,6 @@
 #pragma once
 
 #include <concepts>
-#include <iostream>
 #include <ostream>
 #include <sstream>
 #include <stdexcept>
@@ -161,6 +160,26 @@ namespace BI {
             BigInt() = default;
             BigInt(const char* str): BigInt(std::string_view(str)) {}
 
+            // Move Constructor
+            BigInt(BigInt &&other) noexcept: 
+                data(std::move(other.data)), 
+                negative(other.negative) 
+            {}
+
+            // Move assignment
+            BigInt& operator=(BigInt &&other) noexcept {
+                if (this != &other) {
+                    data = std::move(other.data);
+                    negative = other.negative;
+                }
+                return *this;
+            }
+
+            // Copy constructor
+            BigInt(const BigInt &other) noexcept:
+                data(other.data), negative(other.negative) {}
+
+            // Templated constructor
             template<typename T> requires (std::integral<T> && !std::is_same_v<T, bool>)
             explicit BigInt(T num): negative(num < 0) {
                 num = std::abs(num);
@@ -170,6 +189,7 @@ namespace BI {
                 }
             }
 
+            // Recommended constructor
             BigInt(std::string_view str) {
                 // Return early
                 if (str.empty()) return;
@@ -241,7 +261,7 @@ namespace BI {
             inline bool operator<=(const BigInt &other) { return compare(*this, other) <=  0; }
             inline bool operator< (const BigInt &other) { return compare(*this, other) == -1; }
 
-            // Arithmetic ops
+            // Arithmetic op - Add
             inline BigInt operator+(const BigInt &other) const {
                 if (negative == other.negative) {
                     return BigInt{add(data, other.data), negative};
@@ -258,6 +278,7 @@ namespace BI {
                 }
             }
 
+            // Arithmetic op - Sub
             inline BigInt operator-(const BigInt &other) const {
                 if (negative != other.negative) {
                     return BigInt{add(data, other.data), negative};
@@ -274,6 +295,7 @@ namespace BI {
                 }
             }
 
+            // Arithmetic op - Mul
             inline BigInt operator*(const BigInt &other) const {
                 return BigInt{
                     multiply(data, other.data), 
@@ -281,6 +303,7 @@ namespace BI {
                 };
             }
 
+            // Arithmetic op - Div
             inline BigInt operator/(const BigInt &other) const {
                 int cmp {absCompare(*this, other)};
                 bool resNeg {static_cast<bool>(negative ^ other.negative)};
@@ -294,6 +317,7 @@ namespace BI {
                 }
             }
 
+            // Arithmetic op - Mod
             inline BigInt operator%(const BigInt &other) const {
                 int cmp {absCompare(*this, other)};
                 if (other.empty()) throw std::runtime_error("Division by zero.");
