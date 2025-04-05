@@ -9,12 +9,13 @@
 #include <stdexcept>
 
 // Define density as a seq of chars
-constexpr std::string_view DENSITY {" _.,-=+:;cba!?0123456789$W#@"};
+constexpr std::string_view DENSITY {" _.,-=+:;cba!?0123456789$W#@Ñ"};
 
 // Map each cell to a corresponding character in the Density string
-inline char mapPixel(const double val, const double min, const double max) {
+inline char mapPixel(const double val, const double min, const double max, bool invert = false) {
     double scaled {max > min? (val - min) / (max - min): 0.};
-    std::size_t pos {static_cast<std::size_t>(std::round(scaled * DENSITY.size() - 1))};
+    std::size_t pos {static_cast<std::size_t>(std::round(scaled * (DENSITY.size() - 1)))};
+    if (invert) pos = DENSITY.size() - pos - 1;
     return DENSITY[pos];
 }
 
@@ -36,15 +37,6 @@ std::array<std::uint8_t, 4> poolAvg(std::span<std::array<std::uint8_t, 4>> pixel
     };
 }
 
-// Apply max of all the pixels
-std::array<std::uint8_t, 4> poolMax(std::span<std::array<std::uint8_t, 4>> pixels) {
-    std::array<std::uint8_t, 4> result{};
-    for (const std::array<std::uint8_t, 4> &pixel: pixels)
-        for (std::size_t i {0}; i < 4; i++)
-            result[i] = std::max(result[i], pixel[i]);
-    return result;
-}
-
 int main(int argc, char **argv) {
     // Define the cli args
     argparse::ArgumentParser parser{"ascii-art"};
@@ -53,20 +45,16 @@ int main(int argc, char **argv) {
         .help("PNG image path").required();
     parser.addArgument("downscale", argparse::ARGTYPE::NAMED).alias("d")
         .help("Downscale the input image by specified factor").defaultValue(short{1});
-    parser.addArgument("pool-func", argparse::ARGTYPE::NAMED).alias("f")
-        .help("Function to apply for downscaling - avg/max").defaultValue("avg");
+    parser.addArgument("invert", argparse::ARGTYPE::NAMED).alias("i")
+        .help("Invert density mapping").implicitValue(true).defaultValue(false);
     parser.parseArgs(argc, argv);
 
     // Extract args from CLI
     short downscale {parser.get<short>("downscale")};
-    std::string poolFunc {parser.get("pool-func")};
+    if (downscale <= 0) throw std::runtime_error("Downscale factor cannot be negative.");
+    bool invertMapping {parser.get<bool>("invert")};
     std::size_t factor {static_cast<std::size_t>(downscale)};
     std::string filePath {parser.get("image")};
-
-    // Throw err if wrong args passed
-    if (downscale <= 0) throw std::runtime_error("Downscale factor cannot be negative.");
-    if (poolFunc != "avg" && poolFunc != "max") 
-        throw std::runtime_error("Unsupported downscaling function: " + poolFunc);
 
     // Read the image
     png::Image image {png::read(filePath.c_str())};
@@ -86,7 +74,7 @@ int main(int argc, char **argv) {
             }
 
             // Apply aggregate function to pool pixels, luma weighted average for grayscaling
-            std::array<std::uint8_t, 4> pixel {poolFunc == "avg"? poolAvg(pixels): poolMax(pixels)};
+            std::array<std::uint8_t, 4> pixel {poolAvg(pixels)};
             double grey {(pixel[3] / 255.) * (.299 * pixel[0] + .587 * pixel[1] + .114 * pixel[2])};
             grayscaled[i][j] = grey; min = std::min(min, grey); max = std::max(max, grey);
         }
@@ -97,7 +85,7 @@ int main(int argc, char **argv) {
     result.reserve(grayscaled.size() * (grayscaled[0].size() + 1));
     for (const std::vector<double> &row: grayscaled) {
         for (const double &pixel: row)
-            result.push_back(mapPixel(pixel, min, max)) ;
+            result.push_back(mapPixel(pixel, min, max, invertMapping)) ;
         result.push_back('\n');
     }
 
