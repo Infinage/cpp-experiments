@@ -1,8 +1,8 @@
+#include <istream>
 #include <png.h>
 #include <array>
 #include <cstdint>
 #include <cstdio>
-#include <fstream>
 #include <vector>
 #include <stdexcept>
 
@@ -29,13 +29,11 @@ namespace png {
         if (!(*stream)) throw std::runtime_error("Read error");
     }
 
-    inline Image read(const std::string &filename) {
-        std::ifstream ifs {filename, std::ios::binary};
-        if (!ifs) throw std::runtime_error("File open failed");
-
+    // Accepts a stream input, works with both file inp as well string buffers
+    inline Image read(std::istream &is) {
         // Read PNG header
         png_byte header[8];
-        ifs.read(reinterpret_cast<char*>(&header), 8);
+        is.read(reinterpret_cast<char*>(&header), 8);
         if (png_sig_cmp(header, 0, 8)) throw std::runtime_error("Not a PNG file");
 
         // Init read struct
@@ -49,7 +47,7 @@ namespace png {
         if (setjmp(png_jmpbuf(png_ptr))) throw std::runtime_error("PNG read error");
 
         // Use custom C++ stream read callback, tell png that we already read header
-        png_set_read_fn(png_ptr, static_cast<void*>(&ifs), png_read_callback);
+        png_set_read_fn(png_ptr, static_cast<void*>(&is), png_read_callback);
         png_set_sig_bytes(png_ptr, 8);
 
         // Read Meta
