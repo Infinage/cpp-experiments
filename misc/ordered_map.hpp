@@ -27,6 +27,15 @@ namespace stdx {
                 }
             }
 
+            // Erase + emplace to support types without assignment operators (e.g. const members)
+            template<typename Val_ = V> requires std::is_same_v<std::decay_t<Val_>, V>
+            void emplace(const K &key, Val_ &&value) {
+                iterator it {find(key)};
+                if (it != end()) erase(key);
+                data.emplace_back(key, std::forward<Val_>(value));
+                lookup.emplace(key, std::prev(end()));
+            }
+
             bool erase(const K &key) {
                 iterator it {find(key)};
                 if (it == end()) 
@@ -49,6 +58,13 @@ namespace stdx {
 
             inline const V &at(const K &key) const {
                 const_iterator it {find(key)};
+                if (it == end())
+                    throw std::runtime_error("ordered_map at");
+                return it->second;
+            }
+            
+            inline V &at(const K &key) {
+                iterator it {find(key)};
                 if (it == end())
                     throw std::runtime_error("ordered_map at");
                 return it->second;

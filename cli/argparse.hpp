@@ -7,10 +7,11 @@
 #include <stdexcept>
 #include <string>
 #include <tuple>
-#include <unordered_map>
 #include <variant>
 #include <vector>
 #include <charconv>
+
+#include "../misc/ordered_map.hpp"
 
 namespace argparse {
     enum ARGTYPE { POSITIONAL, NAMED, BOTH };
@@ -234,7 +235,7 @@ namespace argparse {
             int maxArgLen{15}, maxSubCmdLen{15};
             const std::string name, helpArgName, helpAliasName;
             std::optional<std::string> _description, _epilog;
-            std::unordered_map<std::string, Argument> allArgs;
+            stdx::ordered_map<std::string, Argument> allArgs;
             std::unordered_map<std::size_t, Argument&> positionalArgs;
             std::unordered_map<std::string, Argument&> namedArgs, aliasedArgs;
             std::unordered_map<std::string, ArgumentParser> subcommands;

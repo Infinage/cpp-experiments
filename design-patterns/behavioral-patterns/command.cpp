@@ -58,9 +58,8 @@ class Calculator {
         Calculator(): state(0) {}
         ~Calculator() {
             while (!history.empty()) {
-                Command *c {history.top()};
+                delete history.top();
                 history.pop();
-                delete c;
             }
         }
 
@@ -74,10 +73,10 @@ class Calculator {
             if (history.empty()) std::cout << "Nothing to undo.\n";
             else {
                 Command *c {history.top()};
-                history.pop();
                 state = c->undo(state);
-                delete c;
                 std::cout << state << "\n";
+                history.pop();
+                delete c;
             }
         }
 };
