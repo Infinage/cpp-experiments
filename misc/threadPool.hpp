@@ -9,7 +9,7 @@
 #include <variant>
 #include <vector>
 
-template <class F, class State = std::monostate>
+template <typename F, typename State = std::monostate>
 class ThreadPool {
     private:
         const std::size_t N_WORKERS;
@@ -22,7 +22,7 @@ class ThreadPool {
         std::atomic<bool> exitCondition {false};
 
     public:
-        ~ThreadPool() { 
+        ~ThreadPool() {
             exitCondition = true;
             tasksCV.notify_all();
             for (std::thread &worker: workers)

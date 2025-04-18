@@ -12,6 +12,7 @@
 #include <SFML/Graphics.hpp>
 
 #include "../cli/argparse.hpp"
+#include "../misc/threadPool.hpp"
 
 using namespace std::complex_literals;
 
@@ -40,26 +41,41 @@ int main(int argc, char **argv) {
     parser.description("Draws mandelbrot set on to the console.");
     parser.addArgument("n_iters", argparse::ARGTYPE::NAMED).alias("n").defaultValue(100)
         .help("Iterations to run for checking divergence. Must be between (0, 1000]");
-    parser.parseArgs(argc, argv);
+    parser.addArgument("refresh_rate", argparse::ARGTYPE::NAMED).alias("r").defaultValue(0.25)
+        .help("Image is refreshed every <refresh_rate> seconds. Must be in float, eg: 1.");
+    parser.addArgument("n_workers", argparse::ARGTYPE::NAMED).alias("j").defaultValue(4)
+        .help("No. of concurrent threads to use for rendering image.");
 
-    // Assert args are valid
-    int nIters {parser.get<int>("n_iters")};
+    // Parse & validate args
+    parser.parseArgs(argc, argv);
+    int nIters {parser.get<int>("n_iters")}, nThreads {parser.get<int>("n_workers")}; 
+    double rRate {parser.get<double>("refresh_rate")};
     if (nIters <= 0 || nIters > 1000) throw std::runtime_error("`n_iters` must be between (0, 1000]");
+    if (rRate < 0) throw std::runtime_error("`refresh_rate` cannot be less than 0.");
+    if (nThreads < 0) throw std::runtime_error("`n_workers` cannot be less than 0.");
+
+    // Info on console
+    std::cout << "n_iters: " << nIters << "; "
+              << "refresh_rate: " << rRate << "; "
+              << "n_workers: " << nThreads << '\n';
 
     // Start with predetermined height and width, change on user interaction
     unsigned MAX_ITER = {static_cast<unsigned>(nIters)};
 
-    // Create SFML Window - cache image
+    // Create SFML Window and a pool of threads
     sf::RenderWindow window{sf::VideoMode{800, 600}, "Mandelbrot"};
+    ThreadPool<std::function<void()>> pool(static_cast<std::size_t>(nThreads));
 
-    // Initial positions, can be updated on zoom / pan
+    // Define variables to be used inside event loop
     double MIN_RE {-2.}, MAX_RE {1.}, MIN_IM {-1.}, MAX_IM {1.};
+    bool isMouseDragged {false}; int oldMouseX {-1}, oldMouseY {-1};
 
     // Cache image & redraw only on demand
     sf::Image image; bool redraw {true}; sf::Clock clk;
-
-    // Support drag / pan operations
-    bool isMouseDragged {false}; int oldMouseX {-1}, oldMouseY {-1};
+    sf::Cursor normalCursor, handCursor;
+    normalCursor.loadFromSystem(sf::Cursor::Arrow);
+    handCursor.loadFromSystem(sf::Cursor::SizeAll);
+    window.setMouseCursor(normalCursor);
 
     // Run event loop
     while (window.isOpen()) {
@@ -99,10 +115,13 @@ int main(int argc, char **argv) {
                         isMouseDragged = true;
                         oldMouseX = evnt.mouseButton.x;
                         oldMouseY = evnt.mouseButton.y;
+                        window.setMouseCursor(handCursor);
                     } break;
                 } case sf::Event::MouseButtonReleased: {
-                    if (evnt.mouseButton.button == 0)
+                    if (evnt.mouseButton.button == 0) {
                         isMouseDragged = false;
+                        window.setMouseCursor(normalCursor);
+                    }
                     break;
                 } case sf::Event::MouseMoved: {
                     if (!isMouseDragged) break;
@@ -136,7 +155,7 @@ int main(int argc, char **argv) {
         // Redraw only when required
         if (redraw) {
             // Do nothing if we haven't hit the theshold yet
-            if (clk.getElapsedTime().asSeconds() < 0.5) continue;
+            if (clk.getElapsedTime().asSeconds() < rRate) continue;
             else clk.restart();
 
             // Get the window height and width and compute step values
@@ -144,15 +163,36 @@ int main(int argc, char **argv) {
             unsigned HEIGHT {winSize.y}, WIDTH {winSize.x};
             double STEP_IM {(MAX_IM - MIN_IM) / HEIGHT}, STEP_RE {(MAX_RE - MIN_RE) / WIDTH};
             image.create(WIDTH, HEIGHT); redraw = false;
+            unsigned maxBatchSize {(HEIGHT * WIDTH) / static_cast<unsigned>(nThreads)};
+            std::vector<std::tuple<unsigned, unsigned, double, double>> batch;
             for (unsigned row {0}; row < HEIGHT; row++) {
                 for (unsigned col {0}; col < WIDTH; col++) {
                     double re {MIN_RE + col * STEP_RE}, im {MIN_IM + row * STEP_IM};
-                    double hue {check({re, im}, MAX_ITER)};
-                    image.setPixel(col, row, getRGBColor(hue));
+                    batch.emplace_back(row, col, re, im);
+                    if (batch.size() == maxBatchSize) {
+                        pool.enqueue([MAX_ITER, batch = std::move(batch), &image]() {
+                            for (auto [row_, col_, re_, im_]: batch) {
+                                double hue {check({re_, im_}, MAX_ITER)};
+                                image.setPixel(col_, row_, getRGBColor(hue));
+                            }
+                        });
+                        batch.clear();
+                    }
                 }
             }
 
+            // Queue the remaining batch if any
+            if (!batch.empty()) {
+                pool.enqueue([MAX_ITER, batch, &image]() {
+                    for (auto [row_, col_, re_, im_]: batch) {
+                        double hue {check({re_, im_}, MAX_ITER)};
+                        image.setPixel(col_, row_, getRGBColor(hue));
+                    }
+                });
+            }
+
             // Draw the image
+            pool.wait();
             window.clear(sf::Color::Black);
             sf::Texture texture;
             texture.loadFromImage(image);
