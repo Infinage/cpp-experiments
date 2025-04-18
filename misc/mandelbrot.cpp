@@ -2,11 +2,10 @@
 
 /*
  * TODO:
- * 1. SFML + zoom to render appropriate drawings
- * 4. Save output to disk
- * 3. Implement `bigfloat` to support infinite zooms?
+ * 1. Implement `bigfloat` to support infinite zooms?
  */
 
+#include <algorithm>
 #include <complex>
 #include <stdexcept>
 
@@ -51,9 +50,18 @@ int main(int argc, char **argv) {
     unsigned MAX_ITER = {static_cast<unsigned>(nIters)};
 
     // Create SFML Window - cache image
-    sf::Image image; bool redraw {true};
-    double MIN_RE {-2.}, MAX_RE {1.}, MIN_IM {-1.}, MAX_IM {1.};
     sf::RenderWindow window{sf::VideoMode{800, 600}, "Mandelbrot"};
+
+    // Initial positions, can be updated on zoom / pan
+    double MIN_RE {-2.}, MAX_RE {1.}, MIN_IM {-1.}, MAX_IM {1.};
+
+    // Cache image & redraw only on demand
+    sf::Image image; bool redraw {true}; sf::Clock clk;
+
+    // Support drag / pan operations
+    bool isMouseDragged {false}; int oldMouseX {-1}, oldMouseY {-1};
+
+    // Run event loop
     while (window.isOpen()) {
         // Poll events and respond to user interaction
         sf::Event evnt;
@@ -68,27 +76,69 @@ int main(int argc, char **argv) {
                     redraw = true;
                     break;
                 } case sf::Event::MouseWheelScrolled: {
-                    sf::Vector2u winSize {window.getSize()};
-                    sf::Event::MouseWheelScrollEvent scrollEvnt {evnt.mouseWheelScroll};
-
                     // Compute percentage from top left
-                    double scrollXP {static_cast<double>(scrollEvnt.x) / winSize.x}, 
-                           scrollYP {static_cast<double>(scrollEvnt.y) / winSize.y};
+                    sf::Vector2u winSize {window.getSize()};
+                    double scrollXP {static_cast<double>(evnt.mouseWheelScroll.x) / winSize.x};
+                    double scrollYP {static_cast<double>(evnt.mouseWheelScroll.y) / winSize.y};
 
                     // Convert in terms of RE, IM
-                    double deltaX {(MAX_RE - MIN_RE) * scrollXP}, 
-                           deltaY {(MAX_IM - MIN_IM) * scrollYP};
+                    double currRE {MIN_RE + (MAX_RE - MIN_RE) * scrollXP}; 
+                    double currIM {MIN_IM + (MAX_IM - MIN_IM) * scrollYP};
 
-                    std::cout << "Zoomed " << (scrollEvnt.delta > 0? "in": "out") << '\n'
-                              << "Mouse X: " << MIN_RE + deltaX << ' '
-                              << "Mouse Y: " << MAX_IM - deltaY << '\n';
+                    // Determine zoom factor
+                    double reRange {MAX_RE - MIN_RE}, imRange {MAX_IM - MIN_IM}, zoom = evnt.mouseWheelScroll.delta > 0? 0.9: 1.1;
 
+                    // Compute new bounds - ensuring we don't go out of bounds
+                    MIN_RE = std::max(currRE - (currRE - MIN_RE) * zoom, -2.); 
+                    MAX_RE = std::min(MIN_RE + reRange * zoom, 1.);
+                    MIN_IM = std::max(currIM - (currIM - MIN_IM) * zoom, -1.); 
+                    MAX_IM = std::min(MIN_IM + imRange * zoom, 1.);
+                    redraw = true; break;
+                } case sf::Event::MouseButtonPressed: {
+                    if (evnt.mouseButton.button == 0) {
+                        isMouseDragged = true;
+                        oldMouseX = evnt.mouseButton.x;
+                        oldMouseY = evnt.mouseButton.y;
+                    } break;
+                } case sf::Event::MouseButtonReleased: {
+                    if (evnt.mouseButton.button == 0)
+                        isMouseDragged = false;
+                    break;
+                } case sf::Event::MouseMoved: {
+                    if (!isMouseDragged) break;
+
+                    // Compute delta b/w current & prev mouse pos
+                    sf::Vector2u winSize {window.getSize()};
+                    double deltaX {static_cast<double>(evnt.mouseMove.x - oldMouseX) / winSize.x};
+                    double deltaY {static_cast<double>(evnt.mouseMove.y - oldMouseY) / winSize.y};
+
+                    // Compute new bounds - ensuring we don't go out of bounds
+                    double reRange = MAX_RE - MIN_RE; double imRange = MAX_IM - MIN_IM;
+                    MIN_RE = std::max(MIN_RE - deltaX * reRange, -2.);
+                    MAX_RE = std::min(MAX_RE - deltaX * reRange, 1.);
+                    MIN_IM = std::max(MIN_IM - deltaY * imRange, -1.); 
+                    MAX_IM = std::min(MAX_IM - deltaY * imRange, 1.);
+
+                    // Above might end up stretching the range - lets ensure it doesn't
+                    if (MIN_RE == -2.) MAX_RE = MIN_RE + reRange;
+                    else if (MAX_RE == 1.) MIN_RE = MAX_RE - reRange;
+                    if (MIN_IM == -1.) MAX_IM = MIN_IM + imRange;
+                    else if (MAX_IM == 1.) MIN_IM = MAX_IM - imRange;
+
+                    oldMouseX = evnt.mouseMove.x;
+                    oldMouseY = evnt.mouseMove.y;
+
+                    redraw = true; break;
                 } default: {}
             }
         }
 
         // Redraw only when required
         if (redraw) {
+            // Do nothing if we haven't hit the theshold yet
+            if (clk.getElapsedTime().asSeconds() < 0.5) continue;
+            else clk.restart();
+
             // Get the window height and width and compute step values
             sf::Vector2u winSize {window.getSize()};
             unsigned HEIGHT {winSize.y}, WIDTH {winSize.x};
