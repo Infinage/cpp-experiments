@@ -2,10 +2,11 @@
 
 /*
  * TODO:
- * 1. Implement `bigfloat` to support infinite zooms?
+ * 1. Implement `bigfloat` to support infinite zooms
  */
 
 #include <algorithm>
+#include <chrono>
 #include <complex>
 #include <stdexcept>
 
@@ -18,20 +19,44 @@ using namespace std::complex_literals;
 
 // Check whether a given complex no is part of the mandelbrot set
 // Returns percentage of many iterations were run before diverging
-double check(const std::complex<double> &C, unsigned maxIterations = 100, double boundary = 2.0) {
+unsigned check(const std::complex<double> &C, unsigned maxIterations = 100, double boundary = 2.0) {
     std::complex<double> curr{C}; unsigned iterations {0};
     while (std::abs(curr) < boundary && ++iterations < maxIterations)
         curr = curr * curr + C;
-    return static_cast<double>(iterations) / maxIterations;
+    return iterations;
+}
+
+// Helper function to initialize a color pallete
+constexpr std::array<std::array<std::uint8_t, 3>, 16> initPallete() {
+    std::array<std::array<std::uint8_t, 3>, 16> pallete {{
+        { 66,  30,  15},
+        { 25,   7,  26},
+        {  9,   1,  47},
+        {  4,   4,  73},
+        {  0,   7, 100},
+        { 12,  44, 138},
+        { 24,  82, 177},
+        { 57, 125, 209},
+        {134, 181, 229},
+        {211, 236, 248},
+        {241, 233, 191},
+        {248, 201,  95},
+        {255, 170,   0},
+        {204, 128,   0},
+        {153,  87,   0},
+        {106,  52,   3},
+    }};
+    return pallete;
 }
 
 // Translate hue to RGB equivalent
-sf::Color getRGBColor(double d) {
-    double _d {1 - d};
-    std::uint8_t r = static_cast<std::uint8_t>(  9 * _d *  d *  d * d * 255);
-    std::uint8_t g = static_cast<std::uint8_t>( 15 * _d * _d *  d * d * 255);
-    std::uint8_t b = static_cast<std::uint8_t>(8.5 * _d * _d * _d * d * 255);
-    return sf::Color(r, g, b);
+sf::Color getRGBColor(unsigned iters, unsigned maxIters) {
+    constexpr auto pallete = initPallete();
+    if (iters < maxIters && iters > 0) {
+        auto &[R, G, B] = pallete[iters % pallete.size()];
+        return sf::Color(R, G, B);
+    }
+    return sf::Color::Black;
 }
 
 // Helper to check if a key is present in a list
@@ -44,11 +69,16 @@ int main(int argc, char **argv) {
 
     // Specify command line args
     argparse::ArgumentParser parser{"mandelbrot"};
-    parser.description("Draws mandelbrot set on to the console.");
+    parser.description(
+		"Draws the Mandelbrot set on screen with interactive controls.\n"
+		"Use mouse scroll or +/- keys to zoom in/out (zoom depth is limited by double precision).\n"
+		"Pan the view by dragging the mouse or using arrow keys.\n"
+        "Press 'z' to reset zoom level, and 's' to save a screenshot to the current directory."
+    );
     parser.addArgument("n_iters", argparse::ARGTYPE::NAMED).alias("n").defaultValue(100)
         .help("Iterations to run for checking divergence. Must be between (0, 1000]");
-    parser.addArgument("refresh_rate", argparse::ARGTYPE::NAMED).alias("r").defaultValue(0.25)
-        .help("Image is refreshed every <refresh_rate> seconds. Must be in float, eg: 1.");
+    parser.addArgument("refresh_rate", argparse::ARGTYPE::NAMED).alias("r").defaultValue(0.15)
+        .help("Image is refreshed every `refresh_rate` seconds. Must be in float, eg: 1.");
     parser.addArgument("n_workers", argparse::ARGTYPE::NAMED).alias("j").defaultValue(4)
         .help("No. of concurrent threads to use for rendering image.");
 
@@ -191,6 +221,32 @@ int main(int argc, char **argv) {
                         redraw = true;
                     }
 
+                    else if (key == sf::Keyboard::Z) {
+                        // Reset the coordinates
+                        MIN_RE = -2., MAX_RE = 1., MIN_IM = -1., MAX_IM = 1.;
+                        redraw = true;
+                    }
+
+                    else if (key == sf::Keyboard::S) {
+                        // Take a screenshot and save to png file with timestamp
+                        sf::Vector2u winSize {window.getSize()};
+                        sf::Texture texture;
+                        texture.create(winSize.x, winSize.y);
+                        texture.update(window);
+                        sf::Image screenshot {texture.copyToImage()};
+                        std::chrono::time_point now {std::chrono::system_clock::now()};
+                        long ms {std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count()};
+                        screenshot.saveToFile("screenshot-" + std::to_string(ms) + ".png");
+
+                        // Feedback for screenshot
+                        sf::RectangleShape flashRect{};
+                        flashRect.setSize(static_cast<sf::Vector2f>(winSize));
+                        flashRect.setFillColor(sf::Color::White);
+                        window.draw(flashRect);
+                        window.display(); sf::sleep(sf::milliseconds(10));
+                        redraw = true;
+                    }
+
                      break;
                 } default: {}
             }
@@ -216,8 +272,8 @@ int main(int argc, char **argv) {
                     if (batch.size() == maxBatchSize) {
                         pool.enqueue([MAX_ITER, batch = std::move(batch), &image]() {
                             for (auto [row_, col_, re_, im_]: batch) {
-                                double hue {check({re_, im_}, MAX_ITER)};
-                                image.setPixel(col_, row_, getRGBColor(hue));
+                                unsigned iters {check({re_, im_}, MAX_ITER)};
+                                image.setPixel(col_, row_, getRGBColor(iters, MAX_ITER));
                             }
                         });
                         batch.clear();
@@ -229,8 +285,8 @@ int main(int argc, char **argv) {
             if (!batch.empty()) {
                 pool.enqueue([MAX_ITER, batch, &image]() {
                     for (auto [row_, col_, re_, im_]: batch) {
-                        double hue {check({re_, im_}, MAX_ITER)};
-                        image.setPixel(col_, row_, getRGBColor(hue));
+                        unsigned iters {check({re_, im_}, MAX_ITER)};
+                        image.setPixel(col_, row_, getRGBColor(iters, MAX_ITER));
                     }
                 });
             }
