@@ -34,6 +34,12 @@ sf::Color getRGBColor(double d) {
     return sf::Color(r, g, b);
 }
 
+// Helper to check if a key is present in a list
+template<typename T> requires (std::is_fundamental_v<T> || std::is_enum_v<T>)
+bool isInKeys(T key, std::initializer_list<T> keys) {
+    return std::find(keys.begin(), keys.end(), key) != keys.end(); 
+}
+
 int main(int argc, char **argv) {
 
     // Specify command line args
@@ -130,9 +136,9 @@ int main(int argc, char **argv) {
                     sf::Vector2u winSize {window.getSize()};
                     double deltaX {static_cast<double>(evnt.mouseMove.x - oldMouseX) / winSize.x};
                     double deltaY {static_cast<double>(evnt.mouseMove.y - oldMouseY) / winSize.y};
+                    double reRange = MAX_RE - MIN_RE; double imRange = MAX_IM - MIN_IM;
 
                     // Compute new bounds - ensuring we don't go out of bounds
-                    double reRange = MAX_RE - MIN_RE; double imRange = MAX_IM - MIN_IM;
                     MIN_RE = std::max(MIN_RE - deltaX * reRange, -2.);
                     MAX_RE = std::min(MAX_RE - deltaX * reRange, 1.);
                     MIN_IM = std::max(MIN_IM - deltaY * imRange, -1.); 
@@ -148,6 +154,44 @@ int main(int argc, char **argv) {
                     oldMouseY = evnt.mouseMove.y;
 
                     redraw = true; break;
+                } case sf::Event::KeyPressed: {
+                    double reRange = MAX_RE - MIN_RE; double imRange = MAX_IM - MIN_IM;
+                    sf::Keyboard::Key key {evnt.key.code};
+                    if (isInKeys(key, {sf::Keyboard::Add, sf::Keyboard::Equal, sf::Keyboard::Subtract, sf::Keyboard::Hyphen})) {
+                        // Compute new bounds - ensuring we don't go out of bounds
+                        double zoom = isInKeys(key, {sf::Keyboard::Add, sf::Keyboard::Equal}) > 0? 0.9: 1.1;
+                        double centerRE {MIN_RE + (MAX_RE - MIN_RE) * 0.5}; 
+                        double centerIM {MIN_IM + (MAX_IM - MIN_IM) * 0.5};
+                        MIN_RE = std::max(centerRE - (centerRE - MIN_RE) * zoom, -2.); 
+                        MAX_RE = std::min(MIN_RE + reRange * zoom, 1.);
+                        MIN_IM = std::max(centerIM - (centerIM - MIN_IM) * zoom, -1.); 
+                        MAX_IM = std::min(MIN_IM + imRange * zoom, 1.);
+                        redraw = true;
+                    }
+
+                    else if (isInKeys(key, {sf::Keyboard::Up, sf::Keyboard::Down, sf::Keyboard::Left, sf::Keyboard::Right})) {
+                        // Assign delta based on key press
+                        double delta {0.1}, deltaX {0}, deltaY {0};
+                        if      (key ==    sf::Keyboard::Up) deltaY =  delta;
+                        else if (key ==  sf::Keyboard::Down) deltaY = -delta;
+                        else if (key ==  sf::Keyboard::Left) deltaX =  delta;
+                        else if (key == sf::Keyboard::Right) deltaX = -delta;
+
+                        // Ensure we stay in range
+                        MIN_RE = std::max(MIN_RE - deltaX * reRange, -2.);
+                        MAX_RE = std::min(MAX_RE - deltaX * reRange, 1.);
+                        MIN_IM = std::max(MIN_IM - deltaY * imRange, -1.); 
+                        MAX_IM = std::min(MAX_IM - deltaY * imRange, 1.);
+
+                        // Prevent stretching
+                        if (MIN_RE == -2.) MAX_RE = MIN_RE + reRange;
+                        else if (MAX_RE == 1.) MIN_RE = MAX_RE - reRange;
+                        if (MIN_IM == -1.) MAX_IM = MIN_IM + imRange;
+                        else if (MAX_IM == 1.) MIN_IM = MAX_IM - imRange;
+                        redraw = true;
+                    }
+
+                     break;
                 } default: {}
             }
         }
