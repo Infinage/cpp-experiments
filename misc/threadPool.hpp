@@ -1,12 +1,12 @@
 #pragma once
 
+#include <concepts>
 #include <atomic>
 #include <condition_variable>
 #include <functional>
 #include <mutex>
 #include <queue>
 #include <thread>
-#include <variant>
 #include <vector>
 
 template <typename F, typename State = std::monostate>
@@ -37,7 +37,7 @@ class ThreadPool {
                 if (initState) states.emplace_back(initState());
                 workers.emplace_back(std::thread([this, i]{
                     for (;;) {
-                        std::unique_lock<std::mutex> lock(taskMutex); 
+                        std::unique_lock lock(taskMutex); 
                         tasksCV.wait(lock, [this]{ return exitCondition || !tasks.empty(); });
                         if (tasks.empty() && exitCondition) return;
                         else {
@@ -73,10 +73,17 @@ class ThreadPool {
 
         // Enqueue a single task into the queue
         void enqueue(F &&task) {
-            {
-                std::lock_guard lock(taskMutex);
-                tasks.push(std::move(task));
-            }
+            std::lock_guard lock(taskMutex);
+            tasks.emplace(std::move(task));
             tasksCV.notify_one();
+        }
+
+        // Enqueue multiple tasks into the queue (burst)
+        template<std::ranges::common_range T> requires std::convertible_to<std::iter_value_t<T>, F>
+        void enqueueAll(T &&tasks) {
+            std::lock_guard lock(taskMutex);
+            for (auto &&task: tasks) 
+                this->tasks.emplace(std::move(task));
+            tasksCV.notify_all();
         }
 };

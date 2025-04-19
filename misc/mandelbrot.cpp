@@ -2,13 +2,13 @@
 
 /*
  * TODO:
- * 1. Prevent zoom beyond double's precision
- * 2. Implement `bigfloat` to support infinite zooms
+ * 1. Implement `bigfloat` to support infinite zooms
  */
 
 #include <algorithm>
 #include <chrono>
 #include <stdexcept>
+#include <vector>
 
 #include <SFML/Graphics.hpp>
 
@@ -27,18 +27,21 @@
  *
  * On each iteration, update `re` and `im` based on z^2 + C
  */
-unsigned check(const double cre, const double cim, unsigned maxIterations = 100, double boundary = 2.0) {
-    unsigned iterations {0}; 
+unsigned check(const double cre, const double cim, const unsigned maxIterations = 500) {
     double re {cre}, im {cim}, re2 {cre * cre}, im2 {cim * cim}; 
-    while (re2 + im2 < boundary * boundary && ++iterations < maxIterations) {
+    unsigned iterations {0};
+    while (re2 + im2 < 4. && iterations < maxIterations) {
         // `im` first otherwise modified `re`
         // would impact `im` calculation
-        im = 2 * re * im + cim;
+        im = 2. * re * im + cim;
         re = re2 - im2 + cre;
 
         // Recompute
         re2 = re * re;
         im2 = im * im;
+
+        // Incr iters
+        iterations++;
     }
     return iterations;
 }
@@ -67,13 +70,11 @@ constexpr std::array<std::array<std::uint8_t, 3>, 16> initPallete() {
 }
 
 // Translate hue to RGB equivalent
-sf::Color getRGBColor(unsigned iters, unsigned maxIters) {
+inline std::array<std::uint8_t, 3> getRGBColor(unsigned iters, unsigned maxIters) {
     constexpr auto pallete = initPallete();
-    if (iters < maxIters && iters > 0) {
-        auto &[R, G, B] = pallete[iters % pallete.size()];
-        return sf::Color(R, G, B);
-    }
-    return sf::Color::Black;
+    if (iters < maxIters && iters > 0)
+        return pallete[iters % pallete.size()];
+    return {0, 0, 0};
 }
 
 // Helper to check if a key is present in a list
@@ -91,7 +92,7 @@ int main(int argc, char **argv) {
 		"Pan the view by dragging the mouse or using arrow keys.\n"
         "Press 'z' to reset zoom level, and 's' to save a screenshot to the current directory."
     );
-    parser.addArgument("n_iters", argparse::ARGTYPE::NAMED).alias("n").defaultValue(100)
+    parser.addArgument("n_iters", argparse::ARGTYPE::NAMED).alias("n").defaultValue(500)
         .help("Iterations to run for checking divergence. Must be between (0, 5000]");
     parser.addArgument("refresh_rate", argparse::ARGTYPE::NAMED).alias("r").defaultValue(0.05)
         .help("Image is refreshed every `refresh_rate` seconds. Must be in float, eg: 1.");
@@ -158,8 +159,12 @@ int main(int argc, char **argv) {
                     double currRE {MIN_RE + (MAX_RE - MIN_RE) * scrollXP}; 
                     double currIM {MIN_IM + (MAX_IM - MIN_IM) * scrollYP};
 
-                    // Determine zoom factor
-                    double reRange {MAX_RE - MIN_RE}, imRange {MAX_IM - MIN_IM}, zoom = evnt.mouseWheelScroll.delta > 0? 0.9: 1.1;
+                    // Determine zoom factor - {0.9: zoom in, 1.1: zoom out}
+                    double zoom = evnt.mouseWheelScroll.delta > 0? 0.9: 1.1;
+                    double reRange {MAX_RE - MIN_RE}, imRange {MAX_IM - MIN_IM}; 
+
+                    // Prevent zoom in beyond the point it gets blurry
+                    if ((reRange < 5e-14 || imRange < 5e-14) && zoom == 0.9) break;
 
                     // Compute new bounds - ensuring we don't go out of bounds
                     MIN_RE = std::max(currRE - (currRE - MIN_RE) * zoom, -2.); 
@@ -187,7 +192,7 @@ int main(int argc, char **argv) {
                     sf::Vector2u winSize {window.getSize()};
                     double deltaX {static_cast<double>(evnt.mouseMove.x - oldMouseX) / winSize.x};
                     double deltaY {static_cast<double>(evnt.mouseMove.y - oldMouseY) / winSize.y};
-                    double reRange = MAX_RE - MIN_RE; double imRange = MAX_IM - MIN_IM;
+                    double reRange = MAX_RE - MIN_RE, imRange = MAX_IM - MIN_IM;
 
                     // Compute new bounds - ensuring we don't go out of bounds
                     MIN_RE = std::max(MIN_RE - deltaX * reRange, -2.);
@@ -206,11 +211,14 @@ int main(int argc, char **argv) {
 
                     redraw = true; break;
                 } case sf::Event::KeyPressed: {
-                    double reRange = MAX_RE - MIN_RE; double imRange = MAX_IM - MIN_IM;
+                    double reRange = MAX_RE - MIN_RE, imRange = MAX_IM - MIN_IM;
                     sf::Keyboard::Key key {evnt.key.code};
                     if (isInKeys(key, {sf::Keyboard::Add, sf::Keyboard::Equal, sf::Keyboard::Subtract, sf::Keyboard::Hyphen})) {
-                        // Compute new bounds - ensuring we don't go out of bounds
+                        // Prevent zoom in beyond the point it gets blurry
                         double zoom = isInKeys(key, {sf::Keyboard::Add, sf::Keyboard::Equal}) > 0? 0.9: 1.1;
+                        if ((reRange < 5e-14 || imRange < 5e-14) && zoom == 0.9) break;
+
+                        // Compute new bounds - ensuring we don't go out of bounds
                         double centerRE {MIN_RE + (MAX_RE - MIN_RE) * 0.5}; 
                         double centerIM {MIN_IM + (MAX_IM - MIN_IM) * 0.5};
                         MIN_RE = std::max(centerRE - (centerRE - MIN_RE) * zoom, -2.); 
@@ -283,20 +291,27 @@ int main(int argc, char **argv) {
             sf::Vector2u winSize {window.getSize()};
             unsigned HEIGHT {winSize.y}, WIDTH {winSize.x};
             double STEP_IM {(MAX_IM - MIN_IM) / HEIGHT}, STEP_RE {(MAX_RE - MIN_RE) / WIDTH};
-            sf::Image image; image.create(WIDTH, HEIGHT);
+            std::vector<std::uint8_t> image(WIDTH * HEIGHT * 4);
+            std::vector<std::function<void(void)>> tasks;
             for (unsigned row {0}; row < HEIGHT; row++) {
-                pool.enqueue([=, &image]() {
+                tasks.emplace_back([WIDTH, MIN_RE, STEP_RE, MIN_IM, STEP_IM, row, MAX_ITER, &image]() {
                     for (unsigned col {0}; col < WIDTH; col++) {
                         double re {MIN_RE + col * STEP_RE}, im {MIN_IM + row * STEP_IM};
                         unsigned iters {check(re, im, MAX_ITER)};
-                        image.setPixel(col, row, getRGBColor(iters, MAX_ITER));
+                        std::size_t start {(row * WIDTH + col) * 4};
+                        auto [R, G, B] {getRGBColor(iters, MAX_ITER)};
+                        image[start + 0] = R; image[start + 1] = G; 
+                        image[start + 2] = B; image[start + 3] = 255;
                     }
                 });
             }
 
-            // Draw the image
+            // Burst enqueue to minimize lock contention
+            pool.enqueueAll(tasks);
             pool.wait();
-            texture.update(image);
+
+            // Update the image
+            texture.update(image.data());
             window.clear(sf::Color::Black);
             window.draw(mandelSprite);
             window.display();
