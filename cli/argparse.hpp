@@ -244,7 +244,7 @@ namespace argparse {
             Argument &validate(Fn &&fn) {
                 this->validator = [name = this->_name, fn = std::forward<Fn>(fn)](const VALUE_TYPE &val_) {
                     if (!std::holds_alternative<T>(val_))
-                        throw std::runtime_error("Argparse Error: Type mismatch b/w validator arg and value: " + name);
+                        throw std::runtime_error("Argparse Developer Error: Type mismatch b/w validator arg and value: " + name);
                     else {
                         T val = std::get<T>(val_);
                         if (!fn(val)) 
