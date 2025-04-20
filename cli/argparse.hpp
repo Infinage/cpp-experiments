@@ -1,12 +1,12 @@
 #pragma once
 
+#include <functional>
 #include <iomanip>
 #include <iostream>
 #include <optional>
 #include <ostream>
 #include <stdexcept>
 #include <string>
-#include <tuple>
 #include <variant>
 #include <vector>
 #include <charconv>
@@ -27,6 +27,10 @@ namespace argparse {
     std::same_as<T,  float> || std::same_as<T,   long long> ||
     std::same_as<T, double> || std::same_as<T, std::string> ||
     std::same_as<T, std::vector<std::string>>;
+
+
+    template<typename Fn, typename T>
+    concept ValidatorFunction = ValidValueType<T> && std::is_invocable_r_v<bool, Fn, T>;
 
     // Helper to print variant directly to outputstream
     inline std::ostream &operator<<(std::ostream &oss, const VALUE_TYPE &val) {
@@ -54,6 +58,7 @@ namespace argparse {
             std::string _alias, _helpStr;
             VALUE_TYPE _value;
             std::optional<VALUE_TYPE> _default, _implicit;
+            std::optional<std::function<void(const VALUE_TYPE&)>> validator;
 
         public:
             Argument(const std::string &name, const ARGTYPE &type = ARGTYPE::BOTH): 
@@ -75,7 +80,12 @@ namespace argparse {
                 }
             }
 
-            bool           ok() const { return !_required || _valueSet || _defaultValueSet; }
+            bool ok() const { 
+                // Assert all good, else throw
+                if (validator) std::invoke(*validator, _value);
+                return !_required || _valueSet || _defaultValueSet;
+            }
+
             bool   isOptional() const { return !_required || _defaultValueSet; }
 
             bool   isValueSet() const { return _valueSet; }
@@ -86,7 +96,7 @@ namespace argparse {
 
             ARGTYPE getArgType() const { return _type; }
 
-            template<typename T>
+            template<ValidValueType T>
             T get() const {
                 if (!_valueSet && !_defaultValueSet) 
                     throw std::runtime_error("Argparse Error: Argument '" + _name + "' was not set");
@@ -148,7 +158,7 @@ namespace argparse {
             Argument &set() {
                 if (!_implicit.has_value())
                     throw std::runtime_error("Argparse Error: No implicit value set: " + _name);
-                _value = *_implicit; _valueSet = true; return *this;
+                _value = *_implicit; _typeSet = true; _valueSet = true; return *this;
             }
 
             Argument &set(const std::string &val) {
@@ -159,14 +169,14 @@ namespace argparse {
                 _typeSet = true; _valueSet = true; return *this;
             }
 
-            template <typename T>
+            template <ValidValueType T>
             Argument &scan() { 
                 if (_typeSet && !std::holds_alternative<T>(_value))
                     throw std::runtime_error("Argparse Error: Type mismatch (scan): " + _name);
                 _typeSet = true; _value = T{}; return *this;
             }
 
-            template<typename T>
+            template<ValidValueType T>
             Argument &defaultValue(const T &val) {
                 if (_typeSet && !std::holds_alternative<T>(_value))
                     throw std::runtime_error("Argparse Error: Type mismatch (default): " + _name);
@@ -174,7 +184,7 @@ namespace argparse {
                 _default = _value = val; return *this;
             }
 
-            template<typename T>
+            template<ValidValueType T>
             Argument &implicitValue(const T &val) {
                 if (_typeSet && !std::holds_alternative<T>(_value))
                     throw std::runtime_error("Argparse Error: Type mismatch (implicit): " + _name);
@@ -186,7 +196,7 @@ namespace argparse {
             Argument  &defaultValue(const char *val) { return  defaultValue<std::string>(val); }
             Argument &implicitValue(const char *val) { return implicitValue<std::string>(val); }
 
-            template<typename T>
+            template<ValidValueType T>
             T parse(const std::string &arg) {
                 if constexpr (std::is_same_v<T, bool>) {
                     return arg != "" && arg != "0" && arg != "false";
@@ -227,6 +237,22 @@ namespace argparse {
                         throw std::runtime_error("Argparse Error: Invalid value passed to '" + _name + "': " + arg);
                     return placeholder;
                 }
+            }
+
+            // Add validator function
+            template<ValidValueType T, ValidatorFunction<T> Fn>
+            Argument &validate(Fn &&fn) {
+                this->validator = [name = this->_name, fn = std::forward<Fn>(fn)](const VALUE_TYPE &val_) {
+                    if (!std::holds_alternative<T>(val_))
+                        throw std::runtime_error("Argparse Error: Type mismatch b/w validator arg and value: " + name);
+                    else {
+                        T val = std::get<T>(val_);
+                        if (!fn(val)) 
+                            throw std::runtime_error("Argparse Validation Error: "
+                                    "Invalid value passed to '" + name + "'");
+                    }
+                };
+                return *this;
             }
     };
 
@@ -408,11 +434,12 @@ namespace argparse {
                         std::tie(arg, value) = splitArg(arg);
 
                         auto it {namedArgs.find(arg)};
+                        std::optional<std::string> ip1 {i == argVec.size() - 1? std::nullopt: std::optional{argVec[i + 1]}};
                         if (it == namedArgs.end())
                             throw std::runtime_error("Argparse Error: Unknown named argument passed: " + arg);
                         else if (!value.empty())
                             it->second.set(value);
-                        else if (i == argVec.size() - 1 || argVec[i + 1].starts_with('-'))
+                        else if (!ip1 || ip1->starts_with("--") || (ip1->starts_with('-') && ip1->size() == 2 && !std::isdigit(ip1->at(1))))
                             it->second.set();
                         else
                             it->second.set(argVec[++i]);
@@ -425,7 +452,8 @@ namespace argparse {
                         if (it == aliasedArgs.end())
                             throw std::runtime_error("Argparse Error: Unknown aliased argument passed: " + arg);
 
-                        if (i == argVec.size() - 1 || argVec[i + 1].starts_with('-'))
+                        std::optional<std::string> ip1 {i == argVec.size() - 1? std::nullopt: std::optional{argVec[i + 1]}};
+                        if (!ip1 || ip1->starts_with("--") || (ip1->starts_with('-') && ip1->size() == 2 && !std::isdigit(ip1->at(1))))
                             it->second.set();
                         else
                             it->second.set(argVec[++i]);

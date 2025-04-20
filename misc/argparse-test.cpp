@@ -1,29 +1,36 @@
 #include "../cli/argparse.hpp"
 
+// Helper that returns a function that checks that the value is between range
+template<typename T> requires std::is_arithmetic_v<T>
+std::function<bool(T)> between(T start, T end) {
+    return [start, end](T n) { return start <= n && n <= end; };
+}
+
 int main(int argc, char **argv) {
     try {
         // Main argument parser
         argparse::ArgumentParser program{"fittrack"};
-        program.addArgument(argparse::Argument("user").help("User's name").alias("u").required());
-        program.addArgument(argparse::Argument("age").help("User's age").defaultValue(18).alias("a"));
-        program.addArgument(argparse::Argument("weight").help("Current weight (kg)").alias("w").required());
-        program.addArgument(argparse::Argument("goal").help("Fitness goal (e.g., weight loss, muscle gain)")
-            .alias("g").implicitValue(std::string{"weight loss"}));
+        program.addArgument("user").help("User's name").alias("u").required();
+        program.addArgument("age").help("User's age").defaultValue(18).alias("a")
+            .validate<int>(between(0, 100));
+        program.addArgument("weight").help("Current weight (kg)").alias("w").required().scan<double>()
+            .validate<double>(between(0, 800));
+        program.addArgument("goal").help("Fitness goal (e.g., weight loss, muscle gain)")
+            .alias("g").implicitValue(std::string{"weight loss"});
 
         program.description("A command-line fitness tracker to log workouts and track progress.");
 
         // Subcommand: Log workout
         argparse::ArgumentParser &logWorkout {program.addSubcommand("log")};
-        logWorkout.addArgument(argparse::Argument("exercise").help("Type of workout").required());
-        logWorkout.addArgument(argparse::Argument("duration").help("Duration in minutes").scan<int>().required());
-        logWorkout.addArgument(argparse::Argument("calories").help("Calories burned").scan<int>().defaultValue(0));
+        logWorkout.addArgument("exercise").help("Type of workout").required();
+        logWorkout.addArgument("duration").help("Duration in minutes").scan<int>().required();
+        logWorkout.addArgument("calories").help("Calories burned").scan<int>().defaultValue(0);
 
         logWorkout.description("Log a new workout session.");
 
         // Subcommand: View progress
         argparse::ArgumentParser &progress{program.addSubcommand("progress")};
-        progress.addArgument(argparse::Argument("days").help("Show logs for last N days").scan<int>().defaultValue(7));
-
+        progress.addArgument("days").help("Show logs for last N days").scan<int>().defaultValue(7);
         progress.description("View workout logs for a given number of days.");
 
         // Subcommand: Sync data
@@ -38,7 +45,7 @@ int main(int argc, char **argv) {
             // Display user info
             std::cout << "User: " << program.get<std::string>("user") << '\n';
             std::cout << "Age: " << program.get<int>("age") << '\n';
-            std::cout << "Weight: " << program.get<std::string>("weight") << " kg\n";
+            std::cout << "Weight: " << program.get<double>("weight") << " kg\n";
             if (program.exists("goal"))
                 std::cout << "Goal: " << program.get<std::string>("goal") << '\n';
         }
