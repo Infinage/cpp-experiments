@@ -29,11 +29,12 @@ namespace stdx {
 
             // Erase + emplace to support types without assignment operators (e.g. const members)
             template<typename Val_ = V> requires std::is_same_v<std::decay_t<Val_>, V>
-            void emplace(const K &key, Val_ &&value) {
+            V& emplace(const K &key, Val_ &&value) {
                 iterator it {find(key)};
                 if (it != end()) erase(key);
                 data.emplace_back(key, std::forward<Val_>(value));
                 lookup.emplace(key, std::prev(end()));
+                return data.back().second;
             }
 
             bool erase(const K &key) {
@@ -45,6 +46,17 @@ namespace stdx {
                     data.erase(it);
                     return true;
                 }
+            }
+
+            // Moves the key to the end of list and returns the value
+            V& touch(const K &key) {
+                iterator it {find(key)};
+                if (it == end())
+                    throw std::runtime_error("ordered_map touch");
+                data.emplace_back(key, std::move(it->second));
+                data.erase(it);
+                lookup[key] = std::prev(end());
+                return data.back().second;
             }
 
             inline V &operator[] (const K &key) {
@@ -81,8 +93,9 @@ namespace stdx {
             }
             
             bool empty() const { return data.empty(); }
-
             bool exists(const K &key) const { return find(key) != end(); }
+
+            std::size_t size() const { return data.size(); }
 
             iterator begin() { return data.begin(); }
             iterator end() { return data.end(); }
