@@ -113,6 +113,11 @@ namespace CSVUtil {
                     operator std::string &() const {
                         return record.records[idx];
                     }
+
+                    inline friend std::ostream &operator<<(std::ostream &os, const Proxy& field) {
+                        os << field.record.records[field.idx];
+                        return os;
+                    }
             };
 
         public:

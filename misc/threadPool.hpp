@@ -4,18 +4,29 @@
 #include <atomic>
 #include <condition_variable>
 #include <functional>
+#include <future>
 #include <mutex>
 #include <queue>
 #include <thread>
 #include <vector>
 
+// Helper struct to capture the function return type - with state
+template <typename F, typename State>
+struct FuncReturnType { using type = std::invoke_result_t<F, State>; };
+
+// Helper struct to capture the function return type - without state
+template <typename F>
+struct FuncReturnType<F, std::monostate> { using type = std::invoke_result_t<F>; };
+
+// Optional support for a pool of states
 template <typename F, typename State = std::monostate>
 class ThreadPool {
     private:
+        using FUNC_RTYPE = typename FuncReturnType<F, State>::type;
         const std::size_t N_WORKERS;
         std::vector<std::thread> workers;
         std::vector<State> states;
-        std::queue<F> tasks;
+        std::queue<std::pair<F, std::promise<FUNC_RTYPE>>> tasks;
         std::mutex taskMutex;
         std::condition_variable tasksCV, completedCV;
         int activeTasks {0};
@@ -33,7 +44,7 @@ class ThreadPool {
         ThreadPool(const std::size_t N_WORKERS, const std::function<State()> &initState = {}): 
             N_WORKERS(N_WORKERS)
         {
-            for (std::size_t i {0}; i < this->N_WORKERS; i++) {
+            for (std::size_t i {0}; i < N_WORKERS; ++i) {
                 if (initState) states.emplace_back(initState());
                 workers.emplace_back(std::thread([this, i]{
                     for (;;) {
@@ -42,16 +53,20 @@ class ThreadPool {
                         if (tasks.empty() && exitCondition) return;
                         else {
                             // Pick and execute one task
-                            F task{std::move(tasks.front())}; 
-                            tasks.pop();
-                            activeTasks++;
-                            lock.unlock();
+                            auto taskPair {std::move(tasks.front())};
+                            tasks.pop(); activeTasks++; lock.unlock();
+                            F task {std::move(taskPair.first)};
+                            std::promise<FUNC_RTYPE> promise {std::move(taskPair.second)};
 
                             // Execute task based on template
-                            if constexpr(std::is_same_v<State, std::monostate>)
-                                task();
-                            else
-                                task(states[i]);
+                            try {
+                                if constexpr(std::is_same_v<State, std::monostate>)
+                                    promise.set_value(task());
+                                else
+                                    promise.set_value(task(states[i]));
+                            } catch(...) {
+                                promise.set_exception(std::current_exception());
+                            }
 
                             // We have finished one task, notify all waiters
                             {
@@ -72,18 +87,27 @@ class ThreadPool {
         }
 
         // Enqueue a single task into the queue
-        void enqueue(F &&task) {
+        std::future<FUNC_RTYPE> enqueue(F &&task) {
+            std::promise<FUNC_RTYPE> promise;
+            std::future<FUNC_RTYPE> future {promise.get_future()};
             std::lock_guard lock(taskMutex);
-            tasks.emplace(std::move(task));
+            tasks.emplace(std::move(task), std::move(promise));
             tasksCV.notify_one();
+            return future;
         }
 
         // Enqueue multiple tasks into the queue (burst)
         template<std::ranges::common_range T> requires std::convertible_to<std::iter_value_t<T>, F>
-        void enqueueAll(T &&tasks) {
+        std::vector<std::future<FUNC_RTYPE>> enqueueAll(T &&tasks) {
+            std::vector<std::future<FUNC_RTYPE>> futures;
             std::lock_guard lock(taskMutex);
-            for (auto &&task: tasks) 
-                this->tasks.emplace(std::move(task));
+            for (auto &&task: tasks) {
+                std::promise<FUNC_RTYPE> promise;
+                std::future<FUNC_RTYPE> future {promise.get_future()};
+                this->tasks.emplace(std::move(task), std::move(promise));
+                futures.emplace_back(std::move(future));
+            }
             tasksCV.notify_all();
+            return futures;
         }
 };
