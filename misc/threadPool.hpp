@@ -60,10 +60,19 @@ class ThreadPool {
 
                             // Execute task based on template
                             try {
-                                if constexpr(std::is_same_v<State, std::monostate>)
-                                    promise.set_value(task());
-                                else
-                                    promise.set_value(task(states[i]));
+                                if constexpr(std::is_same_v<State, std::monostate>) {
+                                    if constexpr(std::is_same_v<FUNC_RTYPE, void>) {
+                                        task(); promise.set_value();
+                                    } else {
+                                        promise.set_value(task());
+                                    }
+                                } else {
+                                    if constexpr(std::is_same_v<FUNC_RTYPE, void>) {
+                                        task(states[i]); promise.set_value();
+                                    } else {
+                                        promise.set_value(task(states[i]));
+                                    }
+                                }
                             } catch(...) {
                                 promise.set_exception(std::current_exception());
                             }

@@ -4,9 +4,23 @@
 #include <iostream>
 #include <stdexcept>
 #include <string>
+#include <tuple>
+#include <type_traits>
 #include <vector>
 
 namespace CSVUtil {
+    // Unwrap the optional layer
+    template<typename T> struct UnwrapOptional { using type = T; };
+    template<typename T> struct UnwrapOptional<std::optional<T>> { using type = T; };
+    template<typename T> using Unwrapped = typename UnwrapOptional<T>::type;
+
+    // Simple Proxy Convertible type
+    template<typename T>
+    concept SimpleConvertible = (
+        (std::is_arithmetic_v<Unwrapped<T>> && !std::is_same_v<Unwrapped<T>, bool>) || 
+        std::is_same_v<Unwrapped<T>, std::string>
+    );
+
     // Helper to remove '/r' when reading lines
     inline bool safeGetline(std::istream &is, std::string &line) {
         if (!std::getline(is, line)) return false;
@@ -110,13 +124,37 @@ namespace CSVUtil {
                         return *this; 
                     }
 
-                    operator std::string &() const {
-                        return record.records[idx];
-                    }
+                    inline operator std::string&() const { return record.records[idx]; }
+                    inline bool empty() const { return record.records[idx].empty(); }
 
                     inline friend std::ostream &operator<<(std::ostream &os, const Proxy& field) {
                         os << field.record.records[field.idx];
                         return os;
+                    }
+
+                    template<SimpleConvertible T>
+                    inline void operator>>(T &val) const {
+                        std::string field {record.records[idx]};
+                        if constexpr(std::is_same_v<T, std::string>) {
+                            val = field;
+                        } else {
+                            std::from_chars_result parseRes {std::from_chars(field.data(), field.data() + field.size(), val)};
+                            if(parseRes.ec != std::errc{} || parseRes.ptr != field.data() + field.size()) {
+                                throw std::runtime_error(
+                                    "Failed to parse field " + field + " (#" + 
+                                    std::to_string(idx) + ") as type: " + 
+                                    std::string{typeid(T).name()});
+                            }
+                        }
+                    }
+
+                    template<SimpleConvertible T>
+                    inline void operator>>(std::optional<T> &val) const {
+                        if (empty()) val = std::nullopt;
+                        else {
+                            T tmp; this->operator>>(tmp);
+                            val = std::move(tmp);
+                        }                    
                     }
             };
 
@@ -149,10 +187,23 @@ namespace CSVUtil {
                 return Proxy{*this, idx};
             }
 
-            const std::string &operator[](std::size_t idx) const {
+            Proxy operator[](std::size_t idx) const {
                 if (idx >= records.size()) 
                     throw std::runtime_error("Index out of bounds: " + std::to_string(idx));
-                return records[idx];
+                return Proxy{const_cast<CSVRecord&>(*this), idx};
+            }
+
+            template<typename ...Args> requires(SimpleConvertible<Args> && ...)
+            void unpack(Args &...values) const {
+                if (sizeof...(Args) != records.size())
+                    throw std::runtime_error(
+                        "CSV to Tuple conversion failed: CSV only has " + 
+                        std::to_string(records.size()) + " fields");
+
+                // Parse into the tuple structure
+                std::apply([this](auto&... arg) {
+                    std::size_t idx {0}; (((*this)[idx++] >> arg), ...);
+                }, std::tie(values...));
             }
     };
 

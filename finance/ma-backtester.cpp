@@ -48,10 +48,9 @@ double trade(
         if (idx++ == 0) continue;
 
         // Skip rows without any values
-        std::string closeStr {rec[4]};
-        if (closeStr.empty()) continue;
+        if (rec[4].empty()) continue;
 
-        close = std::stod(closeStr);
+        rec[4] >> close;
         shortMA.update(close); longMA.update(close);
         if (prev != 0) {
             short curr {getTradeSignal(shortMA.get() - longMA.get())};
