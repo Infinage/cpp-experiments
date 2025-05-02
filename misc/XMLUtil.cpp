@@ -146,13 +146,74 @@ namespace XMLUtil {
             XMLNode(const std::string &name, const NodeType &type): 
                 name(name), type(type) {}
     };
+
+    class XMLDeclaration {
+        public:
+            std::string version {"1.0"};
+            std::string encoding {"UTF-8"};
+            std::string standalone {"yes"};
+
+            friend std::ostream &operator<<(std::ostream &os, const XMLDeclaration &dec) {
+                os << "<?xml version=\"" << dec.version 
+                   << "\" encoding=\"" << dec.encoding 
+                   << "\"standalone=\"" << dec.standalone 
+                   << "\"?>";
+                return os;
+            }
+    };
+
+    class EntityDeclaration {
+        private:
+            const std::string name;
+            stdx::ordered_map<std::string, std::string> entityMap;
+
+        public:
+            EntityDeclaration(
+                const std::string &name,
+                const stdx::ordered_map<std::string, std::string> &entityMap = {}
+            ): name(name), entityMap(entityMap) {}
+
+            inline bool exists(const std::string &key) const { return entityMap.exists(key); } 
+            inline bool empty() const { return entityMap.empty(); }
+            inline std::string operator[](const std::string &key) const { return entityMap.at(key); }
+            inline void insert(const std::string &key, const std::string &value) { entityMap.emplace(key, value); }
+
+            friend std::ostream &operator<<(std::ostream &os, const EntityDeclaration &dec) {
+                if (!dec.empty()) {
+                    os << "<!DOCTYPE " << dec.name << "[\n";
+                    for (const std::pair<std::string, std::string> &kv: dec.entityMap)
+                        os << "\t<!ENTITY " << kv.first << " \"" << kv.second << "\">\n";
+                    os << "]>";
+                }
+                return os;
+            }
+    };
+
+    class XMLTree {
+        public:
+            XMLDeclaration xmlDeclaration;
+            EntityDeclaration entityDeclaration;
+            XMLNode::NodePtr root;
+
+            XMLTree(const XMLNode::NodePtr &root, const EntityDeclaration &entities = {""}): 
+                xmlDeclaration{}, 
+                entityDeclaration{entities.empty()? root->getName(): entities}, 
+                root{root} 
+            {}
+
+            friend std::ostream &operator<<(std::ostream &os, const XMLTree &tree) {
+                os << tree.xmlDeclaration << '\n';
+                os << tree.entityDeclaration << '\n'; 
+                os << tree.root << '\n'; 
+                return os;
+            }
+    };
 };
 
 int main() {
     using namespace XMLUtil;
-    XMLNode::NodePtr root {XMLNode::Node("root")};
-    root->setAttr("attr", "hello");
 
+    // Child nodes
     XMLNode::NodePtr text1 {XMLNode::TextNode("This is ")};
     XMLNode::NodePtr b1 {XMLNode::Node("b")}; b1->setText("bold");
     XMLNode::NodePtr text2 {XMLNode::TextNode(" and ")};
@@ -160,14 +221,28 @@ int main() {
     XMLNode::NodePtr text3 {XMLNode::TextNode(" text with ")};
     XMLNode::NodePtr u1 {XMLNode::Node("u")}; u1->setText("underline");
     XMLNode::NodePtr cdata1 {XMLNode::CDataNode("if (a < b && b > c) { return; }")};
+
+    // Container node
     XMLNode::NodePtr pi1 {XMLNode::Node("process", XMLNode::NodeType::PI)};
     pi1->setAttr("do-something", "true"); pi1->setAttr("dummy", "what?");
 
+    // Root node
+    XMLNode::NodePtr root {XMLNode::Node("root")};
+    root->setAttr("attr", "hello");
     root->addChildren(text1, b1, text2, i1, text3, u1, cdata1, pi1);
-    std::cout << root << '\n';
 
-    cdata1->unlink();
-    std::cout << root << '\n';
+    // Create an Entity declaration
+    EntityDeclaration entities(root->getName());
+    entities.insert("company1", "OpenAI Inc.");
+    entities.insert("company2", "Tesla Inc.");
+
+    // Create a tree with these components
+    XMLTree tree {root, entities};
+
+    // Try printing before and after deleting a node
+    std::cout << tree << '\n';
+    pi1->unlink();
+    std::cout << tree << '\n';
 
     return 0;
 }
