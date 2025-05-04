@@ -1,6 +1,7 @@
 #pragma once
 
 #include <list>
+#include <optional>
 #include <stdexcept>
 #include <unordered_map>
 #include <utility>
@@ -80,6 +81,14 @@ namespace stdx {
                 if (it == end())
                     throw std::runtime_error("ordered_map at");
                 return it->second;
+            }
+
+            inline std::optional<V> extract(const K &key) {
+                auto it {lookup.find(key)};
+                if (it == lookup.end()) return std::nullopt;
+                V res {std::move(it->second->second)};
+                lookup.erase(it); data.erase(it->second);
+                return res;
             }
 
             const_iterator find(const K &key) const {

@@ -1,20 +1,38 @@
+#include <cctype>
+#include <fstream>
 #include <iostream>
 #include <memory>
+#include <ranges>
 #include <sstream>
+#include <stack>
+#include <stdexcept>
+#include <vector>
 #include "ordered_map.hpp"
 
 /*
  * - Does not provide XSD validation
  * - Does not preserve whitespaces or comments
- *
- * TODO:
- * 1. Create XML Tree class - contains XML Dec and entity defs
  */
 
 namespace XMLUtil {
     /*
      * Both CDATA, PI & Ordinary nodes can be represented via `XMLNode`
      */
+    template<typename T>
+    bool isIn(T val, const std::initializer_list<T> &options) {
+        return std::ranges::find(options, val) != options.end();
+    }
+
+    std::string trim(const std::string &str) {
+        return 
+            str 
+            | std::views::drop_while(::isspace) 
+            | std::views::reverse 
+            | std::views::drop_while(::isspace) 
+            | std::views::reverse
+            | std::ranges::to<std::string>();
+    }
+
     class XMLNode {
         public:
             using NodePtr = std::shared_ptr<XMLNode>;
@@ -32,6 +50,9 @@ namespace XMLUtil {
             }
 
             void setAttr(const std::string &key, const std::string &val) { attrs[key] = val; }
+            void setAttrs(stdx::ordered_map<std::string, std::string> &&attrs) { 
+                this->attrs = std::move(attrs); 
+            }
 
             void addChild(const NodePtr &child) {
                 children.emplace_back(child);
@@ -162,87 +183,184 @@ namespace XMLUtil {
             }
     };
 
-    class EntityDeclaration {
-        private:
-            const std::string name;
-            stdx::ordered_map<std::string, std::string> entityMap;
-
-        public:
-            EntityDeclaration(
-                const std::string &name,
-                const stdx::ordered_map<std::string, std::string> &entityMap = {}
-            ): name(name), entityMap(entityMap) {}
-
-            inline bool exists(const std::string &key) const { return entityMap.exists(key); } 
-            inline bool empty() const { return entityMap.empty(); }
-            inline std::string operator[](const std::string &key) const { return entityMap.at(key); }
-            inline void insert(const std::string &key, const std::string &value) { entityMap.emplace(key, value); }
-
-            friend std::ostream &operator<<(std::ostream &os, const EntityDeclaration &dec) {
-                if (!dec.empty()) {
-                    os << "<!DOCTYPE " << dec.name << "[\n";
-                    for (const std::pair<std::string, std::string> &kv: dec.entityMap)
-                        os << "\t<!ENTITY " << kv.first << " \"" << kv.second << "\">\n";
-                    os << "]>";
-                }
-                return os;
-            }
-    };
-
     class XMLTree {
+        private:
+            // Helper to extract name, attrs from content - `whitespaceTest attr = "spaced "  another="value"`
+            static std::pair<std::string, stdx::ordered_map<std::string, std::string>>
+            extractNodeInfo (std::string_view sv) {
+                auto extractKey {[&sv] -> std::pair<std::string, std::string> {
+                    if (!std::isalpha(sv.front())) 
+                        throw std::runtime_error("Malformed XML");
+
+                    // Extract key as Namespace:Key
+                    std::string NS, Key;
+                    std::size_t i {0}, N {sv.size()};
+                    while (i < N && (std::isalnum(sv.at(i)) || isIn(sv.at(i), {'-', '_'}))) ++i;
+                    if (i == N) NS = "", Key = std::string{sv};
+                    else if (std::isspace(sv.at(i))) NS = "", Key = std::string{sv.substr(0, i)};
+                    else if (sv.at(i) == ':') {
+                        NS = sv.substr(0, i); std::size_t j {i + 1};
+                        while (j < N && (std::isalnum(sv.at(j)) || isIn(sv.at(j), {'-', '_'}))) ++j;
+                        Key = sv.substr(i + 1, j - i - 1); i = j;
+                        if (Key.empty()) throw std::runtime_error("Malformed XML");
+                    } else throw std::runtime_error("Malformed XML");
+                    
+                    // Update SV
+                    while (i < N && std::isspace(sv.at(i))) ++i;
+                    sv = sv.substr(i);
+                    return {NS, Key};
+                }};
+
+                // Extract the name
+                std::string name;
+                {
+                    auto [NS, Key] {extractKey()};
+                    name = NS.empty()? Key: NS + ':' + Key;
+                }
+                std::cout << sv << '\n';
+                stdx::ordered_map<std::string, std::string> attrs;
+                return std::make_pair(name, attrs);
+            }
+
         public:
-            XMLDeclaration xmlDeclaration;
-            EntityDeclaration entityDeclaration;
+            std::optional<XMLDeclaration> xmlDeclaration;
             XMLNode::NodePtr root;
 
-            XMLTree(const XMLNode::NodePtr &root, const EntityDeclaration &entities = {""}): 
-                xmlDeclaration{}, 
-                entityDeclaration{entities.empty()? root->getName(): entities}, 
+            explicit XMLTree(
+                const XMLNode::NodePtr &root, 
+                const std::optional<XMLDeclaration> &xmlDec = std::nullopt
+            ): 
+                xmlDeclaration{xmlDec}, 
                 root{root} 
             {}
 
             friend std::ostream &operator<<(std::ostream &os, const XMLTree &tree) {
-                os << tree.xmlDeclaration << '\n';
-                os << tree.entityDeclaration << '\n'; 
+                if (tree.xmlDeclaration) 
+                    os << *tree.xmlDeclaration << '\n';
                 os << tree.root << '\n'; 
                 return os;
+            }
+
+            static XMLTree parseFile(const std::string &fname) {
+                std::ifstream ifs {fname};
+                std::ostringstream oss;
+                oss << ifs.rdbuf();
+                return parse(oss.str());
+            }
+
+            static XMLTree parse(const std::string &raw, bool preserveSpace = false) {
+                XMLNode::NodePtr root;
+                std::optional<XMLDeclaration> xmlDec;
+                std::stack<XMLNode::NodePtr> stk;
+                std::size_t i {0}, N {raw.size()}; 
+                while (i < N) {
+                    if (!std::isspace(raw.at(i)) && raw.at(i) != '<') 
+                        throw std::runtime_error("Malformed XML");
+
+                    // Search until '>'
+                    else if (raw.at(i) == '<') {
+                        std::string acc;
+                        enum class STATE {START, COMMENT, PI, CDATA, NODE} 
+                        state {STATE::START};
+                        char insideStr {0};
+                        while (i < N) {
+                            acc += raw.at(i);
+                            if (state == STATE::START && acc.back() == '<') {
+                                // Acc contains non space char and stk is empty
+                                acc.pop_back();
+                                std::string trimmed {trim(acc)};
+                                if (!trimmed.empty() && stk.empty())
+                                    throw std::runtime_error("Malformed XML");
+                                else if ((preserveSpace && !acc.empty()) && !stk.empty())
+                                    stk.top()->addChild(XMLNode::TextNode(acc));
+                                else if ((!preserveSpace && !trimmed.empty()) && !stk.empty())
+                                    stk.top()->addChild(XMLNode::TextNode(trimmed));
+                                acc = '<';
+                            } else if (state == STATE::START && acc == "<!--") {
+                                state = STATE::COMMENT; 
+                            } else if (state == STATE::START && acc == "<?") {
+                                state = STATE::PI;
+                            } else if (state == STATE::START && acc == "<!DOCTYPE") {
+                                throw std::runtime_error("DOCTYPE declarations are not supported in this version.");
+                            } else if (state == STATE::START && acc == "<![CDATA[") {
+                                state = STATE::CDATA;
+                            } else if (state == STATE::START && acc.size() >= 2 && acc.at(0) == '<' && (std::isalpha(acc.at(1)) || acc.at(1) == '/')) {
+                                state = STATE::NODE;
+                            } else if (isIn(state, {STATE::PI, STATE::NODE}) && isIn(acc.back(), {'"', '\''})) {
+                                insideStr = !insideStr? acc.back(): 0;
+                            } else if (state == STATE::COMMENT && acc.ends_with("-->")) {
+                                state = STATE::START; acc.clear();
+                            } else if (state == STATE::CDATA && acc.ends_with("]]>")) {
+                                state = STATE::START;
+                                if (stk.empty()) throw std::runtime_error("Malformed XML");
+                                stk.top()->addChild(XMLNode::CDataNode(acc));
+                                acc.clear();
+                            } else if (state == STATE::PI && !insideStr && acc.ends_with("?>")) {
+                                std::string_view content {acc.begin() + 2, acc.begin() + static_cast<long>(acc.size()) - 2};
+                                auto [name, attrs] {extractNodeInfo(content)};
+                                if (name == "xml") {
+                                    xmlDec = XMLDeclaration {
+                                        attrs.extract("version").value_or("1.0"), 
+                                        attrs.extract("encoding").value_or("UTF-8"), 
+                                        attrs.extract("standalone").value_or("yes")
+                                    };
+                                    if (!stk.empty() || !attrs.empty()) 
+                                        throw std::runtime_error("Malformed XML");
+                                } else if (stk.empty()) {
+                                    throw std::runtime_error("Malformed XML");
+                                } else {
+                                    XMLNode::NodePtr node {XMLNode::Node(name, XMLNode::NodeType::PI)};
+                                    stk.top()->addChild(node);
+                                    node->setAttrs(std::move(attrs));
+                                }
+                                state = STATE::START; acc.clear();
+                            } else if (state == STATE::NODE && !insideStr && acc.ends_with(">")) {
+                                enum class MODE {SELF_CLOSING, OPEN, CLOSE} mode;
+                                if (acc.size() >= 2 && acc.at(acc.size() - 2) == '/') mode = MODE::SELF_CLOSING;
+                                else if (acc.size() >= 2 && acc.at(1) == '/') mode = MODE::CLOSE;
+                                else mode = MODE::OPEN;
+
+                                std::string_view content {
+                                    acc.begin() + (mode != MODE::CLOSE? 1: 2), 
+                                    acc.begin() + static_cast<long>(acc.size()) - (mode != MODE::SELF_CLOSING? 1: 2)
+                                };
+                                auto [name, attrs] {extractNodeInfo(content)};
+                                if (mode == MODE::SELF_CLOSING && !stk.empty()) {
+                                    XMLNode::NodePtr node {XMLNode::Node(name)};
+                                    node->setAttrs(std::move(attrs));
+                                    stk.top()->addChild(node);
+                                } else if (mode == MODE::CLOSE && attrs.empty() && !stk.empty() && name == stk.top()->getName()) {
+                                    root = std::move(stk.top()); stk.pop();
+                                    if (!stk.empty()) stk.top()->addChild(root);
+                                } else if (mode == MODE::OPEN) {
+                                    XMLNode::NodePtr node {XMLNode::Node(name)};
+                                    node->setAttrs(std::move(attrs));
+                                    stk.push(node);
+                                } else {
+                                    throw std::runtime_error("Malformed XML");
+                                }
+
+                                state = STATE::START; acc.clear();
+                            }
+                            ++i;
+                        }
+
+                        // Validate tag
+                        if (state != STATE::START || !acc.empty())
+                            throw std::runtime_error("Malformed XML");
+                    } 
+
+                    ++i;
+                }
+
+                if (!stk.empty()) throw std::runtime_error("Malformed XML");
+                return XMLTree{root, xmlDec};
             }
     };
 };
 
 int main() {
-    using namespace XMLUtil;
-
-    // Child nodes
-    XMLNode::NodePtr text1 {XMLNode::TextNode("This is ")};
-    XMLNode::NodePtr b1 {XMLNode::Node("b")}; b1->setText("bold");
-    XMLNode::NodePtr text2 {XMLNode::TextNode(" and ")};
-    XMLNode::NodePtr i1 {XMLNode::Node("i")}; i1->setText("italic");
-    XMLNode::NodePtr text3 {XMLNode::TextNode(" text with ")};
-    XMLNode::NodePtr u1 {XMLNode::Node("u")}; u1->setText("underline");
-    XMLNode::NodePtr cdata1 {XMLNode::CDataNode("if (a < b && b > c) { return; }")};
-
-    // Container node
-    XMLNode::NodePtr pi1 {XMLNode::Node("process", XMLNode::NodeType::PI)};
-    pi1->setAttr("do-something", "true"); pi1->setAttr("dummy", "what?");
-
-    // Root node
-    XMLNode::NodePtr root {XMLNode::Node("root")};
-    root->setAttr("attr", "hello");
-    root->addChildren(text1, b1, text2, i1, text3, u1, cdata1, pi1);
-
-    // Create an Entity declaration
-    EntityDeclaration entities(root->getName());
-    entities.insert("company1", "OpenAI Inc.");
-    entities.insert("company2", "Tesla Inc.");
-
-    // Create a tree with these components
-    XMLTree tree {root, entities};
-
-    // Try printing before and after deleting a node
+    XMLUtil::XMLTree tree {XMLUtil::XMLTree::parseFile("sample.xml")};
     std::cout << tree << '\n';
-    pi1->unlink();
-    std::cout << tree << '\n';
-
     return 0;
 }

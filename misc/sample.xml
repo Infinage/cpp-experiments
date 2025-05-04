@@ -1,17 +1,10 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <!-- Comments must start after declaration, not before it -->
-<!-- Can have only 1 doc type - token succeeding doctype must be the root tag (correct XML) -->
-<!DOCTYPE root [
-  <!ENTITY company1 "OpenAI Inc.">
-  <!ENTITY company2 "Tesla Inc.">
-]>
-
 <!-- Top-level comment -->
 <root xmlns:ns1="http://example.com/ns" xmlns:svg="http://www.w3.org/2000/svg">
-  <child xml:namespace="implictly defined"/>
-
+  <child xml:who="implictly defined"/>
   <!-- Self-closing and standard tag -->
-  <tag1 attr="value" ns1:attr="some-value" svg:attr="some-other-val" />
+  <tag1 attr="value>" ns1:attr="some-value" svg:attr="some-other-val" />
   <tag2 xmlns:random="Anything goes!">
     <random:child> Simple text content </random:child>
     <surprise:tag xmlns:surprise="Possible" surprise:attr="value">
@@ -45,10 +38,12 @@
 
   <!-- Predefined and custom entities -->
   <text>Use &lt;, &gt;, &amp;, &apos;, &quot;</text>
-  <companyList>&company1; &amp; &company2;</companyList>
+  <!--<companyList>&company1; &amp; &company2;</companyList>-->
 
   <!-- Processing instruction -->
   <?process do-something="true" dummy="what?"?>
+  <?test?>
+  <?test abc="<?what??>"?>
 
   <!-- Namespaced SVG element -->
   <svg:circle svg:cx="50" svg:cy="50" svg:r="40" svg:fill="red" />
