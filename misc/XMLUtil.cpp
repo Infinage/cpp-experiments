@@ -6,12 +6,12 @@
 #include <sstream>
 #include <stack>
 #include <stdexcept>
-#include <vector>
 #include "ordered_map.hpp"
 
 /*
  * - Does not provide XSD validation
  * - Does not preserve whitespaces or comments
+ * - Support for &apos, &quot, etc
  */
 
 namespace XMLUtil {
@@ -196,8 +196,10 @@ namespace XMLUtil {
                     std::string NS, Key;
                     std::size_t i {0}, N {sv.size()};
                     while (i < N && (std::isalnum(sv.at(i)) || isIn(sv.at(i), {'-', '_'}))) ++i;
-                    if (i == N) NS = "", Key = std::string{sv};
-                    else if (std::isspace(sv.at(i))) NS = "", Key = std::string{sv.substr(0, i)};
+                    if (i == N) 
+                        NS = "", Key = std::string{sv};
+                    else if (std::isspace(sv.at(i)) || sv.at(i) == '=') 
+                        NS = "", Key = std::string{sv.substr(0, i)};
                     else if (sv.at(i) == ':') {
                         NS = sv.substr(0, i); std::size_t j {i + 1};
                         while (j < N && (std::isalnum(sv.at(j)) || isIn(sv.at(j), {'-', '_'}))) ++j;
@@ -211,15 +213,42 @@ namespace XMLUtil {
                     return {NS, Key};
                 }};
 
+                auto extractValue {[&sv] -> std::string {
+                    if (!isIn(sv.at(0), {'\'', '"'}))
+                        throw std::runtime_error("Malformed XML");
+                    std::size_t i {1}, N {sv.size()};
+                    while (i < N && sv.at(i) != sv.at(0)) ++i;
+                    if (i == N) throw std::runtime_error("Malformed XML");
+                    std::string result {sv.substr(1, i - 1)}; ++i;
+
+                    // Update SV
+                    while (i < N && std::isspace(sv.at(i))) ++i;
+                    sv = sv.substr(i);
+                    return result;
+                }};
+
                 // Extract the name
-                std::string name;
-                {
-                    auto [NS, Key] {extractKey()};
-                    name = NS.empty()? Key: NS + ':' + Key;
-                }
-                std::cout << sv << '\n';
+                auto [NS, Key] {extractKey()};
+                std::string name {NS.empty()? Key: NS + ':' + Key};
+
+                // Extract the key, value pairs
                 stdx::ordered_map<std::string, std::string> attrs;
-                return std::make_pair(name, attrs);
+                while (!sv.empty()) {
+                    auto [NS, attrKey] {extractKey()};
+                    attrKey = NS.empty()? attrKey: NS + ':' + attrKey;
+                    if (sv.size() <= 2 || attrs.exists(attrKey) || sv.at(0) != '=')
+                        throw std::runtime_error("Malformed XML");
+
+                    // Update SV
+                    std::size_t i {1};
+                    while (i < sv.size() && std::isspace(sv.at(i))) ++i;
+                    sv = sv.substr(i);
+
+                    std::string attrVal {extractValue()};
+                    attrs.emplace(attrKey, attrVal);
+                }
+
+                return std::make_pair(name, std::move(attrs));
             }
 
         public:
@@ -319,7 +348,6 @@ namespace XMLUtil {
                                 if (acc.size() >= 2 && acc.at(acc.size() - 2) == '/') mode = MODE::SELF_CLOSING;
                                 else if (acc.size() >= 2 && acc.at(1) == '/') mode = MODE::CLOSE;
                                 else mode = MODE::OPEN;
-
                                 std::string_view content {
                                     acc.begin() + (mode != MODE::CLOSE? 1: 2), 
                                     acc.begin() + static_cast<long>(acc.size()) - (mode != MODE::SELF_CLOSING? 1: 2)

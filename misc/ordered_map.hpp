@@ -13,11 +13,31 @@ namespace stdx {
             using iterator = std::list<std::pair<K, V>>::iterator;
             using const_iterator = std::list<std::pair<K, V>>::const_iterator;
 
-        private:
-            std::unordered_map<K, iterator, Hash> lookup;
-            std::list<std::pair<K, V>> data;
+            // Defaults CTORS, Overloads
+            ordered_map() = default;
+            ordered_map(ordered_map&& other) = default;
+            ordered_map &operator=(ordered_map&& other) = default;
 
-        public:
+            // Ctor with initializer support
+            ordered_map(std::initializer_list<std::pair<K, V>> init) {
+                for (const std::pair<K, V> &kv: init)
+                    insert(kv.first, kv.second);
+            }
+
+            // Copy ctor must update refs
+            ordered_map(const ordered_map &other): data(other.data) {
+                for (iterator it {data.begin()}; it != data.end(); ++it)
+                    lookup.emplace(it->first, it);
+            }
+
+            // Copy assign must update refs
+            ordered_map &operator=(const ordered_map &other) {
+                data = other.data;
+                for (iterator it {data.begin()}; it != data.end(); ++it)
+                    lookup.emplace(it->first, it);
+                return *this; 
+            }
+
             void insert(const K &key, const V &value) {
                 iterator it {find(key)};
                 if (it != end())
@@ -29,7 +49,7 @@ namespace stdx {
             }
 
             // Erase + emplace to support types without assignment operators (e.g. const members)
-            template<typename Val_ = V> requires std::is_same_v<std::decay_t<Val_>, V>
+            template<typename Val_> requires std::is_convertible_v<std::decay_t<Val_>, V>
             V& emplace(const K &key, Val_ &&value) {
                 iterator it {find(key)};
                 if (it != end()) erase(key);
@@ -86,7 +106,7 @@ namespace stdx {
             inline std::optional<V> extract(const K &key) {
                 auto it {lookup.find(key)};
                 if (it == lookup.end()) return std::nullopt;
-                V res {std::move(it->second->second)};
+                V res {it->second->second};
                 lookup.erase(it); data.erase(it->second);
                 return res;
             }
@@ -114,5 +134,9 @@ namespace stdx {
 
             const_iterator cbegin() const { return data.cbegin(); }
             const_iterator cend() const { return data.cend(); }
+
+        private:
+            std::unordered_map<K, iterator, Hash> lookup;
+            std::list<std::pair<K, V>> data;
     };
 }
