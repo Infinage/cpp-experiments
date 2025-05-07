@@ -2,21 +2,10 @@
 
 #include <iostream>
 #include <sstream>
+#include <stack>
 #include <stdexcept>
 #include <unordered_set>
 #include <vector>
-
-struct Coords {
-    std::size_t row, col;
-    Coords(std::size_t row, std::size_t col): row(row), col(col) {}
-    inline bool operator==(const Coords &other) const { 
-        return row == other.row && col == other.col; 
-    }
-
-    // Define a new convenience type
-    static std::size_t HashCoord(const Coords& p) { return (p.row * 31) + p.col; };
-    using CoordSet = std::unordered_set<Coords, decltype(&HashCoord)>;
-};
 
 class QueensSolver {
     private:
@@ -80,19 +69,35 @@ class QueensSolver {
                 throw std::runtime_error("Regions must equal the grid dimensions");
         }
 
-        // Solve the board recursively
-        bool solve(const std::size_t row = 0) {
-            if (row == nQueens) return true;
-            else {
-                for (std::size_t col {0}; col < nQueens; ++col) {
-                    if (check(row, col)) {
-                        set(row, col);
-                        if (solve(row + 1)) return true;
-                        unset(row, col);
+        bool solve() {
+            std::stack<std::pair<std::size_t, std::size_t>> stk{{{0, 0}}};
+            while (!stk.empty()) {
+                std::size_t row, col;
+                std::tie(row, col) = stk.top();
+
+                // When we were able to move 1 row beyond max
+                if (row == nQueens) return true;
+
+                // When we have tried all combinations for a row
+                else if (col == nQueens) {
+                    stk.pop();
+                    if (!stk.empty()) {
+                        unset(stk.top().first, stk.top().second);
+                        stk.top().second += 1;
                     }
-                }
-                return false;
+                } 
+
+                // If valid, place row and col onto grid, next row
+                else if (check(row, col)) {
+                    set(row, col);
+                    stk.push({row + 1, 0});
+                } 
+
+                // Not valid and col is within bounds, try next col
+                else stk.top().second += 1;
             }
+            
+            return false;
         }
 
         // Print the board
