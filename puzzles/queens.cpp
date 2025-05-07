@@ -1,4 +1,5 @@
 // https://queensgame.vercel.app/level/1
+// g++ queens.cpp -o queens -std=c++23 -I/usr/include/opencv4 -lopencv_core -lopencv_imgcodecs -lopencv_imgproc -lopencv_highgui
 
 #include <iostream>
 #include <sstream>
@@ -7,9 +8,12 @@
 #include <unordered_set>
 #include <vector>
 
+#include "opencv2/highgui.hpp"
+#include "opencv2/imgproc.hpp"
+
 class QueensSolver {
     private:
-        const std::vector<std::vector<char>> &grid; 
+        const std::vector<std::vector<char>> grid; 
         std::size_t nQueens;
         std::unordered_set<std::size_t> cols;
         std::unordered_set<char> regions; 
@@ -46,9 +50,34 @@ class QueensSolver {
             regions.insert(grid[row][col]);
         }
 
+        static std::vector<std::vector<char>> readGrid(const std::string &fname) {
+            // Read the image
+            cv::Mat img, gray;
+            img = cv::imread(fname);
+            if (img.empty()) throw std::runtime_error("Failed to read file");
+            cv::cvtColor(img, gray, cv::COLOR_RGB2GRAY);
+
+            // Find all contours, sort be decreasing order of area and store the max area
+            std::vector<std::vector<cv::Point>> contours;
+            cv::findContours(gray, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
+            if (contours.empty()) throw std::runtime_error("No contours found");
+            std::ranges::sort(contours, [](const std::vector<cv::Point> &p1, const std::vector<cv::Point> &p2) { 
+                return cv::contourArea(p1) > cv::contourArea(p2); 
+            });
+            std::vector<cv::Point> contour {contours[0]};
+
+            // DEBUG - draw bounding box
+            cv::Rect bbox = cv::boundingRect(contour);
+            cv::rectangle(img, bbox, cv::Scalar(0, 255, 0), 2);
+            cv::imshow("Contour viz", img);
+            cv::waitKey(0);
+
+            throw "NOPE";
+        }
+
     public:
-        QueensSolver(const std::vector<std::vector<char>> &grid): 
-            grid(grid), nQueens(grid.size()), 
+        QueensSolver(const std::string &fname): 
+            grid(readGrid(fname)), nQueens(this->grid.size()), 
             solution(nQueens, std::vector<bool>(nQueens, false)) 
         {
             // Check - 1
@@ -114,39 +143,17 @@ class QueensSolver {
         }
 };
 
-int main() {
+int main(int argc, char **argv) {
+    if (argc != 2) std::cerr << "Usage queens <image>\n";
+    else {
+        // Solve the grid
+        QueensSolver solver(argv[1]);
+        if (!solver.solve())
+            throw std::runtime_error("No solution exists");
 
-    // Read from input
-    std::ostringstream oss;
-    oss << std::cin.rdbuf();
+        // Print out the solution
+        std::cout << solver.getString();
 
-    // Write into vector post cleaning, store the regions
-    std::size_t nQueens {0};
-    std::vector<std::vector<char>> grid{{}};
-    for (const char &ch: oss.str()) {
-        if (ch == '\n') {
-            std::size_t rowC {grid.back().size()};
-            if (grid.back().empty()) continue;
-            else if (nQueens == 0) nQueens = rowC;
-            else if (nQueens != rowC) throw std::runtime_error(
-                "Expected row to have " + std::to_string(nQueens) + ", got " 
-                + std::to_string(rowC));
-            grid.push_back({});
-        } else if (ch != ' ') {
-            grid.back().push_back(ch);
-        }
+        return 0;
     }
-
-    // Ensure that we have the right no. of colors
-    if (grid.back().empty()) grid.pop_back();
-
-    // Solve the grid
-    QueensSolver solver(grid);
-    if (!solver.solve())
-        throw std::runtime_error("No solution exists");
-
-    // Print out the solution
-    std::cout << solver.getString();
-
-    return 0;
 }
