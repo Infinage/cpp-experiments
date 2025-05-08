@@ -1,7 +1,9 @@
 // https://queensgame.vercel.app/level/1
 // g++ queens.cpp -o queens -std=c++23 -I/usr/include/opencv4 -lopencv_core -lopencv_imgcodecs -lopencv_imgproc -lopencv_highgui
 
+#include <algorithm>
 #include <iostream>
+#include <ranges>
 #include <sstream>
 #include <stack>
 #include <stdexcept>
@@ -51,26 +53,75 @@ class QueensSolver {
         }
 
         static std::vector<std::vector<char>> readGrid(const std::string &fname) {
-            // Read the image
-            cv::Mat img, gray;
-            img = cv::imread(fname);
-            if (img.empty()) throw std::runtime_error("Failed to read file");
+            cv::Mat img {cv::imread(fname)};
+            if (img.empty()) throw std::runtime_error("cannot read image");
+
+            // 1. HSV -> saturation
+            cv::Mat hsv, sat; std::vector<cv::Mat> ch;
+            cv::cvtColor(img, hsv, cv::COLOR_BGR2HSV);
+            cv::split(hsv, ch); sat = ch[1];
+
+            // 2. Blur + threshold
+            cv::Mat satBlur, mask;
+            cv::GaussianBlur(sat, satBlur, cv::Size(7,7), 0);
+            cv::threshold(satBlur, mask, 60, 255, cv::THRESH_BINARY);
+
+            // 3. Morph close to fill gaps, then contours
+            cv::Mat kernel {cv::getStructuringElement(cv::MORPH_RECT, cv::Size(25,25))};
+            cv::morphologyEx(mask, mask, cv::MORPH_CLOSE, kernel);
+            std::vector<std::vector<cv::Point>> cnts;
+            cv::findContours(mask, cnts, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
+            if (cnts.empty()) throw std::runtime_error("No colorful region");
+            std::vector<cv::Point> biggest = *std::max_element(
+                cnts.begin(), cnts.end(), [](auto &a, auto &b){ 
+                    return cv::contourArea(a) < cv::contourArea(b); 
+                }
+            );
+
+            // 4. Crop the image around region of interest
+            img = img(cv::boundingRect(biggest)).clone(); 
+
+            // 5. Detect contours
+            cv::Mat gray, thresh;
             cv::cvtColor(img, gray, cv::COLOR_RGB2GRAY);
+            cv::threshold(gray, thresh, 0, 255, cv::THRESH_BINARY | cv::THRESH_OTSU);
+            std::vector<std::vector<cv::Point>> rawContours;
+            cv::findContours(thresh, rawContours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
+            if (rawContours.empty()) throw std::runtime_error("No cell contours found.");
 
-            // Find all contours, sort be decreasing order of area and store the max area
-            std::vector<std::vector<cv::Point>> contours;
-            cv::findContours(gray, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
-            if (contours.empty()) throw std::runtime_error("No contours found");
-            std::ranges::sort(contours, [](const std::vector<cv::Point> &p1, const std::vector<cv::Point> &p2) { 
-                return cv::contourArea(p1) > cv::contourArea(p2); 
+            // 6. Filter out contours with areas too large or too small
+            std::ranges::nth_element(
+                rawContours, rawContours.begin() + rawContours.size() / 2, std::ranges::less{}, 
+                [](const std::vector<cv::Point> &cont) { return cv::contourArea(cont); }
+            );
+            auto filterContFunc {[mA = cv::contourArea(rawContours[rawContours.size() / 2])]
+                (const std::vector<cv::Point> &cont) {
+                    return std::fabs(cv::contourArea(cont) - mA) < 0.25;
+                }
+            };
+            std::vector<std::vector<cv::Point>> contours {
+                rawContours | std::ranges::views::filter(filterContFunc) | std::ranges::to<std::vector>()
+            };
+
+            // 7. Sort the filtered contours and apply non max supression
+            std::vector<std::vector<cv::Point>> finalBoxes;
+            std::ranges::sort(contours, [](const std::vector<cv::Point> &p1, const std::vector<cv::Point> &p2) -> bool {
+                cv::Rect rp1 {cv::boundingRect(p1)}, rp2 {cv::boundingRect(p2)};
+                return rp1.y < rp2.y || (rp1.y == rp2.y && rp1.x < rp2.x);
             });
-            std::vector<cv::Point> contour {contours[0]};
+            for (const std::vector<cv::Point> &cont: contours) {
 
-            // DEBUG - draw bounding box
-            cv::Rect bbox = cv::boundingRect(contour);
-            cv::rectangle(img, bbox, cv::Scalar(0, 255, 0), 2);
-            cv::imshow("Contour viz", img);
-            cv::waitKey(0);
+            }
+
+            // DEBUG
+            std::size_t index {1};
+            for (const std::vector<cv::Point> &contour: contours) {
+                cv::Rect bbox = cv::boundingRect(contour);
+                cv::rectangle(img, bbox, cv::Scalar(0, 255, 0), 2);
+                cv::putText(img, std::to_string(index++), bbox.tl() + cv::Point(2, 12),
+                            cv::FONT_HERSHEY_SIMPLEX, 0.4, cv::Scalar(0, 0, 255), 1);
+            }
+            cv::imshow("debug", img); cv::waitKey(0);
 
             throw "NOPE";
         }
