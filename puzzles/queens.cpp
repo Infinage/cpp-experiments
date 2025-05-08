@@ -1,8 +1,7 @@
 // https://queensgame.vercel.app/level/1
-// g++ queens.cpp -o queens -std=c++23 -I/usr/include/opencv4 -lopencv_core -lopencv_imgcodecs -lopencv_imgproc -lopencv_highgui
+// g++ queens.cpp -o queens -std=c++23 -I/usr/include/opencv4 -lopencv_core -lopencv_imgcodecs -lopencv_imgproc -lopencv_highgui -I/home/kael/cpplib/include -Wno-deprecated-enum-enum-conversion
 
 #include <algorithm>
-#include <iostream>
 #include <ranges>
 #include <sstream>
 #include <stack>
@@ -12,6 +11,137 @@
 
 #include "opencv2/imgcodecs.hpp"
 #include "opencv2/imgproc.hpp"
+#include "crow/app.h"
+
+std::string htmlMarkup {R"*(
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Queens Puzzle Solver</title>
+    <style>
+        body {
+            background-color: #111;
+            color: #eee;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+            margin: 0;
+        }
+
+        .container {
+            text-align: center;
+            max-width: 90vw;
+        }
+
+        h1 {
+            margin-bottom: 1em;
+        }
+
+        input[type="file"] {
+            margin: 0.5em 0;
+            padding: 0.3em;
+            color: #ccc;
+        }
+
+        input::file-selector-button,
+        button {
+            margin: 0.5em;
+            padding: 0.6em 1.2em;
+            background-color: #333;
+            color: #fff;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-weight: bold;
+        }
+
+        input::file-selector-button:hover,
+        button:hover {
+            background-color: #555;
+        }
+
+        img {
+            margin-top: 1em;
+            max-width: 100%;
+            max-height: 65vh;
+            border: 2px solid #444;
+            border-radius: 4px;
+            box-shadow: 0 0 12px rgba(0,0,0,0.6);
+            display: none;
+        }
+
+        #pasteNote {
+            font-size: 0.9em;
+            color: #aaa;
+            margin-top: 0.5em;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Queens Puzzle Solver</h1>
+        <div id="pasteNote">Paste from Clipboard or upload an image.</div>
+        <div style="display: flex; align-items: center; justify-content: center; gap: 0.5em;">
+            <input type="file" id="fileInput" accept="image/*"/>
+            <span id="clearBtn" title="Clear" onclick="clearImage()" style="display:none; cursor:pointer; font-size: 1.5em;">❌</span>
+        </div>
+        <img id="outputImg" />
+    </div>
+
+    <script>
+        async function submitImage(imageBlob = null) {
+            const file = imageBlob || document.getElementById('fileInput').files[0];
+            if (!file) return;
+            const arrayBuffer = await file.arrayBuffer();
+            const response = await fetch("/solve", {
+                method: "POST",
+                body: arrayBuffer,
+                headers: { "Content-Type": "application/octet-stream" }
+            });
+
+            if (response.ok) {
+                const blob = await response.blob();
+                const url = URL.createObjectURL(blob);
+                const imgEl = document.getElementById("outputImg");
+                imgEl.src = url;
+                imgEl.style.display = 'block';
+                document.getElementById("clearBtn").style.display = 'inline';
+            } else {
+                alert("Failed to process image.");
+            }
+        }
+
+        function clearImage() {
+            document.getElementById('fileInput').value = "";
+            const imgEl = document.getElementById("outputImg");
+            imgEl.src = "";
+            imgEl.style.display = 'none';
+            document.getElementById("clearBtn").style.display = 'none';
+        }
+
+        document.getElementById('fileInput').addEventListener('change', () => {
+            submitImage();
+        });
+
+        document.addEventListener('paste', (e) => {
+            const items = e.clipboardData.items;
+            for (const item of items) {
+                if (item.type.startsWith("image/")) {
+                    const blob = item.getAsFile();
+                    submitImage(blob);
+                    break;
+                }
+            }
+        });
+    </script>
+</body>
+</html>
+)*"};
 
 class QueensSolver {
     private:
@@ -67,8 +197,9 @@ class QueensSolver {
             cv::line(img, p3, p4, cv::Scalar(0, 0, 255), 2);
         }
 
-        static cv::Mat readImage(const std::string &fname) {
-            cv::Mat img {cv::imread(fname)};
+        static cv::Mat readImage(const std::string &data) {
+            std::vector<uchar> blob {data.begin(), data.end()};
+            cv::Mat img {cv::imdecode(blob, cv::IMREAD_COLOR)};
             if (img.empty()) throw std::runtime_error("cannot read image");
 
             // 1. HSV -> saturation
@@ -162,9 +293,8 @@ class QueensSolver {
         }
 
     public:
-        QueensSolver(const std::string &fname): 
-            image(readImage(fname)), 
-            contours(getCells(image)),
+        QueensSolver(const std::string &blobData): 
+            image(readImage(blobData)), contours(getCells(image)),
             nQueens(static_cast<unsigned long>(std::sqrt(contours.size()))), 
             grid(constructGrid())
         {
@@ -234,26 +364,43 @@ class QueensSolver {
         }
 
         // Write solution to image file
-        void save(const std::string &fname) const {
+        cv::Mat getImage() const {
             cv::Mat solImg {image.clone()};
             for (std::size_t i {0}; i < contours.size(); ++i) {
                 std::size_t row {i / nQueens}, col {i % nQueens};
                 const cv::Rect &bbox {contours[i]};
                 if (solution[row][col]) drawX(solImg, bbox);
             }
-            cv::imwrite(fname, solImg);
+            return solImg;
         }
 };
 
-int main(int argc, char **argv) {
-    if (argc != 3) {
-        std::cerr << "Usage queens <input_image> <output_image>\n";
-        return 1;
-    } else {
-        QueensSolver solver(argv[1]);
-        if (!solver.solve())
-            throw std::runtime_error("No solution exists");
-        solver.save(argv[2]);
-        return 0;
-    }
+static crow::response solvePuzzleReq(const crow::request &req) {
+    // Read input and solve it
+    QueensSolver solver{req.body};
+    solver.solve();
+    cv::Mat sol {solver.getImage()};
+
+    // Get solution image for embedding into resp
+    std::vector<uchar> blob;
+    cv::imencode(".png", sol, blob);
+    std::string data {blob.begin(), blob.end()};
+
+    // Construct and return resp
+    crow::response resp{data};
+    resp.set_header("Content-Type", "image/png");
+    return resp;
+}
+
+static crow::response homePage() {
+    crow::response resp{htmlMarkup};
+    resp.set_header("Content-Type", "text/html");
+    return resp;
+}
+
+int main() {
+    crow::SimpleApp app;
+    CROW_ROUTE(app, "/").methods(crow::HTTPMethod::GET)(homePage);
+    CROW_ROUTE(app, "/solve").methods(crow::HTTPMethod::POST)(solvePuzzleReq);
+    app.port(8080).run();
 }
