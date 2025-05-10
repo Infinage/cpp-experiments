@@ -1,5 +1,5 @@
 // https://queensgame.vercel.app/level/1
-// g++ queens.cpp -o queens -std=c++23 -I/usr/include/opencv4 -lopencv_core -lopencv_imgcodecs -lopencv_imgproc -lopencv_highgui -I/home/kael/cpplib/include -Wno-deprecated-enum-enum-conversion
+// g++ queens.cpp -o queens -std=c++23 -I/usr/include/opencv4 -lopencv_core -lopencv_imgcodecs -lopencv_imgproc -I/home/kael/cpplib/include -Wno-deprecated-enum-enum-conversion
 
 #include <algorithm>
 #include <ranges>
@@ -248,12 +248,12 @@ class QueensSolver {
                     return (std::fabs(cv::contourArea(cont) - mA) / mA) < 0.3;
                 }
             };
-            std::vector<cv::Rect> contours {
+            auto contoursView {
                 rawContours 
                     | std::ranges::views::filter(filterContFunc) 
                     | std::ranges::views::transform([](const std::vector<cv::Point> &cont) { return cv::boundingRect(cont); })
-                    | std::ranges::to<std::vector>()
             };
+            std::vector<cv::Rect> contours {contoursView.begin(), contoursView.end()};
 
             // 3. Sort the contours
             std::ranges::sort(contours, [](const cv::Rect &rp1, const cv::Rect &rp2) -> bool {
@@ -285,9 +285,8 @@ class QueensSolver {
                     colorMapping[avgColor] = region++;
                 unsigned ch {colorMapping[avgColor]};
                 grid[i / nQueens][i % nQueens] = ch;
-                cv::rectangle(image, bbox, cv::Scalar(0, 255, 0), 2);
                 cv::putText(image, std::to_string(ch), bbox.tl() + cv::Point(2, 12), 
-                        cv::FONT_HERSHEY_SIMPLEX, 0.4, cv::Scalar(0, 0, 255), 1);
+                        cv::FONT_HERSHEY_SIMPLEX, 0.4, cv::Scalar(0, 0, 0), 1);
             }
             return grid;
         }

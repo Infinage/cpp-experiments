@@ -13,7 +13,7 @@
 #include <unistd.h>
 #include <unordered_set>
 
-#include "../misc/ThreadPool.hpp"
+#include "../misc/threadPool.hpp"
 
 // HTTP Server Thread running?
 std::atomic<bool> httpServerRunning {true};
