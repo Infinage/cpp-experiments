@@ -28,7 +28,7 @@ std::string htmlMarkup {R"*(
             display: flex;
             flex-direction: column;
             align-items: center;
-            justify-content: center;
+            padding-top: 2em;
             height: 100vh;
             margin: 0;
         }
