@@ -29,15 +29,6 @@ namespace CSVUtil {
         return true;
     }
 
-    // Extract the first line from a CSV File
-    inline const std::string extractHeader(const std::string &fname) {
-        std::ifstream ifs {fname};
-        if (!ifs) throw std::runtime_error("Couldn't open file: " + fname);
-        std::string header;
-        safeGetline(ifs, header);
-        return header;
-    }
-
     // Parse a single CSV line into a vector of strings, returns empty is line is incomplete
     inline std::vector<std::string> parseCSVLine(const std::string &line, const char delim = ',', const char quoteChar = '"') {
         std::vector<std::string> result;
@@ -211,6 +202,23 @@ namespace CSVUtil {
     inline std::ostream &operator<< (std::ostream &os, const CSVRecord &record) {
         os << record.to_string(); 
         return os;
+    }
+
+    // Extract the first line from a CSV File
+    inline CSVRecord extractHeader(const std::string &fname) {
+        std::ifstream ifs {fname};
+        if (!ifs) throw std::runtime_error("Couldn't open file: " + fname);
+        std::string header, line;
+
+        // Continue reading header incase it spans multiple lines
+        while (safeGetline(ifs, line)) {
+            header += line;
+            std::vector<std::string> row {parseCSVLine(header)};
+            if (row.empty()) header += '\n'; 
+            else return CSVRecord{header, row};
+        }
+
+        throw std::runtime_error("Failed to read the header: " + fname);
     }
 
     /*

@@ -120,7 +120,7 @@ class CSVSplit {
         // Variables created at constructor
         const CSVUtil::CSVReader readHandle;
         const std::size_t N_COLS;
-        const std::string CSVHeader;
+        const CSVUtil::CSVRecord CSVHeader;
 
     private:
         // Write & flush
@@ -140,7 +140,7 @@ class CSVSplit {
             pruneBuckets(pruneBuckets),
             readHandle(CSVUtil::CSVReader{ifname}), 
             N_COLS((*readHandle.begin()).size()), 
-            CSVHeader({CSVUtil::extractHeader(ifname) + "\n"})
+            CSVHeader{CSVUtil::extractHeader(ifname)}
         {}
 
         // Splits a CSV file based on provided column & hash function into N buckets
@@ -155,7 +155,7 @@ class CSVSplit {
                     if (outputHandles.find(bucket) == outputHandles.end()) {
                         std::string ofname {"split-" + std::to_string(bucket + 1) + ".csv"};
                         outputHandles[bucket] = std::ofstream{outDir / ofname};
-                        outputHandles[bucket] << CSVHeader;
+                        outputHandles[bucket] << CSVHeader << '\n';
                     }
 
                     // Buffer until there is 1 MB worth data
@@ -185,7 +185,7 @@ class CSVSplit {
 
 class CSVMerge {
     private:
-        const std::string csvHeader;
+        const CSVUtil::CSVRecord csvHeader;
         const std::filesystem::path outDir;
 
         // Write & flush if threshold is hit
@@ -205,7 +205,7 @@ class CSVMerge {
         void mergeSync(const std::vector<std::string> &files) {
             std::ofstream ofile {outDir / "merged-sync.csv"}; 
             std::ostringstream buffer;
-            ofile << csvHeader;
+            ofile << csvHeader << '\n';
             ofile.flush();
             std::size_t fileCounts{0}, recCounts{0};
             for (const std::string &fname: files) {
@@ -228,7 +228,7 @@ class CSVMerge {
 
         void mergeAsync(const std::vector<std::string> &files) {
             std::ofstream ofile {outDir / "merged-async.csv"};
-            ofile << csvHeader; ofile.flush();
+            ofile << csvHeader << '\n'; ofile.flush();
             std::mutex ofileMutex;
             std::size_t fileCounts{0};
             std::atomic_size_t recCounts{0};
@@ -257,7 +257,7 @@ class CSVMerge {
 
     public:
         CSVMerge(const std::string &header, const std::string &outDir): 
-            csvHeader(header + "\n"), outDir(outDir) {}
+            csvHeader(header), outDir(outDir) {}
 
         void mergeFiles(const std::vector<std::string> &files, bool sync) {
             if (sync) mergeSync(files);
@@ -332,7 +332,7 @@ const std::vector<std::string> getFileList(int argc, char **argv, int start, con
         if (!std::filesystem::is_regular_file(fname)) {
             std::cerr << "Error: File: " << argv[i] << " is not a valid file.\n";
             std::exit(1);
-        } else if (!firstFileHeader.empty() && CSVUtil::extractHeader(fname) != firstFileHeader) {
+        } else if (!firstFileHeader.empty() && CSVUtil::extractHeader(fname).to_string() != firstFileHeader) {
             std::cerr << "Error: File: " << argv[i] << " header doesn't match with the first file.\n";
             std::exit(1);
         }
@@ -395,9 +395,9 @@ int main(int argc, char **argv) {
         else if (argc >= 4 && std::strcmp(argv[1], "revert") == 0) {
 
             // Parse the list of files, ensure they exist & validate the headers match
-            const std::string csvHeader {CSVUtil::extractHeader(argv[3])};
-            std::vector<std::string> files {getFileList(argc, argv, 3, csvHeader)};
-            CSVMerge merge{csvHeader, outDir};
+            const CSVUtil::CSVRecord csvHeader {CSVUtil::extractHeader(argv[3])};
+            std::vector<std::string> files {getFileList(argc, argv, 3, csvHeader.to_string())};
+            CSVMerge merge{csvHeader.to_string(), outDir};
             if (std::strcmp(argv[2], "sync") != 0 && std::strcmp(argv[2], "async") != 0) {
                 std::cerr << "Error: Revert must be provided with either sync or async, "
                           << argv[2] << " was provided.\n";
@@ -429,7 +429,7 @@ int main(int argc, char **argv) {
                 std::size_t colIdx, bucketSize;
                 parseCLIArgument(argv[2], colIdx);
                 parseCLIArgument(argv[3], bucketSize);
-                const std::size_t colCounts {CSVUtil::parseCSVLine(CSVUtil::extractHeader(ifile)).size()};
+                const std::size_t colCounts {CSVUtil::extractHeader(ifile).size()};
                 if (colIdx >= colCounts) { std::cerr << "Error: Requested Col#: " << colIdx << " out of bounds. Actual column count: " << colCounts << "\n"; std::exit(1); }
                 if (bucketSize == 0) { std::cerr << "Error: Bucket Size must be greater than 0.\n"; std::exit(1); }
                 strategy = std::make_unique<HashColumnStrategy>(colIdx, bucketSize);
@@ -439,7 +439,7 @@ int main(int argc, char **argv) {
                 std::size_t colIdx, groupSize;
                 parseCLIArgument(argv[2], colIdx);
                 parseCLIArgument(argv[3], groupSize);
-                const std::size_t colCounts {CSVUtil::parseCSVLine(CSVUtil::extractHeader(ifile)).size()};
+                const std::size_t colCounts {CSVUtil::extractHeader(ifile).size()};
                 if (colIdx >= colCounts) { std::cerr << "Error: Requested Col#: " << colIdx << " out of bounds. Actual column count: " << colCounts << "\n"; std::exit(1); }
                 if (groupSize == 0) { std::cerr << "Error: Group Size must be greater than 0.\n"; std::exit(1); }
                 strategy = std::make_unique<GroupColumnStrategy>(colIdx, groupSize);
