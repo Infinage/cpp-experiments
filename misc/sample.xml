@@ -10,7 +10,7 @@
     <surprise:tag xmlns:surprise="Possible" surprise:attr="value">
         Namespace just defined and referenced
     </surprise:tag>
-    <additional-suprise xmlns="namespace">
+    <additional-suprise xmlns='namespace'>
         <tag>Now comes under 'namespace'</tag>
     </additional-suprise>
   </tag2>

@@ -11,7 +11,11 @@
 /*
  * - Does not provide XSD validation
  * - Does not preserve whitespaces or comments
- * - Support for &apos, &quot, etc
+ *
+ *   TODO:
+ *   - Support for &apos, &quot, etc
+ *   - Support namespace validation
+ *   - API for navigating tree
  */
 
 namespace XMLUtil {
@@ -177,7 +181,7 @@ namespace XMLUtil {
             friend std::ostream &operator<<(std::ostream &os, const XMLDeclaration &dec) {
                 os << "<?xml version=\"" << dec.version 
                    << "\" encoding=\"" << dec.encoding 
-                   << "\"standalone=\"" << dec.standalone 
+                   << "\" standalone=\"" << dec.standalone 
                    << "\"?>";
                 return os;
             }
