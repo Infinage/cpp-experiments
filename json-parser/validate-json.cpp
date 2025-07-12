@@ -28,7 +28,7 @@ bool validateFile(const std::string &fname) {
 
         // If invalid throws an exception
         try {
-            JSON::JSONNode_Ptr root = JSON::Parser::loads(jsonStr);
+            JSON::JSONNodePtr root = JSON::Parser::loads(jsonStr);
             return true;
         }
 

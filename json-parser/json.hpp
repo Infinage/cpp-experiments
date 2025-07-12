@@ -1,5 +1,4 @@
-#ifndef JSON_HPP
-#define JSON_HPP
+#pragma once
 
 /*
  * Inspiration: https://codingchallenges.fyi/challenges/challenge-json-parser
@@ -28,29 +27,29 @@
 namespace JSON {
 
     // Types of JSON objects
-    enum NODE_TYPE: short {value, array, object};
+    enum class NodeType: short {value, array, object};
 
     // Forward declaration
     class JSONNode;
 
     // Types of JSON Simple values
-    using JSON_SIMPLE_TYPE = std::variant<std::string, std::nullptr_t, long, double, bool>;
+    using JSONSimpleType = std::variant<std::string, std::nullptr_t, long, double, bool>;
 
     // Abstracting shared_ptr + saving some typing effort
-    using JSONNode_Ptr = std::shared_ptr<JSONNode>;
+    using JSONNodePtr = std::shared_ptr<JSONNode>;
 
     // Base class - all 3 JSON objects would have a key.
     // Values are handled differently as per object type
     class JSONNode {
         private:
             std::string key;
-            NODE_TYPE type;
+            NodeType type;
 
         public:
-            JSONNode(const std::string &k, NODE_TYPE t):
+            JSONNode(const std::string &k, const NodeType &t):
                 key(k), type(t) {};
 
-            NODE_TYPE getType() {
+            NodeType getType() {
                 return type;
             }
 
@@ -67,15 +66,15 @@ namespace JSON {
     // Key is optional - if blank set it as empty
     class JSONValueNode: public JSONNode {
         private:
-            JSON_SIMPLE_TYPE value;
+            JSONSimpleType value;
 
         public:
-            JSONValueNode(const JSON_SIMPLE_TYPE &v): JSONNode("", NODE_TYPE::value), value(v) {};
+            JSONValueNode(const JSONSimpleType &v): JSONNode("", NodeType::value), value(v) {};
 
-            JSONValueNode(const std::string &k, const JSON_SIMPLE_TYPE &v):
-                JSONNode(k, NODE_TYPE::value), value(v) {};
+            JSONValueNode(const std::string &k, const JSONSimpleType &v):
+                JSONNode(k, NodeType::value), value(v) {};
 
-            JSON_SIMPLE_TYPE &getValue() {
+            JSONSimpleType &getValue() {
                 return value;
             }
     };
@@ -85,39 +84,39 @@ namespace JSON {
     // Similar to JSONValueNode, key is optional and set to empty string if not set
     class JSONArrayNode: public JSONNode {
         private:
-            std::vector<JSONNode_Ptr> values;
+            std::vector<JSONNodePtr> values;
 
         public:
-            JSONArrayNode(const std::string &k): JSONNode(k, NODE_TYPE::array) {};
-            JSONArrayNode(const std::string &k, std::vector<JSONNode_Ptr> &v): JSONNode(k, NODE_TYPE::array), values(v) {};
-            JSONArrayNode(std::vector<JSONNode_Ptr> &v): JSONNode("", NODE_TYPE::array), values(v) {};
+            JSONArrayNode(const std::string &k): JSONNode(k, NodeType::array) {};
+            JSONArrayNode(const std::string &k, std::vector<JSONNodePtr> &v): JSONNode(k, NodeType::array), values(v) {};
+            JSONArrayNode(std::vector<JSONNodePtr> &v): JSONNode("", NodeType::array), values(v) {};
 
             std::size_t size() {
                 return values.size();
             }
 
-            void push(JSONNode_Ptr node) {
+            void push(JSONNodePtr node) {
                 values.push_back(node);
             }
 
-            JSONNode_Ptr pop() {
-                JSONNode_Ptr result = values.back();
+            JSONNodePtr pop() {
+                JSONNodePtr result = values.back();
                 values.pop_back();
                 return result;
             }
 
-            JSONNode_Ptr &operator[] (std::size_t idx) {
+            JSONNodePtr &operator[] (std::size_t idx) {
                 if (idx < values.size())
                     return values[idx];
                 else
                     throw std::invalid_argument("Out of bounds");
             }
 
-            // Iterators to do a `for (JSONNode_Ptr &ptr: arr_) {}`
-            std::vector<JSONNode_Ptr>::iterator begin() { return values.begin(); }
-            std::vector<JSONNode_Ptr>::iterator end() { return values.end(); }
-            std::vector<JSONNode_Ptr>::const_iterator cbegin() const { return values.cbegin(); }
-            std::vector<JSONNode_Ptr>::const_iterator cend() const { return values.cend(); }
+            // Iterators to do a `for (JSONNodePtr &ptr: arr_) {}`
+            std::vector<JSONNodePtr>::iterator begin() { return values.begin(); }
+            std::vector<JSONNodePtr>::iterator end() { return values.end(); }
+            std::vector<JSONNodePtr>::const_iterator cbegin() const { return values.cbegin(); }
+            std::vector<JSONNodePtr>::const_iterator cend() const { return values.cend(); }
     };
 
     // Similar to JSONArrayNode, diff being in how its children would be rendered
@@ -125,11 +124,11 @@ namespace JSON {
     // We disallow duplicate key entries as is typical for any dictionary like data structure
     class JSONObjectNode: public JSONNode {
         private:
-            std::vector<JSONNode_Ptr> values;
+            std::vector<JSONNodePtr> values;
 
-            bool checkDuplicates(std::vector<JSONNode_Ptr> &v) {
-                std::unordered_set<JSON_SIMPLE_TYPE> st;
-                for (JSONNode_Ptr &ele: v) {
+            bool checkDuplicates(std::vector<JSONNodePtr> &v) {
+                std::unordered_set<JSONSimpleType> st;
+                for (JSONNodePtr &ele: v) {
                     if (st.find(ele->getKey()) != st.end())
                         return false;
                     else
@@ -139,15 +138,15 @@ namespace JSON {
             }
 
         public:
-            JSONObjectNode(const std::string &k): JSONNode(k, NODE_TYPE::object) {};
+            JSONObjectNode(const std::string &k): JSONNode(k, NodeType::object) {};
 
-            JSONObjectNode(std::vector<JSONNode_Ptr> &v): JSONNode("", NODE_TYPE::object) {
+            JSONObjectNode(std::vector<JSONNodePtr> &v): JSONNode("", NodeType::object) {
                 if (!checkDuplicates(v))
                     throw std::invalid_argument("Duplicate key found");
                 values = v;
             }
 
-            JSONObjectNode(const std::string &k, std::vector<JSONNode_Ptr> &v): JSONNode(k, NODE_TYPE::object) {
+            JSONObjectNode(const std::string &k, std::vector<JSONNodePtr> &v): JSONNode(k, NodeType::object) {
                 // Check for duplicates in one shot before assigning the values O(N)
                 if (!checkDuplicates(v))
                     throw std::invalid_argument("Duplicate key found");
@@ -158,7 +157,7 @@ namespace JSON {
                 return values.size();
             }
 
-            void push(JSONNode_Ptr node) {
+            void push(JSONNodePtr node) {
                 auto it = find(node->getKey());
                 if (it == values.end())
                     values.push_back(node);
@@ -166,8 +165,8 @@ namespace JSON {
                     values[(std::size_t)(it - values.begin())] = node;
             }
 
-            std::vector<JSONNode_Ptr>::iterator find(std::string &k) {
-                for (std::vector<JSONNode_Ptr>::iterator it = values.begin(); it < values.end(); it++) {
+            std::vector<JSONNodePtr>::iterator find(std::string &k) {
+                for (std::vector<JSONNodePtr>::iterator it = values.begin(); it < values.end(); it++) {
                     if ((*it)->getKey() == k)
                         return it;
                 }
@@ -176,7 +175,7 @@ namespace JSON {
 
             // Access by keys (strings)
             // Much slower than traditional dict objects since we iterate sequentially - O(N)
-            JSONNode_Ptr &operator[] (std::string &&k) {
+            JSONNodePtr &operator[] (std::string &&k) {
                 auto it = find(k);
                 if (it != values.end())
                     return *it;
@@ -185,26 +184,26 @@ namespace JSON {
             }
 
             // Iterators - similar to what we have for Array Objects
-            std::vector<JSONNode_Ptr>::iterator begin() { return values.begin(); }
-            std::vector<JSONNode_Ptr>::iterator end() { return values.end(); }
-            std::vector<JSONNode_Ptr>::const_iterator cbegin() const { return values.cbegin(); }
-            std::vector<JSONNode_Ptr>::const_iterator cend() const { return values.cend(); }
+            std::vector<JSONNodePtr>::iterator begin() { return values.begin(); }
+            std::vector<JSONNodePtr>::iterator end() { return values.end(); }
+            std::vector<JSONNodePtr>::const_iterator cbegin() const { return values.cbegin(); }
+            std::vector<JSONNodePtr>::const_iterator cend() const { return values.cend(); }
     };
 
     // Helper to make node creation easier
     // Using RValue reference to avoid need to create objects and then pass by reference
     namespace helper {
         // Simple Node
-        JSONNode_Ptr createNode(JSON_SIMPLE_TYPE &&value) { return std::make_shared<JSONValueNode>(value); }
-        JSONNode_Ptr createNode(std::string &&key, JSON_SIMPLE_TYPE &&value) { return std::make_shared<JSONValueNode>(key, value); }
+        inline JSONNodePtr createNode(JSONSimpleType &&value) { return std::make_shared<JSONValueNode>(value); }
+        inline JSONNodePtr createNode(std::string &&key, JSONSimpleType &&value) { return std::make_shared<JSONValueNode>(key, value); }
 
         // Creating Arrays
-        JSONNode_Ptr createArray(std::vector<JSONNode_Ptr> &&values) { return std::make_shared<JSONArrayNode>(values); }
-        JSONNode_Ptr createArray(std::string &&key, std::vector<JSONNode_Ptr> &&values) { return std::make_shared<JSONArrayNode>(key, values); }
+        inline JSONNodePtr createArray(std::vector<JSONNodePtr> &&values) { return std::make_shared<JSONArrayNode>(values); }
+        inline JSONNodePtr createArray(std::string &&key, std::vector<JSONNodePtr> &&values) { return std::make_shared<JSONArrayNode>(key, values); }
 
         // Creating Objects
-        JSONNode_Ptr createObject(std::vector<JSONNode_Ptr> &&values) { return std::make_shared<JSONObjectNode>(values); }
-        JSONNode_Ptr createObject(std::string &&key, std::vector<JSONNode_Ptr> &&values) { return std::make_shared<JSONObjectNode>(key, values); }
+        inline JSONNodePtr createObject(std::vector<JSONNodePtr> &&values) { return std::make_shared<JSONObjectNode>(values); }
+        inline JSONNodePtr createObject(std::string &&key, std::vector<JSONNodePtr> &&values) { return std::make_shared<JSONObjectNode>(key, values); }
 
         // Helper function to prettify a JSON dump string
         inline std::string pretty(std::string &jsonDump) {
@@ -225,7 +224,7 @@ namespace JSON {
         }
 
         // Helper function to format JSON_SIMPLE_TYPEs to String
-        inline std::string simple_format (JSON_SIMPLE_TYPE &v) {
+        inline std::string simple_format (JSONSimpleType &v) {
             // String
             if (std::holds_alternative<std::string>(v))
                 return "\"" + std::get<std::string>(v) + "\"";
@@ -248,7 +247,7 @@ namespace JSON {
         }
 
         // Helper function to parse string into JSON Simple Type objects
-        inline JSON_SIMPLE_TYPE simple_parse(std::string &token) {
+        inline JSONSimpleType simple_parse(std::string &token) {
             // Compute the number of digits in the string to determine
             // if it could be an long or a double
             std::vector<bool> isDigit;
@@ -321,7 +320,7 @@ namespace JSON {
     class Parser {
         public:
             // Load from a string in memory into JSON
-            static JSONNode_Ptr loads(std::string &raw) {
+            static JSONNodePtr loads(std::string &raw) {
 
                 std::unordered_set<char> 
                     // List of special characters that seperate the individual tokens
@@ -332,7 +331,7 @@ namespace JSON {
 
                 // Capture what opening brace we encountered while keeping track of position
                 std::stack<std::pair<char, std::size_t>> validateStk;
-                std::stack<std::variant<std::string, JSONNode_Ptr>> tokens;
+                std::stack<std::variant<std::string, JSONNodePtr>> tokens;
                 std::string acc{""};
                 bool processingString = false, currCharEscaped = false;
 
@@ -392,13 +391,13 @@ namespace JSON {
                         else if (ch == '}' || ch == ']') { 
                             auto [prevCh, startPos] = validateStk.top();
                             validateStk.pop();
-                            std::vector<JSONNode_Ptr> values;
+                            std::vector<JSONNodePtr> values;
                             while (tokens.size() > startPos) {
-                                std::variant<std::string, JSONNode_Ptr>& valMixed = tokens.top();
+                                std::variant<std::string, JSONNodePtr>& valMixed = tokens.top();
                                 // If we encounter a token that had already been
                                 // processed into a node, push it as is
-                                if (std::holds_alternative<JSONNode_Ptr>(valMixed))
-                                    values.push_back(std::get<JSONNode_Ptr>(valMixed));
+                                if (std::holds_alternative<JSONNodePtr>(valMixed))
+                                    values.push_back(std::get<JSONNodePtr>(valMixed));
 
                                 // String token - needs processing
                                 else
@@ -447,9 +446,9 @@ namespace JSON {
 
                 if (
                         commasExpected == commas && colonsExpected == colons && acc.size() == 0 &&
-                        tokens.size() == 1 && std::holds_alternative<JSONNode_Ptr>(tokens.top())
+                        tokens.size() == 1 && std::holds_alternative<JSONNodePtr>(tokens.top())
                     )
-                    return std::get<JSONNode_Ptr>(tokens.top());
+                    return std::get<JSONNodePtr>(tokens.top());
                 else
                     throw std::logic_error("Invalid JSON");
             }
@@ -459,22 +458,22 @@ namespace JSON {
             // Regardless we display what is present if the node is contained inside
             // an object. We hide what is present when the parent is an array
             // Recursive function for simplicity :)
-            static std::string dumps(JSONNode_Ptr root, bool ignoreKeys = true) {
+            static std::string dumps(JSONNodePtr root, bool ignoreKeys = true) {
                 if (root == nullptr)
                     return "";
 
                 else {
                     std::string keyStr = {ignoreKeys? "": "\"" + root->getKey() + "\": "};
 
-                    if (root->getType() == NODE_TYPE::value) {
+                    if (root->getType() == NodeType::value) {
                         JSONValueNode &v = static_cast<JSONValueNode&>(*root);
                         return keyStr + helper::simple_format(v.getValue());
                     }
 
-                    else if (root->getType() == NODE_TYPE::array) {
+                    else if (root->getType() == NodeType::array) {
                         std::string result {keyStr + "["};
                         JSONArrayNode &v = static_cast<JSONArrayNode&>(*root);
-                        for (JSONNode_Ptr nxt: v)
+                        for (JSONNodePtr nxt: v)
                             result += dumps(nxt, true) + ", ";
 
                         if (v.size() > 0) {
@@ -488,7 +487,7 @@ namespace JSON {
                     else {
                         std::string result {keyStr + "{"};
                         JSONObjectNode &v = static_cast<JSONObjectNode&>(*root);
-                        for (JSONNode_Ptr nxt: v)
+                        for (JSONNodePtr nxt: v)
                             result += dumps(nxt, false) + ", ";
                         if (v.size() > 0) {
                             result.pop_back();
@@ -501,5 +500,3 @@ namespace JSON {
             }
     };
 }
-
-#endif

@@ -14,7 +14,7 @@ int main() {
     // Before manipulation
     std::cout << "Original ->\n" << raw << "\n";
 
-    JSON::JSONNode_Ptr root {JSON::Parser::loads(raw)};
+    JSON::JSONNodePtr root {JSON::Parser::loads(raw)};
     
     // Cast root into Object node
     JSON::JSONObjectNode &rootObj {static_cast<JSON::JSONObjectNode&>(*root)};
