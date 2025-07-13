@@ -38,12 +38,15 @@ class forward_list {
                 Iterator() = default;
                 Iterator(Node *ptr): curr{ptr} {}
 
+
+                // Note: we return be ref
                 Iterator &operator++() {
                     curr = curr->next;
                     return *this;
                 }
 
-                Iterator &operator++(int) {
+                // Note: we return by value
+                Iterator operator++(int) {
                     auto temp {*this};
                     operator++();
                     return temp;
@@ -72,7 +75,7 @@ class forward_list {
         using const_iterator = Iterator<const T>;
 
         // Basic functions
-        auto front(this auto &&self) { 
+        auto &front(this auto &&self) { 
             if (self.empty()) [[unlikely]] 
                 throw std::out_of_range{"Empty List"};
             return self.head->value; 
@@ -159,8 +162,10 @@ class forward_list {
             --nElems;
         }
 
-        iterator insert_after(iterator pos, const_reference value) {
-            Node *node {new Node{value}};   
+        iterator insert_after(iterator pos, auto &&value)
+        requires(std::is_constructible_v<T, std::remove_cvref_t<decltype(value)>>)
+        {
+            Node *node {new Node{std::forward<decltype(value)>(value)}};   
             node->next = std::exchange(pos.curr->next, node);
             ++nElems;
             return iterator{node};
