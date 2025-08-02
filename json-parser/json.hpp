@@ -17,6 +17,7 @@
 #include <iterator>
 #include <memory>
 #include <numeric>
+#include <sstream>
 #include <stack>
 #include <stdexcept>
 #include <string>
@@ -74,9 +75,8 @@ namespace JSON {
             JSONValueNode(const std::string &k, const JSONSimpleType &v):
                 JSONNode(k, NodeType::value), value(v) {};
 
-            JSONSimpleType &getValue() {
-                return value;
-            }
+            JSONSimpleType &getValue() { return value; }
+            void setValue(const JSONSimpleType &val) { value = val; }
     };
 
     // Array of JSONNodes (could be any of the 3 object types)
@@ -88,8 +88,8 @@ namespace JSON {
 
         public:
             JSONArrayNode(const std::string &k): JSONNode(k, NodeType::array) {};
-            JSONArrayNode(const std::string &k, std::vector<JSONNodePtr> &v): JSONNode(k, NodeType::array), values(v) {};
-            JSONArrayNode(std::vector<JSONNodePtr> &v): JSONNode("", NodeType::array), values(v) {};
+            JSONArrayNode(const std::string &k, const std::vector<JSONNodePtr> &v): JSONNode(k, NodeType::array), values(v) {};
+            JSONArrayNode(const std::vector<JSONNodePtr> &v): JSONNode("", NodeType::array), values(v) {};
 
             std::size_t size() {
                 return values.size();
@@ -126,9 +126,9 @@ namespace JSON {
         private:
             std::vector<JSONNodePtr> values;
 
-            bool checkDuplicates(std::vector<JSONNodePtr> &v) {
+            bool checkDuplicates(const std::vector<JSONNodePtr> &v) {
                 std::unordered_set<JSONSimpleType> st;
-                for (JSONNodePtr &ele: v) {
+                for (const JSONNodePtr &ele: v) {
                     if (st.find(ele->getKey()) != st.end())
                         return false;
                     else
@@ -140,20 +140,20 @@ namespace JSON {
         public:
             JSONObjectNode(const std::string &k): JSONNode(k, NodeType::object) {};
 
-            JSONObjectNode(std::vector<JSONNodePtr> &v): JSONNode("", NodeType::object) {
+            JSONObjectNode(const std::vector<JSONNodePtr> &v): JSONNode("", NodeType::object) {
                 if (!checkDuplicates(v))
                     throw std::invalid_argument("Duplicate key found");
                 values = v;
             }
 
-            JSONObjectNode(const std::string &k, std::vector<JSONNodePtr> &v): JSONNode(k, NodeType::object) {
+            JSONObjectNode(const std::string &k, const std::vector<JSONNodePtr> &v): JSONNode(k, NodeType::object) {
                 // Check for duplicates in one shot before assigning the values O(N)
                 if (!checkDuplicates(v))
                     throw std::invalid_argument("Duplicate key found");
                 values = v;
             }
 
-            std::size_t size() {
+            std::size_t size() const {
                 return values.size();
             }
 
@@ -165,7 +165,7 @@ namespace JSON {
                     values[(std::size_t)(it - values.begin())] = node;
             }
 
-            std::vector<JSONNodePtr>::iterator find(std::string &k) {
+            std::vector<JSONNodePtr>::iterator find(const std::string &k) {
                 for (std::vector<JSONNodePtr>::iterator it = values.begin(); it < values.end(); it++) {
                     if ((*it)->getKey() == k)
                         return it;
@@ -175,7 +175,7 @@ namespace JSON {
 
             // Access by keys (strings)
             // Much slower than traditional dict objects since we iterate sequentially - O(N)
-            JSONNodePtr &operator[] (std::string &&k) {
+            JSONNodePtr &operator[] (const std::string &k) {
                 auto it = find(k);
                 if (it != values.end())
                     return *it;
@@ -194,26 +194,28 @@ namespace JSON {
     // Using RValue reference to avoid need to create objects and then pass by reference
     namespace helper {
         // Simple Node
-        inline JSONNodePtr createNode(JSONSimpleType &&value) { return std::make_shared<JSONValueNode>(value); }
-        inline JSONNodePtr createNode(std::string &&key, JSONSimpleType &&value) { return std::make_shared<JSONValueNode>(key, value); }
+        inline JSONNodePtr createNode(const JSONSimpleType &value) { return std::make_shared<JSONValueNode>(value); }
+        inline JSONNodePtr createNode(const std::string &key, const JSONSimpleType &value) { return std::make_shared<JSONValueNode>(key, value); }
 
         // Creating Arrays
-        inline JSONNodePtr createArray(std::vector<JSONNodePtr> &&values) { return std::make_shared<JSONArrayNode>(values); }
-        inline JSONNodePtr createArray(std::string &&key, std::vector<JSONNodePtr> &&values) { return std::make_shared<JSONArrayNode>(key, values); }
+        inline JSONNodePtr createArray(const std::vector<JSONNodePtr> &values) { return std::make_shared<JSONArrayNode>(values); }
+        inline JSONNodePtr createArray(const std::string &key, const std::vector<JSONNodePtr> &values) { return std::make_shared<JSONArrayNode>(key, values); }
 
         // Creating Objects
-        inline JSONNodePtr createObject(std::vector<JSONNodePtr> &&values) { return std::make_shared<JSONObjectNode>(values); }
-        inline JSONNodePtr createObject(std::string &&key, std::vector<JSONNodePtr> &&values) { return std::make_shared<JSONObjectNode>(key, values); }
+        inline JSONNodePtr createObject(const std::vector<JSONNodePtr> &values) { return std::make_shared<JSONObjectNode>(values); }
+        inline JSONNodePtr createObject(const std::string &key, const std::vector<JSONNodePtr> &values) { return std::make_shared<JSONObjectNode>(key, values); }
 
         // Helper function to prettify a JSON dump string
-        inline std::string pretty(std::string &jsonDump) {
+        inline std::string pretty(const std::string &jsonDump) {
             // Levels to keep track of how tabs to indent
-            std::size_t levels {0};
-            std::string result{""};
+            std::size_t levels {0}; std::string result{""};
+            bool insideQuote {false};
             for (char ch: jsonDump) {
-                if (ch == '{' || ch == '[')
+                if (ch == '"' && (result.empty() || result.back() != '\\')) 
+                    insideQuote = !insideQuote;
+                else if (!insideQuote && (ch == '{' || ch == '['))
                     result += std::string(1, ch) + "\n" + std::string(++levels, '\t');
-                else if (ch == ']' || ch == '}')
+                else if (!insideQuote && (ch == ']' || ch == '}'))
                     result += "\n" + std::string(--levels, '\t') + std::string(1, ch);
                 else if (ch == ',')
                     result += std::string(1, ch) + "\n" + std::string(levels, '\t');
@@ -224,10 +226,19 @@ namespace JSON {
         }
 
         // Helper function to format JSON_SIMPLE_TYPEs to String
-        inline std::string simple_format (JSONSimpleType &v) {
+        inline std::string simple_format (const JSONSimpleType &v) {
             // String
-            if (std::holds_alternative<std::string>(v))
-                return "\"" + std::get<std::string>(v) + "\"";
+            if (std::holds_alternative<std::string>(v)) {
+                auto val {std::get<std::string>(v)};
+                std::string escaped {}; auto quoteCount {std::count(val.begin(), val.end(), '"')};
+                escaped.reserve(val.size() + static_cast<std::size_t>(2 * quoteCount));
+                std::for_each(val.begin(), val.end(), 
+                [&escaped](char ch){ 
+                    if (ch == '"') escaped.push_back('\\');
+                    escaped.push_back(ch);
+                });
+                return "\"" + escaped + "\"";
+            }
 
             // NULLPTR
             else if (std::holds_alternative<std::nullptr_t>(v))
@@ -247,7 +258,7 @@ namespace JSON {
         }
 
         // Helper function to parse string into JSON Simple Type objects
-        inline JSONSimpleType simple_parse(std::string &token) {
+        inline JSONSimpleType simple_parse(const std::string &token) {
             // Compute the number of digits in the string to determine
             // if it could be an long or a double
             std::vector<bool> isDigit;
@@ -260,7 +271,7 @@ namespace JSON {
             std::invalid_argument error = std::invalid_argument("Invalid value: " + token);
 
             // Check if leading zeros exist in a long or a double
-            auto leadingZeros = [] (std::string &tok) -> bool {
+            auto leadingZeros = [] (const std::string &tok) -> bool {
                 std::size_t firstDigit = tok.find_first_of("0123456789");
                 return (tok[firstDigit] == '0' && firstDigit + 1 < tok.size() && std::isdigit(tok[firstDigit + 1]));
             };
@@ -458,12 +469,13 @@ namespace JSON {
             // Regardless we display what is present if the node is contained inside
             // an object. We hide what is present when the parent is an array
             // Recursive function for simplicity :)
-            static std::string dumps(JSONNodePtr root, bool ignoreKeys = true) {
+            static std::string dumps(JSONNodePtr root, bool showEmptyKeys = false) {
                 if (root == nullptr)
                     return "";
 
                 else {
-                    std::string keyStr = {ignoreKeys? "": "\"" + root->getKey() + "\": "};
+                    std::string keyStr = {!root->getKey().empty() || showEmptyKeys? 
+                        "\"" + root->getKey() + "\": ": ""};
 
                     if (root->getType() == NodeType::value) {
                         JSONValueNode &v = static_cast<JSONValueNode&>(*root);
@@ -474,7 +486,7 @@ namespace JSON {
                         std::string result {keyStr + "["};
                         JSONArrayNode &v = static_cast<JSONArrayNode&>(*root);
                         for (JSONNodePtr nxt: v)
-                            result += dumps(nxt, true) + ", ";
+                            result += dumps(nxt, showEmptyKeys) + ", ";
 
                         if (v.size() > 0) {
                             result.pop_back();
@@ -488,7 +500,7 @@ namespace JSON {
                         std::string result {keyStr + "{"};
                         JSONObjectNode &v = static_cast<JSONObjectNode&>(*root);
                         for (JSONNodePtr nxt: v)
-                            result += dumps(nxt, false) + ", ";
+                            result += dumps(nxt, showEmptyKeys) + ", ";
                         if (v.size() > 0) {
                             result.pop_back();
                             result.pop_back();
