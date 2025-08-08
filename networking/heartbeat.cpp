@@ -16,8 +16,7 @@ static std::atomic<bool> SERVER_RUNNING {true};
 // Helper to close connections and exit
 void exitWithError(std::string_view msg, int server = -1) {
     std::cerr << "Error: " << msg << '\n';
-    close(server);
-    std::exit(1);
+    close(server); std::exit(1);
 }
 
 // Helper to set server into non blocking mode
@@ -71,41 +70,31 @@ int main(int argc, char **argv) {
         while (SERVER_RUNNING) {
             int pollResult {poll(pollFDs.data(), pollFDs.size(), -1)};
 
+            // Poll failed
             if (pollResult == -1) {
                 if (errno == EINTR) continue;
-                for (auto &client: pollFDs) close(client.fd);
                 exitWithError("Poll failed.", serverSocket);
             }
 
-            for (std::size_t i {0}; i < pollFDs.size(); ++i) {
-                // Accept an incomming connection
-                if ((pollFDs[i].revents & POLLIN) && (pollFDs[i].fd == serverSocket)) {
-                    int clientSocket {accept(serverSocket, nullptr, nullptr)};
-                    // Skip incomming if server stopped or client is invalid
-                    if (clientSocket == -1 || !SERVER_RUNNING) close(clientSocket);
+            // Accept an incomming connection
+            if (pollFDs[0].revents & POLLIN) {
+                int clientSocket {accept(serverSocket, nullptr, nullptr)};
 
-                    // Set client to nonblocking mode
-                    else if (!setNonBlocking(clientSocket)) close(clientSocket);
+                // Skip incomming if server stopped or client is invalid
+                if (clientSocket == -1 || !SERVER_RUNNING) close(clientSocket);
 
-                    // Onboard the client if everything is good
-                    else pollFDs.push_back({clientSocket, POLLOUT, 0});
-                }
+                // Set client to nonblocking mode
+                else if (!setNonBlocking(clientSocket)) close(clientSocket);
 
-                // Send data to client when it is ready to recv and remove the client
-                else if ((pollFDs[i].revents & POLLOUT) && (pollFDs[i].fd != serverSocket)) {
-                    int clientSocket {pollFDs[i].fd};
+                // Send message to client and close the connection
+                else {
                     send(clientSocket, response.data(), response.size(), 0);
                     close(clientSocket);
-                    pollFDs[i] = pollFDs.back();
-                    pollFDs.pop_back();
-                    --i;
                 }
             }
         }
         
         // Cleanup
-        for (auto client: pollFDs) close(client.fd);
-        close(serverSocket);
-        std::cout << '\n';
+        close(serverSocket); std::cout << '\n';
     }
 }
