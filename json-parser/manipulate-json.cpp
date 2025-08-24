@@ -14,11 +14,10 @@ int main() {
     // Before manipulation
     std::cout << "Original ->\n" << raw << "\n";
 
-    JSON::JSONNodePtr root {JSON::Parser::loads(raw)};
+    JSON::JSONHandle root {JSON::Parser::loads(raw)};
     
     // Cast root into Object node
-    JSON::JSONObjectNode &rootObj {static_cast<JSON::JSONObjectNode&>(*root)};
-    JSON::JSONObjectNode &childObj {static_cast<JSON::JSONObjectNode&>(*rootObj["JSON Test Pattern pass3"])};
+    auto &childObj {root["JSON Test Pattern pass3"].cast<JSON::JSONObjectNode>()};
     childObj.setKey("Modify JSON");
     childObj.push(JSON::helper::createNode("But it could have", "been an array as well"));
 

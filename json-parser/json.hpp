@@ -17,7 +17,6 @@
 #include <iterator>
 #include <memory>
 #include <numeric>
-#include <sstream>
 #include <stack>
 #include <stdexcept>
 #include <string>
@@ -70,6 +69,9 @@ namespace JSON {
             JSONSimpleType value;
 
         public:
+            friend struct JSONHandle;
+            static constexpr NodeType staticType {NodeType::value};
+
             JSONValueNode(const JSONSimpleType &v): JSONNode("", NodeType::value), value(v) {};
 
             JSONValueNode(const std::string &k, const JSONSimpleType &v):
@@ -87,6 +89,9 @@ namespace JSON {
             std::vector<JSONNodePtr> values;
 
         public:
+            friend struct JSONHandle;
+            static constexpr NodeType staticType {NodeType::array};
+
             JSONArrayNode(const std::string &k): JSONNode(k, NodeType::array) {};
             JSONArrayNode(const std::string &k, const std::vector<JSONNodePtr> &v): JSONNode(k, NodeType::array), values(v) {};
             JSONArrayNode(const std::vector<JSONNodePtr> &v): JSONNode("", NodeType::array), values(v) {};
@@ -105,9 +110,9 @@ namespace JSON {
                 return result;
             }
 
-            JSONNodePtr &operator[] (std::size_t idx) {
+            JSONNode &operator[] (std::size_t idx) {
                 if (idx < values.size())
-                    return values[idx];
+                    return *values[idx];
                 else
                     throw std::invalid_argument("Out of bounds");
             }
@@ -138,6 +143,9 @@ namespace JSON {
             }
 
         public:
+            friend struct JSONHandle;
+            static constexpr NodeType staticType {NodeType::object};
+
             JSONObjectNode(const std::string &k): JSONNode(k, NodeType::object) {};
 
             JSONObjectNode(const std::vector<JSONNodePtr> &v): JSONNode("", NodeType::object) {
@@ -175,12 +183,12 @@ namespace JSON {
 
             // Access by keys (strings)
             // Much slower than traditional dict objects since we iterate sequentially - O(N)
-            JSONNodePtr &operator[] (const std::string &k) {
+            JSONNode &operator[] (const std::string &k) {
                 auto it = find(k);
                 if (it != values.end())
-                    return *it;
+                    return **it;
                 else
-                    throw std::invalid_argument("Key not found: ");
+                    throw std::invalid_argument("Key not found: " + k);
             }
 
             // Iterators - similar to what we have for Array Objects
@@ -188,6 +196,52 @@ namespace JSON {
             std::vector<JSONNodePtr>::iterator end() { return values.end(); }
             std::vector<JSONNodePtr>::const_iterator cbegin() const { return values.cbegin(); }
             std::vector<JSONNodePtr>::const_iterator cend() const { return values.cend(); }
+    };
+
+    /*
+     * A convenience wrapper to support dynamically overloaded operators
+     */
+    struct JSONHandle {
+        JSONNodePtr ptr;
+
+        NodeType getType() const { return ptr->getType(); }
+        JSONHandle(JSONNodePtr ptr): ptr{ptr} {}
+
+        JSONHandle operator[](this auto &&self, const std::size_t idx) {
+            if (self.ptr->getType() != NodeType::array)
+                throw std::runtime_error{"Node is not an array, tried to index: " + std::to_string(idx)};
+
+            // Directly read from the values and return the underlying shared_ptr
+            return static_cast<JSONArrayNode*>(self.ptr)->values[idx];
+        }
+
+        JSONHandle operator[](this auto &&self, const std::string &key) {
+            if (self.ptr->getType() != NodeType::object)
+                throw std::runtime_error{"Node is not an object, tried to index: " + key};
+
+            // Directly read from the values and return the underlying shared_ptr
+            auto &obj {static_cast<JSONObjectNode&>(*self.ptr)};
+            auto it {obj.find(key)};
+            if (it != obj.values.end()) return *it;
+            else throw std::invalid_argument("Key not found: " + key);
+        }
+
+        template<typename VariantType>
+        auto to() const {
+            if (ptr->getType() != NodeType::value)
+                throw std::runtime_error{"Node is not an simple type"};
+
+            auto &value {static_cast<JSONValueNode&>(*ptr).value};
+            if (!std::holds_alternative<VariantType>(value))
+                throw std::invalid_argument("Variant type expected doesn't match with what is available");
+            return std::get<VariantType>(value);
+        }
+
+        template<typename T>
+        decltype(auto) cast() requires(std::is_base_of_v<JSONNode, T>) {
+            if (getType() != T::staticType) throw std::runtime_error{"Invalid Cast"};
+            return static_cast<T&>(*ptr);
+        }
     };
 
     // Helper to make node creation easier
@@ -331,7 +385,7 @@ namespace JSON {
     class Parser {
         public:
             // Load from a string in memory into JSON
-            static JSONNodePtr loads(std::string &raw) {
+            static JSONHandle loads(const std::string &raw) {
 
                 std::unordered_set<char> 
                     // List of special characters that seperate the individual tokens
@@ -469,10 +523,11 @@ namespace JSON {
             // Regardless we display what is present if the node is contained inside
             // an object. We hide what is present when the parent is an array
             // Recursive function for simplicity :)
-            static std::string dumps(JSONNodePtr root, bool showEmptyKeys = false) {
-                if (root == nullptr)
-                    return "";
+            static std::string dumps(JSONHandle root_, bool showEmptyKeys = false) {
+                // Get underlying pointer
+                JSONNodePtr root {root_.ptr};
 
+                if (root == nullptr) return "";
                 else {
                     std::string keyStr = {!root->getKey().empty() || showEmptyKeys? 
                         "\"" + root->getKey() + "\": ": ""};

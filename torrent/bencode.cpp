@@ -1,3 +1,5 @@
+// https://allenkim67.github.io/programming/2016/05/04/how-to-make-your-own-bittorrent-client.html
+// https://blog.jse.li/posts/torrent/
 #include "../json-parser/json.hpp"
 #include <cassert>
 #include <fstream>
@@ -50,7 +52,7 @@ namespace Bencode {
         }
     }
 
-    JSON::JSONNodePtr decode(const std::string &encoded, bool ignoreSpaces = true) {
+    JSON::JSONHandle decode(const std::string &encoded, bool ignoreSpaces = true) {
         // Extract top and insert it into its ancestor
         auto extract_Push_to_ancestor { [](std::stack<JSON::JSONNodePtr> &stk) { 
             assert(stk.size() > 1);
@@ -178,35 +180,16 @@ namespace Bencode {
 }
 
 int main() {
-    /*
-    JSON::JSONNodePtr root {
-            JSON::helper::createObject({
-            JSON::helper::createNode("announce", "http://bttracker.debian.org:6969/announce"), 
-            JSON::helper::createNode("comment", "Debian CD from cdimage.debian.org"), 
-            JSON::helper::createNode("creation date", 1573903810),
-            JSON::helper::createObject("info", {
-                JSON::helper::createNode("length", 351272960),
-                JSON::helper::createNode("name", "debian-10.2.0-amd64-netinst.iso"),
-                JSON::helper::createNode("piece length", 262144),
-                JSON::helper::createNode("pieces", "......."),
-            })
-        })
-    };
-
-    const std::string encoded {Bencode::encode(root)};
-    std::cout << JSON::helper::pretty(JSON::Parser::dumps(root)) << "\n\n";
-    std::cout << encoded << "\n\n";
-    std::cout << JSON::helper::pretty(JSON::Parser::dumps(Bencode::decode(encoded))) << "\n\n";
-    */
-
-    ///*
+    // Read the torrent file
     std::ifstream ifs {"alpine.iso.torrent", std::ios::binary};
-    std::ostringstream oss;
-    oss << ifs.rdbuf();
-    std::string encoded {oss.str()};
-    auto rootPtr {Bencode::decode(encoded)};
-    std::string decoded {JSON::Parser::dumps(rootPtr)};
-    std::cout << decoded << '\n';
-    std::cout << JSON::helper::pretty(decoded) << "\n\n";
-    //*/
+    std::ostringstream oss; oss << ifs.rdbuf();
+    auto root {Bencode::decode(oss.str())};
+
+    // Parse the required fields
+    auto url {root["announce"].to<std::string>()};
+    auto pieceLen {root["info"]["piece length"].to<long>()}; 
+
+    // Output to user
+    std::cout << "URL: " << url << '\n';
+    std::cout << "Piece length: " << pieceLen << '\n';
 }

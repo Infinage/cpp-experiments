@@ -1,6 +1,5 @@
 #include <algorithm>
 #include <chrono>
-#include <exception>
 #include <format>
 #include <iostream>
 #include <fstream>
@@ -12,9 +11,7 @@ bool validateFile(const std::string &fname) {
     // Read file
     std::ifstream ifs({fname});
 
-    if (!ifs)
-        return false;
-
+    if (!ifs) return false;
     else {
 
         // Read from file
@@ -27,12 +24,10 @@ bool validateFile(const std::string &fname) {
         std::string jsonStr = raw.str();
 
         // If invalid throws an exception
-        try {
-            JSON::JSONNodePtr root = JSON::Parser::loads(jsonStr);
-            return true;
-        }
-
-        catch (std::exception &e) { return false; }
+        bool status {true};
+        try { JSON::Parser::loads(jsonStr); } 
+        catch (...) { status = false; }
+        return status != std::filesystem::path{fname}.filename().string().starts_with("fail");
     }
 }
 
