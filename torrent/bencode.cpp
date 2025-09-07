@@ -3,7 +3,7 @@
 #include "../json-parser/json.hpp"
 #include <cassert>
 #include <fstream>
-#include <iostream>
+#include <print>
 #include <sstream>
 #include <stack>
 
@@ -179,17 +179,35 @@ namespace Bencode {
     }
 }
 
+namespace Torrent {
+    class TorrentFile {
+        private:
+            std::string announceURL, infoHash;
+            std::array<std::string, 20> pieceHashes;
+            long pieceLen, length;
+            std::string name;
+
+        public:
+            TorrentFile(const std::string_view torrentFP) {
+                // Read from file
+                std::ifstream ifs {torrentFP.data(), std::ios::binary | std::ios::ate};
+                auto size {ifs.tellg()};
+                std::string buffer(static_cast<std::size_t>(size), 0);
+                ifs.seekg(0, std::ios::beg);
+                ifs.read(buffer.data(), size);
+
+                // Read the bencoded torrent file
+                auto root {Bencode::decode(buffer)};
+
+                // Parse the required fields
+                name = root["info"]["name"].to<std::string>();
+                length = root["info"]["length"].to<long>();
+                announceURL = root["announce"].to<std::string>();
+                pieceLen = root["info"]["piece length"].to<long>(); 
+            }
+    };
+};
+
 int main() {
-    // Read the torrent file
-    std::ifstream ifs {"alpine.iso.torrent", std::ios::binary};
-    std::ostringstream oss; oss << ifs.rdbuf();
-    auto root {Bencode::decode(oss.str())};
-
-    // Parse the required fields
-    auto url {root["announce"].to<std::string>()};
-    auto pieceLen {root["info"]["piece length"].to<long>()}; 
-
-    // Output to user
-    std::cout << "URL: " << url << '\n';
-    std::cout << "Piece length: " << pieceLen << '\n';
+    Torrent::TorrentFile torrent{"alpine.iso.torrent"};
 }
