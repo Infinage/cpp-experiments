@@ -1,11 +1,15 @@
 // https://allenkim67.github.io/programming/2016/05/04/how-to-make-your-own-bittorrent-client.html
 // https://blog.jse.li/posts/torrent/
 #include "../json-parser/json.hpp"
+#include "../cryptography/hashlib.hpp"
 #include <cassert>
 #include <fstream>
 #include <print>
+#include <random>
+#include <regex>
 #include <sstream>
 #include <stack>
+#include <stdexcept>
 
 namespace Bencode {
     std::string encode(JSON::JSONNodePtr root) {
@@ -182,13 +186,47 @@ namespace Bencode {
 namespace Torrent {
     class TorrentFile {
         private:
-            std::string announceURL, infoHash;
-            std::array<std::string, 20> pieceHashes;
-            long pieceLen, length;
+            static std::string randString(std::size_t size) {
+                static char chars[] { "0123456789"
+                    "abcdefghijklmnopqrstuvwxyz"
+                    "ABCDEFGHIJKLMNOPQRSTUVWXYZ"};
+                std::mt19937 rng {std::random_device{}()};
+                std::uniform_int_distribution<std::size_t> gen{0, sizeof(chars) - 2};
+                std::string str; str.reserve(size);
+                while (size--) str.push_back(chars[gen(rng)]);
+                return str;
+            }
+
+            static unsigned long extractPortFromURL(const std::string URL) {
+                std::regex portReg {R"EOF(:(\d+))EOF"}; std::smatch match;
+                if (!std::regex_search(URL, match, portReg))
+                    throw std::runtime_error("Unable to extract Port from URL: " + URL);
+                return std::stoul(match[1].str());
+            }
+
+            // Associate a random 20 char long peer id
+            std::string peerID;
+
+            // Extract port from Announce URL
+            unsigned long announcePort;
+
+            // Read from torrent file
+            std::string announceURL;
+            long length, pieceLen;
             std::string name;
 
+            // Process torrent file and store
+            std::size_t numPieces;
+            std::string pieceBlob, infoHash;
+
         public:
-            TorrentFile(const std::string_view torrentFP) {
+            [[nodiscard]] inline std::string_view getPieceHash(std::size_t idx) const {
+                if (idx >= numPieces)
+                    throw std::runtime_error("Piece Hash idx requested out of range");
+                return std::string_view{pieceBlob}.substr(idx * 20, 20);
+            }
+
+            TorrentFile(const std::string_view torrentFP): peerID{randString(20)} {
                 // Read from file
                 std::ifstream ifs {torrentFP.data(), std::ios::binary | std::ios::ate};
                 auto size {ifs.tellg()};
@@ -203,11 +241,28 @@ namespace Torrent {
                 name = root["info"]["name"].to<std::string>();
                 length = root["info"]["length"].to<long>();
                 announceURL = root["announce"].to<std::string>();
+                announcePort = extractPortFromURL(announceURL);
                 pieceLen = root["info"]["piece length"].to<long>(); 
+                pieceBlob = root["info"]["pieces"].to<std::string>();
+                numPieces = pieceBlob.size() / 20;
+
+                // Sanity check on blob validity - can be equally split
+                if (pieceBlob.size() % 20) throw std::runtime_error("Piece blob is corrupted");
+
+                // Reencode just the info dict to compute its sha1 hash
+                infoHash = hashutil::sha1(Bencode::encode(root["info"].ptr));
+            }
+
+            [[nodiscard]] std::string buildTrackerURL() const {
+                return std::format(
+                    "{}?{}={}&{}={}&uploaded=0&downloaded=0&compact=1&left={}", 
+                    announceURL, "info_hash", infoHash, "peer_id", peerID, length
+                );
             }
     };
 };
 
 int main() {
     Torrent::TorrentFile torrent{"alpine.iso.torrent"};
+    std::println("{}", torrent.buildTrackerURL());
 }

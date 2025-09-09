@@ -26,6 +26,11 @@
 
 namespace JSON {
 
+    // Helper to constrain given type exists in variant type
+    template<typename T, typename Variant> struct is_in_variant;
+    template<typename T, typename... Types>
+    struct is_in_variant<T, std::variant<Types...>>: std::disjunction<std::is_same<T, Types>...> {};
+
     // Types of JSON objects
     enum class NodeType: short {value, array, object};
 
@@ -34,6 +39,9 @@ namespace JSON {
 
     // Types of JSON Simple values
     using JSONSimpleType = std::variant<std::string, std::nullptr_t, long, double, bool>;
+
+    // Concept to constrain input type to lie within above types
+    template<typename T> concept JSONSimple = is_in_variant<T, JSONSimpleType>::value;
 
     // Abstracting shared_ptr + saving some typing effort
     using JSONNodePtr = std::shared_ptr<JSONNode>;
@@ -208,32 +216,65 @@ namespace JSON {
         JSONHandle(JSONNodePtr ptr): ptr{ptr} {}
 
         JSONHandle operator[](this auto &&self, const std::size_t idx) {
-            if (self.ptr->getType() != NodeType::array)
-                throw std::runtime_error{"Node is not an array, tried to index: " + std::to_string(idx)};
+            // Check if type is indeed an array
+            if (!self.ptr || self.ptr->getType() != NodeType::array) 
+                return {nullptr};
 
-            // Directly read from the values and return the underlying shared_ptr
-            return static_cast<JSONArrayNode*>(self.ptr)->values[idx];
+            // Check if idx within bounds
+            auto *node {static_cast<JSONArrayNode*>(self.ptr)};
+            if (idx >= node->values.size()) return {nullptr};
+
+            // Return shared_ptr from underlying vector
+            return node->values[idx];
         }
 
         JSONHandle operator[](this auto &&self, const std::string &key) {
-            if (self.ptr->getType() != NodeType::object)
-                throw std::runtime_error{"Node is not an object, tried to index: " + key};
+            // Check if type is indeed an object
+            if (self.ptr->getType() != NodeType::object) return {nullptr};
 
-            // Directly read from the values and return the underlying shared_ptr
+            // Check if object has the required key
             auto &obj {static_cast<JSONObjectNode&>(*self.ptr)};
             auto it {obj.find(key)};
-            if (it != obj.values.end()) return *it;
-            else throw std::invalid_argument("Key not found: " + key);
+            if (it == obj.values.end()) return {nullptr};
+
+            // Return underlying shared_ptr
+            return *it;
         }
 
-        template<typename VariantType>
+        JSONHandle at(this auto &&self, const std::size_t idx) {
+            auto result {self.get(idx)};
+            if (!result) {
+                if (self.getType() != NodeType::object) throw std::runtime_error("Node is not an array");
+                else throw std::runtime_error("Array idx out of bounds, tried to access: " + std::to_string(idx));
+            }            
+            return *result;
+        }
+
+        JSONHandle at(this auto &&self, const std::string &key) {
+            auto result {self.get(key)};
+            if (!result) {
+                if (self.getType() != NodeType::object) throw std::runtime_error("Node is not an object");
+                else throw std::runtime_error("Object key doesn't exist, tried to access with: " + key);
+            }
+            return *result;
+        }
+
+        /*
+         * Converts into one of the JSONSimpleType, if type is a simple type
+         * If ptr is null, defaults constructs it
+         */
+        template<JSONSimple VariantType>
         auto to() const {
+            // Return 0 equivalent or whatever that is default constructible
+            if (!ptr) return VariantType{};
+
             if (ptr->getType() != NodeType::value)
                 throw std::runtime_error{"Node is not an simple type"};
 
             auto &value {static_cast<JSONValueNode&>(*ptr).value};
             if (!std::holds_alternative<VariantType>(value))
                 throw std::invalid_argument("Variant type expected doesn't match with what is available");
+
             return std::get<VariantType>(value);
         }
 

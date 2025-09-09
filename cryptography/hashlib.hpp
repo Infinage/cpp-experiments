@@ -18,7 +18,7 @@ namespace hashutil {
         return (b << shift) | (b >> (T - shift));
     }
 
-    inline std::string sha1(const std::string &raw) {
+    [[nodiscard]] inline std::string sha1(const std::string &raw) {
         // Define constants for SHA1
         std::bitset<32> h0{"01100111010001010010001100000001"};
         std::bitset<32> h1{"11101111110011011010101110001001"};
