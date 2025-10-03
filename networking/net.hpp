@@ -1,11 +1,15 @@
+#include <algorithm>
 #include <arpa/inet.h>
 #include <cstdint>
+#include <fcntl.h>
 #include <memory>
 #include <netinet/in.h>
 #include <sstream>
 #include <stdexcept>
+#include <sys/poll.h>
 #include <sys/socket.h>
 #include <netdb.h>
+#include <type_traits>
 #include <unistd.h>
 #include <unordered_map>
 #include <utility>
@@ -32,6 +36,7 @@ namespace net {
     class Socket {
         protected:
             int _fd {-1};
+            bool _blocking {false};
 
             [[nodiscard]] static sockaddr_in SockaddrIn(std::string_view ip, std::uint16_t port) {
                 sockaddr_in sockAddr;
@@ -45,10 +50,11 @@ namespace net {
             struct SocketArgs { int domain; int type; int protocol; bool reuseSockAddr; };
 
             // This ctor is to wrap a socket created from accept into RAII
-            explicit Socket(int _fd): _fd{_fd} {}
+            explicit Socket(int _fd): _fd{_fd}, _blocking{false} {}
             virtual ~Socket() { if (_fd != -1) { ::close(_fd); _fd = -1; } }
 
             int fd() const { return _fd; }
+            bool isBlocking() const { return _blocking; }
 
             // Disable copy ctor and assignment
             Socket(const Socket&) = delete;
@@ -56,19 +62,24 @@ namespace net {
 
             // Swap function for move assignment / ctors
             void swap(Socket &other) noexcept {
-                using std::swap; swap(_fd, other._fd);
+                using std::swap; swap(_fd, other._fd); 
+                swap(_blocking, other._blocking);
             }
 
-            // Implement move assignment and ctor
-            Socket(Socket &&other) noexcept: _fd{std::exchange(other._fd, -1)} {}
+            // Implement move constructor
+            Socket(Socket &&other) noexcept: 
+                _fd{std::exchange(other._fd, -1)}, 
+                _blocking{std::exchange(other._blocking, false)} 
+            {}
+
+            // Implement move assignment operator
             Socket &operator=(Socket &&other) noexcept {
                 Socket{std::move(other)}.swap(*this);
                 return *this;
             }
 
             // Default ctor
-            Socket(SocketArgs args = { .domain = PF_INET, .type = SOCK_STREAM, .protocol = IPPROTO_TCP, .reuseSockAddr = true }) 
-            {
+            Socket(SocketArgs args = { .domain = PF_INET, .type = SOCK_STREAM, .protocol = IPPROTO_TCP, .reuseSockAddr = true }) {
                 _fd = socket(args.domain, args.type, args.protocol);
                 if (_fd == -1) throw std::runtime_error("Error creating socket object");
 
@@ -78,6 +89,15 @@ namespace net {
                     if (setsockopt(_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) == -1)
                         throw std::runtime_error("Error setting opt 'SO_REUSEADDDR'");
                 }
+            }
+
+            // Set socket as blocking / nonblocking
+            void setNonBlocking(bool enable = true) {
+                int fcntl_flags {fcntl(_fd, F_GETFL, 0)}; // Get currently set flags
+                int fcntl_flags_modified = enable? fcntl_flags | O_NONBLOCK: fcntl_flags & ~O_NONBLOCK;
+                if(fcntl_flags == -1 || fcntl(_fd, F_SETFL, fcntl_flags_modified) == -1)
+                    throw "Error setting client socket to non blocking mode to: " + std::to_string(enable);
+                _blocking = enable;
             }
 
             void bind(std::string_view serverIp, std::uint16_t port) {
@@ -149,11 +169,10 @@ namespace net {
 
     class HttpRequest {
         private:
-            std::unordered_map<std::string, std::string> headers {{"Content-Type", "application/json"}, {"Connection", "close"}};
-            std::unordered_map<std::string, std::string> urlParams;
+            std::vector<std::pair<std::string, std::string>> urlParams, headers {{"Content-Type", "application/json"}, {"Connection", "close"}};
             std::string path, method, body;
 
-            static std::string getPathWithParams(const std::string &path, const std::unordered_map<std::string, std::string> &params) {
+            static std::string getPathWithParams(const std::string &path, const std::vector<std::pair<std::string, std::string>> &params) {
                 if (params.empty()) return path;
                 std::ostringstream oss; oss << path << '?';
                 for (const auto &kv: params) oss << kv.first << "=" << kv.second << '&';
@@ -162,11 +181,12 @@ namespace net {
             }
 
         public:
-            HttpRequest(const std::string &path, const std::string &method, const std::string &body = ""): 
-                path{path}, method{method}, body{body} {}
+            HttpRequest(const std::string &path, const std::string &method): 
+                path{path}, method{method} {}
 
-            void setHeader(const std::string &key, const std::string &value) { headers[key] = value; }
-            void setParam(const std::string &key, const std::string &value) { urlParams[key] = value; }
+            void setHeader(const std::string &key, const std::string &value) { headers.push_back({key, value}); }
+            void setParam(const std::string &key, const std::string &value) { urlParams.push_back({key, value}); }
+            void setBody(std::string body) { this->body = std::move(body); }
 
             std::string serialize() const {
                 std::ostringstream oss;
@@ -176,5 +196,85 @@ namespace net {
                 else oss << "\r\n";
                 return oss.str();
             }
+
+            // TODO: Implement and return a HttpResponse object
+            std::string execute(std::string_view hostname, long timeoutSec = 5) {
+                if (std::ranges::find(headers, "Host", &std::pair<std::string,std::string>::first) == headers.end())
+                    setHeader("Host", std::string{hostname});
+                return _execute(resolveHostname(hostname), 80, timeoutSec);
+            }
+
+            // TODO: Implement and return a HttpResponse object
+            std::string _execute(std::string_view ipAddr, std::uint16_t port, long timeoutSec) {
+                struct timeval timeout {.tv_sec = timeoutSec, .tv_usec = 0};
+
+                net::Socket socket;
+                socket.connect(ipAddr, port);
+                if (::setsockopt(socket.fd(), SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) < 0 || 
+                    ::setsockopt(socket.fd(), SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout)) < 0)
+                    throw std::runtime_error("Failed to set socket timeouts");
+    
+                socket.send(serialize());
+                return socket.recv();
+            }
+    };
+
+    class PollManager {
+        public:
+            enum class EventType { Unknown=0, Readable=1, Writable=2, Closed=4, Error=8 };
+
+            friend EventType operator|=(EventType &e1, EventType e2) { return e1 = e1 | e2; }
+            friend EventType operator|(EventType e1, EventType e2) {
+                using T = std::underlying_type_t<EventType>;
+                return static_cast<EventType>(static_cast<T>(e1) | static_cast<T>(e2)); 
+            }
+
+            void untrack(int fd) { 
+                auto it {events.find(fd)};
+                if (it != events.end()) {
+                    events.erase(fd);
+                    auto newEnd {std::ranges::remove(pollFds, fd, &pollfd::fd)};
+                    pollFds.erase(newEnd.begin(), newEnd.end());
+                }
+            }
+
+            void track(int fd) { 
+                if (events.find(fd) == events.end()) {
+                    events.insert({fd, EventType::Unknown});
+                    pollFds.push_back({fd, POLLIN | POLLOUT | POLLHUP, 0});
+                }
+            }
+
+            void poll(int timeout = -1) {
+                // Poll the data structure
+                if (::poll(pollFds.data(), pollFds.size(), timeout) == -1) 
+                    throw std::runtime_error("Poll failed");
+
+                // Store the result into events
+                for (auto &pollFd: pollFds) {
+                    auto it {events.find(pollFd.fd)};
+                    it->second = EventType::Unknown;
+                    if (pollFd.revents & POLLIN) 
+                        it->second |= EventType::Readable;
+                    if (pollFd.revents & POLLOUT)
+                        it->second |= EventType::Writable;
+                    if (pollFd.revents & POLLHUP)
+                        it->second |= EventType::Closed;
+                    if (pollFd.revents & POLLERR || pollFd.revents & POLLNVAL)
+                        it->second |= EventType::Error;
+                }
+            }
+
+            // Access via underlying iterator
+            std::unordered_map<int, EventType>::const_iterator begin() const { return events.begin(); }
+            std::unordered_map<int, EventType>::const_iterator end() const { return events.end(); }
+            EventType operator[](int fd) const {
+                auto it {events.find(fd)};
+                return it == events.cend()? EventType::Unknown: it->second;
+            }
+
+        private:
+            std::vector<pollfd> pollFds;
+            std::unordered_map<int, EventType> events;
     };
 }
