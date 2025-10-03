@@ -14,6 +14,7 @@
 #include <unordered_map>
 #include <utility>
 #include <vector>
+#include <openssl/ssl.h>
 
 namespace net {
     [[nodiscard]] inline std::string resolveHostname(std::string_view hostname, const char *service = nullptr) {
@@ -54,7 +55,7 @@ namespace net {
 
             // This ctor is to wrap a socket created from accept into RAII
             explicit Socket(int _fd): _fd{_fd}, _blocking{false} {}
-            virtual ~Socket() { if (_fd != -1) { ::close(_fd); _fd = -1; } }
+            ~Socket() { if (_fd != -1) { ::close(_fd); _fd = -1; } }
 
             int fd() const { return _fd; }
             bool isBlocking() const { return _blocking; }
@@ -176,6 +177,66 @@ namespace net {
             }
     };
 
+    class SSLSocket {
+        public:
+            SSLSocket(): socket{}, ctx{SSL_CTX_new(TLS_client_method())}, ssl{SSL_new(ctx)} {
+                SSL_set_fd(ssl, socket.fd());
+            }
+
+            ~SSLSocket() {
+                if (socket.fd() != -1) { 
+                    SSL_shutdown(ssl);
+                    SSL_free(ssl);
+                    SSL_CTX_free(ctx);
+                }
+            }
+
+            // Swap function for move assignment / ctors
+            void swap(SSLSocket &other) noexcept {
+                using std::swap; swap(socket, other.socket); 
+                swap(ctx, other.ctx); swap(ssl, other.ssl);
+            }
+
+            // Implement move constructor
+            SSLSocket(SSLSocket &&other) noexcept: 
+                socket {std::move(other.socket)},
+                ctx {std::exchange(other.ctx, nullptr)},
+                ssl {std::exchange(other.ssl, nullptr)}
+            {}
+
+            // Implement move assignment operator
+            SSLSocket &operator=(SSLSocket &&other) noexcept {
+                SSLSocket{std::move(other)}.swap(*this);
+                return *this;
+            }
+
+            void connect(std::string_view serverIp, std::uint16_t port) {
+                socket.connect(serverIp, port);
+                if (SSL_connect(ssl) <= 0) 
+                    throw std::runtime_error("Failed to establish TLS connection");
+            }
+
+            void send(std::string_view message) {
+                while (!message.empty()) {
+                    long sentBytes {SSL_write(ssl, message.data(), static_cast<int>(message.size()))};
+                    if (sentBytes <= 0) throw std::runtime_error("Failed to send");
+                    message.remove_prefix(static_cast<std::size_t>(sentBytes));
+                }
+            }
+
+            [[nodiscard]] std::string recv() {
+                std::string message;
+                char buf[2048]; long recvBytes;
+                while ((recvBytes = SSL_read(ssl, buf, sizeof(buf))) > 0)
+                    message.append(buf, static_cast<std::size_t>(recvBytes));
+                return message;
+            }
+
+        private:
+            Socket socket; 
+            SSL_CTX *ctx; SSL* ssl; 
+    };
+
     class HttpRequest {
         private:
             std::vector<std::pair<std::string, std::string>> urlParams, headers {{"Content-Type", "application/json"}, {"Connection", "close"}};
@@ -207,22 +268,28 @@ namespace net {
             }
 
             // TODO: Implement and return a HttpResponse object
-            std::string execute(std::string_view hostname, long timeoutSec = 5) {
+            [[nodiscard]] std::string execute(std::string_view hostname, bool enableSSL = true, long timeoutSec = 5) {
                 if (std::ranges::find(headers, "Host", &std::pair<std::string,std::string>::first) == headers.end())
                     setHeader("Host", std::string{hostname});
+                if (enableSSL) return _executeSSL(resolveHostname(hostname), 443);
                 return _execute(resolveHostname(hostname), 80, timeoutSec);
             }
 
             // TODO: Implement and return a HttpResponse object
             std::string _execute(std::string_view ipAddr, std::uint16_t port, long timeoutSec) {
-                struct timeval timeout {.tv_sec = timeoutSec, .tv_usec = 0};
+                    struct timeval timeout {.tv_sec = timeoutSec, .tv_usec = 0};
+                    net::Socket socket;
+                    socket.connect(ipAddr, port);
+                    if (::setsockopt(socket.fd(), SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) < 0 || 
+                        ::setsockopt(socket.fd(), SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout)) < 0)
+                        throw std::runtime_error("Failed to set socket timeouts");
+                    socket.send(serialize());
+                    return socket.recv();
+            }
 
-                net::Socket socket;
+            std::string _executeSSL(std::string_view ipAddr, std::uint16_t port) {
+                net::SSLSocket socket;
                 socket.connect(ipAddr, port);
-                if (::setsockopt(socket.fd(), SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) < 0 || 
-                    ::setsockopt(socket.fd(), SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout)) < 0)
-                    throw std::runtime_error("Failed to set socket timeouts");
-    
                 socket.send(serialize());
                 return socket.recv();
             }
@@ -243,7 +310,7 @@ namespace net {
                 return static_cast<bool>((static_cast<T>(e1) & static_cast<T>(e2)) == 1); 
             }
 
-            void untrack(int fd) { 
+            void untrack(int fd) {
                 auto it {sockets.find(fd)};
                 if (it != sockets.end()) {
                     sockets.erase(fd);
@@ -261,6 +328,7 @@ namespace net {
             // To prevent ambiguity, lets delete this one
             void poll(bool) = delete;
 
+            // Warning: While safe to `untrack` while iterating, Socket& can become dangling
             [[nodiscard]] std::vector<std::pair<Socket&, EventType>> poll(int timeout = -1, bool raiseError = true) {
                 // If poll failed return empty
                 if (::poll(pollFds.data(), pollFds.size(), timeout) == -1) {
