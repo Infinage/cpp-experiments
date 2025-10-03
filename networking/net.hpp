@@ -114,6 +114,12 @@ namespace net {
                 if (listenStatus == -1) throw std::runtime_error("Error listening on socket");
             }
 
+            [[nodiscard]] Socket accept() {
+                int clientSocket {::accept(_fd, nullptr, nullptr)};
+                if (clientSocket == -1) throw std::runtime_error("Failed to accept an incomming connection");
+                return Socket{clientSocket};
+            }
+
             [[nodiscard]] Socket accept(std::string &host, std::uint16_t &port) {
                 sockaddr_in hostAddr {}; socklen_t hostAddrLen{sizeof(hostAddr)};
                 int clientSocket {::accept(_fd, reinterpret_cast<sockaddr*>(&hostAddr), &hostAddrLen)};
@@ -232,52 +238,68 @@ namespace net {
                 return static_cast<EventType>(static_cast<T>(e1) | static_cast<T>(e2)); 
             }
 
+            friend bool operator&(EventType e1, EventType e2) {
+                using T = std::underlying_type_t<EventType>;
+                return static_cast<bool>((static_cast<T>(e1) & static_cast<T>(e2)) == 1); 
+            }
+
             void untrack(int fd) { 
-                auto it {events.find(fd)};
-                if (it != events.end()) {
-                    events.erase(fd);
+                auto it {sockets.find(fd)};
+                if (it != sockets.end()) {
+                    sockets.erase(fd);
                     auto newEnd {std::ranges::remove(pollFds, fd, &pollfd::fd)};
                     pollFds.erase(newEnd.begin(), newEnd.end());
                 }
             }
 
-            void track(int fd) { 
-                if (events.find(fd) == events.end()) {
-                    events.insert({fd, EventType::Unknown});
-                    pollFds.push_back({fd, POLLIN | POLLOUT | POLLHUP, 0});
-                }
+            void track(Socket &&socket) {
+                int fd {socket.fd()};
+                sockets.emplace(fd, std::move(socket));
+                pollFds.emplace_back(fd, POLLIN | POLLOUT | POLLHUP, 0);
             }
 
-            void poll(int timeout = -1) {
-                // Poll the data structure
-                if (::poll(pollFds.data(), pollFds.size(), timeout) == -1) 
-                    throw std::runtime_error("Poll failed");
+            // To prevent ambiguity, lets delete this one
+            void poll(bool) = delete;
+
+            [[nodiscard]] std::vector<std::pair<Socket&, EventType>> poll(int timeout = -1, bool raiseError = true) {
+                // If poll failed return empty
+                if (::poll(pollFds.data(), pollFds.size(), timeout) == -1) {
+                    if (raiseError) throw std::runtime_error("Poll failed");
+                    return {};
+                }
 
                 // Store the result into events
+                std::vector<std::pair<Socket&, EventType>> result;
                 for (auto &pollFd: pollFds) {
-                    auto it {events.find(pollFd.fd)};
-                    it->second = EventType::Unknown;
+                    EventType event {EventType::Unknown};
+
                     if (pollFd.revents & POLLIN) 
-                        it->second |= EventType::Readable;
+                        event |= EventType::Readable;
                     if (pollFd.revents & POLLOUT)
-                        it->second |= EventType::Writable;
+                        event |= EventType::Writable;
                     if (pollFd.revents & POLLHUP)
-                        it->second |= EventType::Closed;
+                        event |= EventType::Closed;
                     if (pollFd.revents & POLLERR || pollFd.revents & POLLNVAL)
-                        it->second |= EventType::Error;
+                        event |= EventType::Error;
+
+                    if (event != EventType::Unknown)
+                        result.emplace_back(getSocket(pollFd.fd), event);
                 }
+
+                return result;
             }
 
-            // Access via underlying iterator
-            std::unordered_map<int, EventType>::const_iterator begin() const { return events.begin(); }
-            std::unordered_map<int, EventType>::const_iterator end() const { return events.end(); }
-            EventType operator[](int fd) const {
-                auto it {events.find(fd)};
-                return it == events.cend()? EventType::Unknown: it->second;
+            [[nodiscard]] Socket &getSocket(int fd) {
+                auto it {sockets.find(fd)};
+                if (it == sockets.end()) 
+                    throw std::runtime_error("No such file descriptor: " + std::to_string(fd));
+                return it->second;
             }
 
         private:
             std::vector<pollfd> pollFds;
-            std::unordered_map<int, EventType> events;
+            std::unordered_map<int, Socket> sockets;
     };
+
+    using PollEventType = PollManager::EventType;
 }
