@@ -39,11 +39,14 @@ namespace net {
             bool _blocking {false};
 
             [[nodiscard]] static sockaddr_in SockaddrIn(std::string_view ip, std::uint16_t port) {
-                sockaddr_in sockAddr;
-                sockAddr.sin_family = AF_INET;
-                inet_pton(AF_INET, ip.data(), &sockAddr.sin_addr);
-                sockAddr.sin_port = htons(port);
-                return sockAddr;
+                in_addr addr {};
+                inet_pton(AF_INET, ip.data(), &addr);
+                return {
+                    .sin_family = AF_INET, 
+                    .sin_port = htons(port), 
+                    .sin_addr = addr,
+                    .sin_zero = {}
+                };
             }
 
         public:
@@ -181,7 +184,7 @@ namespace net {
             }
 
         public:
-            HttpRequest(const std::string &path, const std::string &method): 
+            HttpRequest(const std::string &path = "/", const std::string &method = "GET"): 
                 path{path}, method{method} {}
 
             void setHeader(const std::string &key, const std::string &value) { headers.push_back({key, value}); }
