@@ -66,12 +66,12 @@ int main(int argc, char **argv) try {
                         client.setNonBlocking();
                         manager.track(std::move(client), net::PollEventType::Readable);
                     } else if (event == net::PollEventType::Readable) {
-                        std::string message {socket.recv()};
+                        std::string message {socket.recvAll()};
                         if (message != "quit") {
                             std::cout << "Received from Client #" << socket.fd() << ": " << message << "\n";
                         } else {
                             std::cout << "Disconnecting client #" << socket.fd() << '\n';
-                            socket.send("Bye Socket!"); 
+                            socket.sendAll("Bye Socket!"); 
                             manager.untrack(socket.fd()); 
                         }
                     }
@@ -86,7 +86,7 @@ int main(int argc, char **argv) try {
             std::string message;
             while (message != "quit") {
                 std::getline(std::cin, message);
-                client.send(message);
+                client.sendAll(message);
             }
             std::cout << "Received from Server: " << client.recv() << "\n";
         }

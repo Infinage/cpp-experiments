@@ -108,6 +108,15 @@ namespace net {
                 _blocking = !enable;
             }
 
+            // Set receive / send timeouts
+            void setTimeout(long rcvTimeoutSec, long sndTimeoutSec) {
+                struct timeval rcvTimeout {.tv_sec = rcvTimeoutSec, .tv_usec = 0};
+                struct timeval sndTimeout {.tv_sec = sndTimeoutSec, .tv_usec = 0};
+                if (::setsockopt(_fd, SOL_SOCKET, SO_RCVTIMEO, &rcvTimeout, sizeof(rcvTimeout)) < 0 || 
+                    ::setsockopt(_fd, SOL_SOCKET, SO_SNDTIMEO, &sndTimeout, sizeof(sndTimeout)) < 0)
+                    throw std::runtime_error("Failed to set socket timeouts");
+            }
+
             void bind(std::string_view serverIp, std::uint16_t port) {
                 sockaddr_in serverAddr {SockaddrIn(serverIp, port)};
                 int bindStatus {::bind(_fd, reinterpret_cast<sockaddr*>(&serverAddr), sizeof(serverAddr))};
@@ -144,18 +153,40 @@ namespace net {
                 if (connectStatus == -1) throw std::runtime_error("Error connecting to server");
             }
 
-            void send(std::string_view message) {
+            // Send until all of the message is out, for blocking sockets guaranteed to 
+            // either throw or have entire thing sent. For non blocking sockets we might
+            // have data partially sent, verify againt return bytes
+            long sendAll(std::string_view message) {
+                long totalSent {};
                 while (!message.empty()) {
                     long sentBytes {::send(_fd, message.data(), message.size(), 0)};
-                    if (sentBytes < 0 && errno != EAGAIN && errno != EWOULDBLOCK) 
+                    if (sentBytes <= 0 && errno != EAGAIN && errno != EWOULDBLOCK) 
                         throw std::runtime_error("Failed to send");
                     message.remove_prefix(static_cast<std::size_t>(sentBytes));
+                    totalSent += sentBytes;
                 }
+                return totalSent;
             }
 
-            [[nodiscard]] std::string recv() {
-                std::string message;
-                char buffer[2048] {}; long recvBytes;
+            [[nodiscard]] long send(std::string_view message) {
+                long sentBytes {::send(_fd, message.data(), message.size(), 0)};
+                if (sentBytes <= 0 && errno != EAGAIN && errno != EWOULDBLOCK) 
+                    throw std::runtime_error("Failed to send");
+                return sentBytes;
+            }
+
+            [[nodiscard]] std::string recv(std::size_t maxBytes = 2048) {
+                std::vector<char> buffer(maxBytes);
+                long recvBytes {::recv(_fd, buffer.data(), maxBytes, 0)};
+                if (recvBytes < 0 && errno != EAGAIN && errno != EWOULDBLOCK)
+                    throw std::runtime_error("Failed to recv");
+                return {buffer.data(), static_cast<std::size_t>(recvBytes)};
+            }
+
+            // Recv until connection is closed or non blocking errcode is hit
+            // Use with caution for blocking sockets, it will hang until con is closed
+            [[nodiscard]] std::string recvAll() {
+                std::string message; char buffer[2048] {}; long recvBytes;
                 while ((recvBytes = ::recv(_fd, buffer, sizeof(buffer), 0)) > 0)
                     message.append(buffer, static_cast<std::size_t>(recvBytes));
                 if (recvBytes < 0 && errno != EAGAIN && errno != EWOULDBLOCK) 
@@ -251,8 +282,10 @@ namespace net {
             }
 
             // Forward function calls to the underlying socket obj
+            int fd() const { return socket.fd(); }
             void bind(std::string_view serverIp, std::uint16_t port) { socket.bind(serverIp, port); }
             void listen(unsigned short backlog = 5) { socket.listen(backlog); }
+            void setTimeout(long rcvTimeoutSec, long sndTimeoutSec) { socket.setTimeout(rcvTimeoutSec, sndTimeoutSec); }
 
             [[nodiscard]] SSLSocket accept(std::string &host, std::uint16_t &port) {
                 Socket clientSocket {socket.accept(host, port)};
@@ -284,7 +317,8 @@ namespace net {
                     throw std::runtime_error("Failed to establish TLS connection");
             }
 
-            void send(std::string_view message) {
+            // Send entire message to socket, guaranteed to send everything or throw an error
+            void sendAll(std::string_view message) {
                 while (!message.empty()) {
                     long sentBytes {SSL_write(ssl, message.data(), static_cast<int>(message.size()))};
                     if (sentBytes <= 0) throw std::runtime_error("Failed to send");
@@ -292,11 +326,24 @@ namespace net {
                 }
             }
 
-            [[nodiscard]] std::string recv() {
-                std::string message;
-                char buf[2048]; long recvBytes;
-                while ((recvBytes = SSL_read(ssl, buf, sizeof(buf))) > 0)
-                    message.append(buf, static_cast<std::size_t>(recvBytes));
+            [[nodiscard]] long send(std::string_view message) {
+                long sentBytes {SSL_write(ssl, message.data(), static_cast<int>(message.size()))};
+                if (sentBytes <= 0) throw std::runtime_error("Failed to send");
+                return sentBytes;
+            }
+
+            [[nodiscard]] std::string recv(std::size_t maxBytes = 2048) {
+                std::vector<char> buffer(maxBytes);
+                long recvBytes {SSL_read(ssl, buffer.data(), static_cast<int>(maxBytes))};
+                if (recvBytes < 0) throw std::runtime_error("Failed to recv");
+                return {buffer.data(), static_cast<std::size_t>(recvBytes)};
+            }
+
+            // Recv until connection is closed; Use with caution, can block until connection is closed
+            [[nodiscard]] std::string recvAll() {
+                std::string message; char buffer[2048] {}; long recvBytes;
+                while ((recvBytes = SSL_read(ssl, buffer, sizeof(buffer))) > 0)
+                    message.append(buffer, static_cast<std::size_t>(recvBytes));
                 if (recvBytes < 0) throw std::runtime_error("Failed to recv");
                 return message;
             }
@@ -347,21 +394,18 @@ namespace net {
 
             // TODO: Implement and return a HttpResponse object
             std::string _execute(std::string_view ipAddr, std::uint16_t port, long timeoutSec) {
-                    struct timeval timeout {.tv_sec = timeoutSec, .tv_usec = 0};
-                    net::Socket socket;
-                    socket.connect(ipAddr, port);
-                    if (::setsockopt(socket.fd(), SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) < 0 || 
-                        ::setsockopt(socket.fd(), SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout)) < 0)
-                        throw std::runtime_error("Failed to set socket timeouts");
-                    socket.send(serialize());
-                    return socket.recv();
+                net::Socket socket;
+                socket.connect(ipAddr, port);
+                socket.setTimeout(timeoutSec, timeoutSec);
+                socket.sendAll(serialize());
+                return socket.recvAll();
             }
 
             std::string _executeSSL(std::string_view ipAddr, std::uint16_t port, std::string_view hostname = "") {
                 net::SSLSocket socket;
                 socket.connect(ipAddr, port, hostname);
-                socket.send(serialize());
-                return socket.recv();
+                socket.sendAll(serialize());
+                return socket.recvAll();
             }
     };
 
