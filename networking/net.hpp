@@ -1,3 +1,12 @@
+/*
+ * TODO:
+ * 1. Implement HTTPResponse object
+ * 2. URL Encode parameters
+ * 3. Support for UDP protocol with example
+ * 4. Use C++ modules
+ * 5. Windows support
+ */
+
 #include <algorithm>
 #include <cstdint>
 #include <memory>
@@ -16,6 +25,8 @@
 #include <netdb.h>
 #include <unistd.h>
 #include <openssl/ssl.h>
+
+#include "../json-parser/json.hpp"
 
 namespace net {
     [[nodiscard]] inline std::string resolveHostname(std::string_view hostname, const char *service = nullptr) {
@@ -354,19 +365,56 @@ namespace net {
             SSL_CTX *ctx; SSL* ssl; 
     };
 
-    class HttpRequest {
-        private:
-            std::vector<std::pair<std::string, std::string>> urlParams, headers {{"Content-Type", "application/json"}, {"Connection", "close"}};
-            std::string path, method, body;
+    class HttpResponse {
+        public:
+            HttpResponse(const std::string &raw): raw{raw} {
+                std::size_t pos {raw.find(" ")}, nextPos {raw.find(" ", pos + 1)};
+                if (pos == std::string::npos || nextPos == std::string::npos) 
+                    throw std::runtime_error("Invalid HttpResponse string");
+                statusCode = std::stoi(raw.substr(pos + 1, nextPos - pos - 1));
 
-            static std::string getPathWithParams(const std::string &path, const std::vector<std::pair<std::string, std::string>> &params) {
-                if (params.empty()) return path;
-                std::ostringstream oss; oss << path << '?';
-                for (const auto &kv: params) oss << kv.first << "=" << kv.second << '&';
-                std::string res {oss.str()}; res.pop_back();
-                return res;
+                pos = std::exchange(nextPos, raw.find("\r\n", nextPos + 1));
+                if (nextPos == std::string::npos) throw std::runtime_error("Invalid HttpResponse string");
+                reason = raw.substr(pos + 1, nextPos - pos - 1);
+
+                pos = std::exchange(nextPos, raw.find("\r\n\r\n", nextPos + 2));
+                if (nextPos == std::string::npos) throw std::runtime_error("Invalid HttpResponse string");
+                body = raw.substr(nextPos + 4);
+
+                std::string_view headerRaw {
+                    raw.begin() + static_cast<long>(pos) + 2, 
+                    raw.begin() + static_cast<long>(nextPos) + 2
+                };
+
+                while (!headerRaw.empty()) {
+                    pos = headerRaw.find(':');
+                    if (pos == std::string::npos) 
+                        throw std::runtime_error("Invalid HttpResponse header");
+
+                    nextPos = headerRaw.find("\r\n", pos + 1);
+                    if (nextPos == std::string::npos) 
+                        throw std::runtime_error("Invalid HttpResponse header");
+
+                    headers.insert({
+                        std::string{headerRaw.substr(0, pos)}, 
+                        std::string {headerRaw.substr(pos + 2, nextPos - pos - 2)}
+                    });
+
+                    headerRaw = headerRaw.substr(nextPos + 2);
+                }
             }
 
+            [[nodiscard]] JSON::JSONHandle json() const {
+                return JSON::Parser::loads(body);
+            }
+
+        public:
+            std::string raw, body, reason;
+            int statusCode;
+            std::unordered_map<std::string, std::string> headers;
+    };
+
+    class HttpRequest {
         public:
             HttpRequest(const std::string &path = "/", const std::string &method = "GET"): 
                 path{path}, method{method} {}
@@ -384,16 +432,15 @@ namespace net {
                 return oss.str();
             }
 
-            // TODO: Implement and return a HttpResponse object
-            [[nodiscard]] std::string execute(std::string_view hostname, bool enableSSL = true, long timeoutSec = 5) {
+            [[nodiscard]] HttpResponse 
+            execute(std::string_view hostname, bool enableSSL = true, long timeoutSec = 5) {
                 if (std::ranges::find(headers, "Host", &std::pair<std::string,std::string>::first) == headers.end())
                     setHeader("Host", std::string{hostname});
                 if (enableSSL) return _executeSSL(resolveHostname(hostname), 443, hostname);
                 return _execute(resolveHostname(hostname), 80, timeoutSec);
             }
 
-            // TODO: Implement and return a HttpResponse object
-            std::string _execute(std::string_view ipAddr, std::uint16_t port, long timeoutSec) {
+            HttpResponse _execute(std::string_view ipAddr, std::uint16_t port, long timeoutSec) {
                 net::Socket socket;
                 socket.connect(ipAddr, port);
                 socket.setTimeout(timeoutSec, timeoutSec);
@@ -406,6 +453,18 @@ namespace net {
                 socket.connect(ipAddr, port, hostname);
                 socket.sendAll(serialize());
                 return socket.recvAll();
+            }
+
+        private:
+            std::vector<std::pair<std::string, std::string>> urlParams, headers {{"Content-Type", "application/json"}, {"Connection", "close"}};
+            std::string path, method, body;
+
+            static std::string getPathWithParams(const std::string &path, const std::vector<std::pair<std::string, std::string>> &params) {
+                if (params.empty()) return path;
+                std::ostringstream oss; oss << path << '?';
+                for (const auto &kv: params) oss << kv.first << "=" << kv.second << '&';
+                std::string res {oss.str()}; res.pop_back();
+                return res;
             }
     };
 
