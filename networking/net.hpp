@@ -1,19 +1,20 @@
 #include <algorithm>
-#include <arpa/inet.h>
 #include <cstdint>
-#include <fcntl.h>
 #include <memory>
-#include <netinet/in.h>
 #include <sstream>
+#include <unordered_map>
+#include <type_traits>
 #include <stdexcept>
+#include <utility>
+#include <vector>
+
+#include <fcntl.h>
+#include <arpa/inet.h>
+#include <netinet/in.h>
 #include <sys/poll.h>
 #include <sys/socket.h>
 #include <netdb.h>
-#include <type_traits>
 #include <unistd.h>
-#include <unordered_map>
-#include <utility>
-#include <vector>
 #include <openssl/ssl.h>
 
 namespace net {
@@ -53,9 +54,12 @@ namespace net {
         public:
             struct SocketArgs { int domain; int type; int protocol; bool reuseSockAddr; };
 
+            // Force close a socket if required
+            void close() { if (_fd != -1) { ::close(_fd); _fd = -1; } }
+
             // This ctor is to wrap a socket created from accept into RAII
             explicit Socket(int _fd): _fd{_fd}, _blocking{false} {}
-            ~Socket() { if (_fd != -1) { ::close(_fd); _fd = -1; } }
+            ~Socket() { close(); }
 
             int fd() const { return _fd; }
             bool isBlocking() const { return _blocking; }
@@ -101,7 +105,7 @@ namespace net {
                 int fcntl_flags_modified = enable? fcntl_flags | O_NONBLOCK: fcntl_flags & ~O_NONBLOCK;
                 if(fcntl_flags == -1 || fcntl(_fd, F_SETFL, fcntl_flags_modified) == -1)
                     throw "Error setting client socket to non blocking mode to: " + std::to_string(enable);
-                _blocking = enable;
+                _blocking = !enable;
             }
 
             void bind(std::string_view serverIp, std::uint16_t port) {
@@ -143,7 +147,8 @@ namespace net {
             void send(std::string_view message) {
                 while (!message.empty()) {
                     long sentBytes {::send(_fd, message.data(), message.size(), 0)};
-                    if (sentBytes <= 0) throw std::runtime_error("Failed to send");
+                    if (sentBytes < 0 && errno != EAGAIN && errno != EWOULDBLOCK) 
+                        throw std::runtime_error("Failed to send");
                     message.remove_prefix(static_cast<std::size_t>(sentBytes));
                 }
             }
@@ -153,20 +158,24 @@ namespace net {
                 char buffer[2048] {}; long recvBytes;
                 while ((recvBytes = ::recv(_fd, buffer, sizeof(buffer), 0)) > 0)
                     message.append(buffer, static_cast<std::size_t>(recvBytes));
+                if (recvBytes < 0 && errno != EAGAIN && errno != EWOULDBLOCK) 
+                    throw std::runtime_error("Failed to recv");
                 return message;
             }
 
             void sendTo(std::string_view message, std::string_view host, std::uint16_t port) {
                 sockaddr_in hostAddr {SockaddrIn(host, port)};
                 long sentBytes {::sendto(_fd, message.data(), message.size(), 0, reinterpret_cast<sockaddr*>(&hostAddr), sizeof(hostAddr))};
-                if (sentBytes <= 0) throw std::runtime_error("Failed to send");
+                if (sentBytes < 0 && errno != EAGAIN && errno != EWOULDBLOCK) 
+                    throw std::runtime_error("Failed to send");
             }
 
             [[nodiscard]] std::string recvFrom(std::string &host, std::uint16_t &port, std::size_t maxBytes = 2048) {
                 sockaddr_in hostAddr {}; socklen_t hostAddrLen {sizeof(hostAddr)};
                 std::vector<char> buffer(maxBytes); 
                 long recvBytes {::recvfrom(_fd, buffer.data(), maxBytes, 0, reinterpret_cast<sockaddr*>(&hostAddr), &hostAddrLen)};
-                if (recvBytes <= 0) throw std::runtime_error("Failed to recv");
+                if (recvBytes < 0 && errno != EAGAIN && errno != EWOULDBLOCK) 
+                    throw std::runtime_error("Failed to recv");
 
                 port = ntohs(hostAddr.sin_port);
                 char ipStr[INET_ADDRSTRLEN];
@@ -179,26 +188,57 @@ namespace net {
 
     class SSLSocket {
         public:
-            SSLSocket(): socket{}, ctx{SSL_CTX_new(TLS_client_method())}, ssl{SSL_new(ctx)} {
-                SSL_set_fd(ssl, socket.fd());
+            // Support for creating SSL Socket from `accept`
+            SSLSocket(Socket &&socket, SSL_CTX *ctx, SSL *ssl, bool isServer = false): 
+                isServer{isServer}, socket{std::move(socket)}, 
+                ctx{ctx}, ssl{ssl} 
+            {}
+
+            // Default constructor - certPath and keyPath.pem mandatory for SSLSocket Server, optional for client
+            SSLSocket(bool isServer = false, std::string_view certPath = "", std::string_view keyPath = ""):
+                isServer{isServer}, socket{},
+                ctx{SSL_CTX_new(isServer? TLS_server_method(): TLS_client_method())},
+                ssl {nullptr}
+            {
+                if (!isServer) {
+                    SSL_CTX_set_verify(ctx, SSL_VERIFY_PEER, nullptr);
+                    SSL_CTX_set_default_verify_paths(ctx);
+                    if (!certPath.empty() && !SSL_CTX_load_verify_locations(ctx, certPath.data(), nullptr))
+                        throw std::runtime_error("Failed to use certificate: " + std::string{certPath});
+                } 
+
+                else {
+                    if (certPath.empty() || SSL_CTX_use_certificate_chain_file(ctx, certPath.data()) <= 0)
+                        throw std::runtime_error("Failed to set certificate from path");
+                    if (keyPath.empty() || SSL_CTX_use_PrivateKey_file(ctx, keyPath.data(), SSL_FILETYPE_PEM) <= 0)
+                        throw std::runtime_error("Failed to set pem key from path");
+                }
             }
 
-            ~SSLSocket() {
+            // Force close a socket if required
+            void close() {
                 if (socket.fd() != -1) { 
-                    SSL_shutdown(ssl);
-                    SSL_free(ssl);
+                    if (ssl != nullptr) { SSL_shutdown(ssl); SSL_free(ssl); }
+                    socket.close();
                     SSL_CTX_free(ctx);
                 }
             }
 
+            // SSLSocket Destructor
+            ~SSLSocket() { close(); }
+
             // Swap function for move assignment / ctors
             void swap(SSLSocket &other) noexcept {
-                using std::swap; swap(socket, other.socket); 
-                swap(ctx, other.ctx); swap(ssl, other.ssl);
+                using std::swap; 
+                swap(isServer, other.isServer);
+                swap(socket, other.socket); 
+                swap(ctx, other.ctx); 
+                swap(ssl, other.ssl);
             }
 
             // Implement move constructor
             SSLSocket(SSLSocket &&other) noexcept: 
+                isServer {std::exchange(other.isServer, false)},
                 socket {std::move(other.socket)},
                 ctx {std::exchange(other.ctx, nullptr)},
                 ssl {std::exchange(other.ssl, nullptr)}
@@ -210,9 +250,37 @@ namespace net {
                 return *this;
             }
 
-            void connect(std::string_view serverIp, std::uint16_t port) {
+            // Forward function calls to the underlying socket obj
+            void bind(std::string_view serverIp, std::uint16_t port) { socket.bind(serverIp, port); }
+            void listen(unsigned short backlog = 5) { socket.listen(backlog); }
+
+            [[nodiscard]] SSLSocket accept(std::string &host, std::uint16_t &port) {
+                Socket clientSocket {socket.accept(host, port)};
+
+                // In case of a server, *ssl is always nullptr. Each client 
+                // creates and associates a new *ssl for itself for RAII
+                SSL *clientSSL = SSL_new(ctx);
+                if (!clientSSL) throw std::runtime_error("Unable to create SSL Context");
+                SSL_set_fd(clientSSL, clientSocket.fd());
+                if (SSL_accept(clientSSL) <= 0)
+                    throw std::runtime_error("Failed to accept an incomming SSL connection");
+
+                // Dont associate any context with the client, lifetime of ctx tied 
+                // to SSL Server Socket. The SSL itself is associated to the client
+                return SSLSocket{std::move(clientSocket), nullptr, clientSSL};
+            }
+
+            void connect(std::string_view serverIp, std::uint16_t port, std::string_view hostname = "") {
                 socket.connect(serverIp, port);
-                if (SSL_connect(ssl) <= 0) 
+
+                ssl = SSL_new(ctx);
+                if (!ssl) throw std::runtime_error("Unable to create SSL Context");
+                SSL_set_fd(ssl, socket.fd());
+
+                if (!hostname.empty() && SSL_set_tlsext_host_name(ssl, hostname.data()) != 1)
+                    throw std::runtime_error("Failed to set SNI hostname");
+
+                if (SSL_connect(ssl) <= 0)
                     throw std::runtime_error("Failed to establish TLS connection");
             }
 
@@ -229,10 +297,12 @@ namespace net {
                 char buf[2048]; long recvBytes;
                 while ((recvBytes = SSL_read(ssl, buf, sizeof(buf))) > 0)
                     message.append(buf, static_cast<std::size_t>(recvBytes));
+                if (recvBytes < 0) throw std::runtime_error("Failed to recv");
                 return message;
             }
 
         private:
+            bool isServer;
             Socket socket; 
             SSL_CTX *ctx; SSL* ssl; 
     };
@@ -271,7 +341,7 @@ namespace net {
             [[nodiscard]] std::string execute(std::string_view hostname, bool enableSSL = true, long timeoutSec = 5) {
                 if (std::ranges::find(headers, "Host", &std::pair<std::string,std::string>::first) == headers.end())
                     setHeader("Host", std::string{hostname});
-                if (enableSSL) return _executeSSL(resolveHostname(hostname), 443);
+                if (enableSSL) return _executeSSL(resolveHostname(hostname), 443, hostname);
                 return _execute(resolveHostname(hostname), 80, timeoutSec);
             }
 
@@ -287,9 +357,9 @@ namespace net {
                     return socket.recv();
             }
 
-            std::string _executeSSL(std::string_view ipAddr, std::uint16_t port) {
+            std::string _executeSSL(std::string_view ipAddr, std::uint16_t port, std::string_view hostname = "") {
                 net::SSLSocket socket;
-                socket.connect(ipAddr, port);
+                socket.connect(ipAddr, port, hostname);
                 socket.send(serialize());
                 return socket.recv();
             }
@@ -305,9 +375,9 @@ namespace net {
                 return static_cast<EventType>(static_cast<T>(e1) | static_cast<T>(e2)); 
             }
 
-            friend bool operator&(EventType e1, EventType e2) {
+            friend bool operator==(EventType e1, EventType e2) {
                 using T = std::underlying_type_t<EventType>;
-                return static_cast<bool>((static_cast<T>(e1) & static_cast<T>(e2)) == 1); 
+                return (static_cast<T>(e1) & static_cast<T>(e2)) != 0; 
             }
 
             void untrack(int fd) {
@@ -319,10 +389,24 @@ namespace net {
                 }
             }
 
-            void track(Socket &&socket) {
-                int fd {socket.fd()};
+            void track(Socket &&socket, EventType event = EventType::Readable | EventType::Writable) {
+                int eventInt {}, fd {socket.fd()};
                 sockets.emplace(fd, std::move(socket));
-                pollFds.emplace_back(fd, POLLIN | POLLOUT | POLLHUP, 0);
+                if (event == EventType::Readable) eventInt |= POLLIN;
+                if (event == EventType::Writable) eventInt |= POLLOUT;
+                pollFds.emplace_back(fd, eventInt, 0);
+            }
+
+            void updateTracking(int fd, EventType event = EventType::Readable | EventType::Writable) {
+                if (!sockets.contains(fd)) 
+                    throw std::runtime_error("Socket FD is not tracked: " + std::to_string(fd));
+
+                int eventInt {};
+                if (event == EventType::Readable) eventInt |= POLLIN;
+                if (event == EventType::Writable) eventInt |= POLLOUT;
+
+                std::ranges::find(pollFds, fd, &pollfd::fd)->revents 
+                    = static_cast<short>(eventInt);
             }
 
             // To prevent ambiguity, lets delete this one

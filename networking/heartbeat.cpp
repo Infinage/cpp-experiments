@@ -32,7 +32,7 @@ int main(int argc, char **argv) {
         pm.track(std::move(serverSocket));
         while (SERVER_RUNNING) {
             for (auto &[socket, event]: pm.poll()) {
-                if ((event & net::PollEventType::Readable) && SERVER_RUNNING) {
+                if ((event == net::PollEventType::Readable) && SERVER_RUNNING) {
                     net::Socket clientSocket {socket.accept()};
                     clientSocket.setNonBlocking();
                     clientSocket.send(response.data());
