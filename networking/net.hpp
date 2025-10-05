@@ -1,6 +1,5 @@
 /*
  * TODO:
- * - For failed runtime_error, get errno and display messages as applicable
  * - URL Encode parameters
  * - Support for UDP protocol with example
  * - Support IPV6 addresses
@@ -27,6 +26,7 @@
 #include <netdb.h>
 #include <unistd.h>
 #include <openssl/ssl.h>
+#include <openssl/err.h>
 
 #include "../json-parser/json.hpp"
 
@@ -36,6 +36,31 @@ namespace net {
     public:
         SocketError(const std::string &msg, const std::string &sysMsg = "")
         : std::runtime_error{msg + ": " + (sysMsg.empty()? std::strerror(errno): sysMsg)} {}
+    };
+
+    class SSLSocketError : public std::runtime_error {
+    public:
+        SSLSocketError(const std::string &msg)
+        : std::runtime_error{composeMessage(msg)} {}
+
+    private:
+        static std::string composeMessage(const std::string &msg) {
+            std::string fullMsg = msg;
+
+            // Append system error if errno is set
+            if (errno) fullMsg += ": " + std::string{std::strerror(errno)};
+
+            // Collect all OpenSSL errors currently on the queue
+            unsigned long err;
+            while ((err = ERR_get_error()) != 0) {
+                char buf[256];
+                ERR_error_string_n(err, buf, sizeof(buf));
+                fullMsg += "\n  OpenSSL: ";
+                fullMsg += buf;
+            }
+
+            return fullMsg;
+        }
     };
 
     // Given a hostname such as 'google.com' and an optional 'port/service' 
@@ -263,14 +288,14 @@ namespace net {
                     SSL_CTX_set_verify(ctx, SSL_VERIFY_PEER, nullptr);
                     SSL_CTX_set_default_verify_paths(ctx);
                     if (!certPath.empty() && !SSL_CTX_load_verify_locations(ctx, certPath.data(), nullptr))
-                        throw std::runtime_error("Failed to use certificate: " + std::string{certPath});
+                        throw SSLSocketError{"Failed to use certificate: " + std::string{certPath}};
                 } 
 
                 else {
                     if (certPath.empty() || SSL_CTX_use_certificate_chain_file(ctx, certPath.data()) <= 0)
-                        throw std::runtime_error("Failed to set certificate from path");
+                        throw SSLSocketError{"Failed to set certificate from path"};
                     if (keyPath.empty() || SSL_CTX_use_PrivateKey_file(ctx, keyPath.data(), SSL_FILETYPE_PEM) <= 0)
-                        throw std::runtime_error("Failed to set pem key from path");
+                        throw SSLSocketError{"Failed to set pem key from path"};
                 }
             }
 
@@ -319,11 +344,11 @@ namespace net {
 
                 // In case of a server, *ssl is always nullptr. Each client 
                 // creates and associates a new *ssl for itself for RAII
-                SSL *clientSSL = SSL_new(ctx);
-                if (!clientSSL) throw std::runtime_error("Unable to create SSL Context");
+                SSL *clientSSL {SSL_new(ctx)};
+                if (!clientSSL) throw SSLSocketError{"Unable to create SSL Context"};
                 SSL_set_fd(clientSSL, clientSocket.fd());
                 if (SSL_accept(clientSSL) <= 0)
-                    throw std::runtime_error("Failed to accept an incomming SSL connection");
+                    throw SSLSocketError{"Failed to accept an incomming SSL connection"};
 
                 // Dont associate any context with the client, lifetime of ctx tied 
                 // to SSL Server Socket. The SSL itself is associated to the client
@@ -334,28 +359,28 @@ namespace net {
                 socket.connect(serverIp, port);
 
                 ssl = SSL_new(ctx);
-                if (!ssl) throw std::runtime_error("Unable to create SSL Context");
+                if (!ssl) throw SSLSocketError{"Unable to create SSL Context"};
                 SSL_set_fd(ssl, socket.fd());
 
                 if (!hostname.empty() && SSL_set_tlsext_host_name(ssl, hostname.data()) != 1)
-                    throw std::runtime_error("Failed to set SNI hostname");
+                    throw SSLSocketError{"Failed to set SNI hostname"};
 
                 if (SSL_connect(ssl) <= 0)
-                    throw std::runtime_error("Failed to establish TLS connection");
+                    throw SSLSocketError{"Failed to establish TLS connection"};
             }
 
             // Send entire message to socket, guaranteed to send everything or throw an error
             void sendAll(std::string_view message) {
                 while (!message.empty()) {
                     long sentBytes {SSL_write(ssl, message.data(), static_cast<int>(message.size()))};
-                    if (sentBytes <= 0) throw std::runtime_error("Failed to send");
+                    if (sentBytes <= 0) throw SSLSocketError{"Failed to send"};
                     message.remove_prefix(static_cast<std::size_t>(sentBytes));
                 }
             }
 
             [[nodiscard]] long send(std::string_view message) {
                 long sentBytes {SSL_write(ssl, message.data(), static_cast<int>(message.size()))};
-                if (sentBytes <= 0) throw std::runtime_error("Failed to send");
+                if (sentBytes <= 0) throw SSLSocketError{"Failed to send"};
                 return sentBytes;
             }
 
@@ -363,7 +388,7 @@ namespace net {
                 std::vector<char> buffer(maxBytes);
                 long recvBytes {SSL_read(ssl, buffer.data(), static_cast<int>(maxBytes))};
                 if (recvBytes == 0) close();
-                else if (recvBytes < 0) throw std::runtime_error("Failed to recv");
+                else if (recvBytes < 0) throw SSLSocketError{"Failed to recv"};
                 return {buffer.data(), static_cast<std::size_t>(recvBytes)};
             }
 
@@ -373,7 +398,7 @@ namespace net {
                 while ((recvBytes = SSL_read(ssl, buffer, sizeof(buffer))) > 0)
                     message.append(buffer, static_cast<std::size_t>(recvBytes));
                 if (recvBytes == 0) close();
-                else if (recvBytes < 0) throw std::runtime_error("Failed to recv");
+                else if (recvBytes < 0) throw SSLSocketError{"Failed to recv"};
                 return message;
             }
 
