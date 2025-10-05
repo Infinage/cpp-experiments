@@ -1,7 +1,8 @@
 /*
  * TODO:
- * - Support for UDP protocol with example
- * - Support IPV6 addresses
+ * - Support IPV6 addresses 
+ *   - SockaddrIn fix this function, store TCP/UDP state along with IP
+ * - getaddrinfo() to iterate through results instead of returning first one
  * - Use C++ modules
  * - Windows support?
  */
@@ -31,6 +32,10 @@
 #include "../json-parser/json.hpp"
 
 namespace net {
+    // Abstracing SOCK_STREAM, SOCK_DGRAM; PF_INET, PF_INET6
+    enum class IP { V4, V6 };
+    enum class SOCKTYPE { TCP, UDP };
+
     // Custom exception class to automatically include the system error
     class SocketError: public std::runtime_error {
     public:
@@ -65,20 +70,30 @@ namespace net {
 
     // Given a hostname such as 'google.com' and an optional 'port/service' 
     // resolves to an IP addr; Service eg: 'http', 'https', etc
-    [[nodiscard]] inline std::string resolveHostname(std::string_view hostname, const char *service = nullptr) {
-        addrinfo hints{}, *res {};
-        hints.ai_family = AF_INET;
-        hints.ai_socktype = SOCK_STREAM;
+    [[nodiscard]] inline std::string resolveHostname(std::string_view hostname, const char *service = nullptr,
+        SOCKTYPE sockType = SOCKTYPE::TCP, IP ipType = IP::V4)
+    {
+        int domain {ipType == IP::V4? PF_INET: PF_INET6};
+        int type {sockType == SOCKTYPE::TCP? SOCK_STREAM: SOCK_DGRAM};
+        addrinfo hints{}, *res {}; hints.ai_family = domain; hints.ai_socktype = type;
         if (int status = getaddrinfo(hostname.data(), service, &hints, &res); status != 0)
             throw SocketError{"Failed to resolve hostname", gai_strerror(status)};
 
         // Ensure res is freed always by wrapping inside a smart pointer
         std::unique_ptr<addrinfo, decltype(&freeaddrinfo)> resGaurd {res, freeaddrinfo};
 
-        char ipStr[INET_ADDRSTRLEN];
-        if (!inet_ntop(AF_INET, &reinterpret_cast<sockaddr_in*>(res->ai_addr)->sin_addr, ipStr, sizeof(ipStr)))
-            throw SocketError{"Failed to convert address to string"};
+        unsigned int ipLen {static_cast<unsigned int>(ipType == IP::V4? INET_ADDRSTRLEN: INET6_ADDRSTRLEN)};
+        std::string ipStr(ipLen, '\0'); const char *ret;
+        if (ipType == IP::V4) {
+            auto *addr = reinterpret_cast<sockaddr_in*>(res->ai_addr);
+            ret = inet_ntop(AF_INET, &addr->sin_addr, ipStr.data(), ipLen);
+        } else {
+            auto *addr6 = reinterpret_cast<sockaddr_in6*>(res->ai_addr);
+            ret = inet_ntop(AF_INET6, &addr6->sin6_addr, ipStr.data(), ipLen);
+        }
 
+        if (!ret) throw SocketError{"Failed to convert address to string"};
+        ipStr.resize(std::strlen(ipStr.c_str()));
         return ipStr;
     }
 
@@ -122,8 +137,6 @@ namespace net {
             }
 
         public:
-            struct SocketArgs { int domain; int type; int protocol; bool reuseSockAddr; };
-
             // Force close a socket if required
             void close() { if (_fd != -1) { ::close(_fd); _fd = -1; } }
 
@@ -158,12 +171,14 @@ namespace net {
             }
 
             // Default ctor
-            Socket(SocketArgs args = { .domain = PF_INET, .type = SOCK_STREAM, .protocol = IPPROTO_TCP, .reuseSockAddr = true }) {
-                _fd = socket(args.domain, args.type, args.protocol);
+            Socket(SOCKTYPE sockType = SOCKTYPE::TCP, IP ipType = IP::V4, bool reuseSockAddr = true) {
+                int domain {ipType == IP::V4? PF_INET: PF_INET6};
+                int type {sockType == SOCKTYPE::TCP? SOCK_STREAM: SOCK_DGRAM};
+                _fd = socket(domain, type, 0);
                 if (_fd == -1) throw SocketError{"Error creating socket object"};
 
                 // Reuse socket address
-                if (args.reuseSockAddr) {
+                if (reuseSockAddr) {
                     int opt {1};
                     if (setsockopt(_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) == -1)
                         throw SocketError{"Error setting opt 'SO_REUSEADDDR'"};
