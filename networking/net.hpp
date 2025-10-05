@@ -1,10 +1,11 @@
 /*
  * TODO:
- * 1. Implement HTTPResponse object
- * 2. URL Encode parameters
- * 3. Support for UDP protocol with example
- * 4. Use C++ modules
- * 5. Windows support
+ * - For failed runtime_error, get errno and display messages as applicable
+ * - URL Encode parameters
+ * - Support for UDP protocol with example
+ * - Support IPV6 addresses
+ * - Use C++ modules
+ * - Windows support?
  */
 
 #include <algorithm>
@@ -40,7 +41,8 @@ namespace net {
         std::unique_ptr<addrinfo, decltype(&freeaddrinfo)> resGaurd {res, freeaddrinfo};
 
         char ipStr[INET_ADDRSTRLEN];
-        if (inet_ntop(AF_INET, &reinterpret_cast<sockaddr_in*>(res->ai_addr)->sin_addr, ipStr, sizeof(ipStr)) == nullptr)
+        if (inet_ntop(AF_INET, &reinterpret_cast<sockaddr_in*>(res->ai_addr)->sin_addr, ipStr, sizeof(ipStr)) 
+                == nullptr)
             throw std::runtime_error("Failed to convert address to string");
 
         return ipStr;
@@ -115,7 +117,8 @@ namespace net {
                 int fcntl_flags {fcntl(_fd, F_GETFL, 0)}; // Get currently set flags
                 int fcntl_flags_modified = enable? fcntl_flags | O_NONBLOCK: fcntl_flags & ~O_NONBLOCK;
                 if(fcntl_flags == -1 || fcntl(_fd, F_SETFL, fcntl_flags_modified) == -1)
-                    throw "Error setting client socket to non blocking mode to: " + std::to_string(enable);
+                    throw std::runtime_error("Error setting client socket to non blocking mode to: " 
+                            + std::to_string(enable));
                 _blocking = !enable;
             }
 
@@ -200,7 +203,7 @@ namespace net {
                 std::string message; char buffer[2048] {}; long recvBytes;
                 while ((recvBytes = ::recv(_fd, buffer, sizeof(buffer), 0)) > 0)
                     message.append(buffer, static_cast<std::size_t>(recvBytes));
-                if (recvBytes < 0 && errno != EAGAIN && errno != EWOULDBLOCK) 
+                if (recvBytes < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != ECONNRESET)
                     throw std::runtime_error("Failed to recv");
                 return message;
             }
@@ -259,11 +262,9 @@ namespace net {
 
             // Force close a socket if required
             void close() {
-                if (socket.fd() != -1) { 
-                    if (ssl != nullptr) { SSL_shutdown(ssl); SSL_free(ssl); }
-                    socket.close();
-                    SSL_CTX_free(ctx);
-                }
+                if (ssl != nullptr) { SSL_shutdown(ssl); SSL_free(ssl); }
+                socket.close();
+                if (ctx != nullptr) SSL_CTX_free(ctx);
             }
 
             // SSLSocket Destructor
@@ -366,51 +367,61 @@ namespace net {
     };
 
     class HttpResponse {
+        private:
+            static std::string trim(const std::string &str) {
+                auto begin {str.find_first_not_of(' ')}; 
+                if (begin == std::string::npos) return "";
+                return str.substr(begin, str.find_last_not_of(' ') - begin + 1);
+            }
+
         public:
             HttpResponse(const std::string &raw): raw{raw} {
-                std::size_t pos {raw.find(" ")}, nextPos {raw.find(" ", pos + 1)};
-                if (pos == std::string::npos || nextPos == std::string::npos) 
-                    throw std::runtime_error("Invalid HttpResponse string");
-                statusCode = std::stoi(raw.substr(pos + 1, nextPos - pos - 1));
+                std::size_t pos1 {raw.find("\r\n")}, pos2;
+                if (pos1 == std::string::npos) throw std::runtime_error("Invalid HttpResponse string");
+                std::string statusRaw {trim(raw.substr(0, pos1))};
 
-                pos = std::exchange(nextPos, raw.find("\r\n", nextPos + 1));
-                if (nextPos == std::string::npos) throw std::runtime_error("Invalid HttpResponse string");
-                reason = raw.substr(pos + 1, nextPos - pos - 1);
-
-                pos = std::exchange(nextPos, raw.find("\r\n\r\n", nextPos + 2));
-                if (nextPos == std::string::npos) throw std::runtime_error("Invalid HttpResponse string");
-                body = raw.substr(nextPos + 4);
-
+                pos2 = raw.find("\r\n\r\n", pos1 + 2);
+                if (pos2 == std::string::npos) throw std::runtime_error("Invalid HttpResponse string");
+                body = raw.substr(pos2 + 4);
                 std::string_view headerRaw {
-                    raw.begin() + static_cast<long>(pos) + 2, 
-                    raw.begin() + static_cast<long>(nextPos) + 2
+                    raw.begin() + static_cast<long>(pos1) + 2, 
+                    raw.begin() + static_cast<long>(pos2) + 2
                 };
 
+                // Extract status code
+                pos1 = statusRaw.find(" ");
+                if (pos1 == std::string::npos) throw std::runtime_error("Invalid HttpResponse string");
+                pos1 = statusRaw.find_first_not_of(" ", pos1 + 1);
+                if (pos1 == std::string::npos) throw std::runtime_error("Invalid HttpResponse string");
+                pos2 = statusRaw.find(" ", pos1); if (pos2 == std::string::npos) pos2 = statusRaw.size();
+                statusCode = std::stoi(statusRaw.substr(pos1, pos2 - pos1));
+
+                // Parse the headers
                 while (!headerRaw.empty()) {
-                    pos = headerRaw.find(':');
-                    if (pos == std::string::npos) 
-                        throw std::runtime_error("Invalid HttpResponse header");
+                    pos1 = headerRaw.find(':');
+                    if (pos1 == std::string::npos) throw std::runtime_error("Invalid HttpResponse header");
 
-                    nextPos = headerRaw.find("\r\n", pos + 1);
-                    if (nextPos == std::string::npos) 
-                        throw std::runtime_error("Invalid HttpResponse header");
+                    pos2 = headerRaw.find("\r\n", pos1 + 1);
+                    if (pos2 == std::string::npos) throw std::runtime_error("Invalid HttpResponse header");
 
-                    headers.insert({
-                        std::string{headerRaw.substr(0, pos)}, 
-                        std::string {headerRaw.substr(pos + 2, nextPos - pos - 2)}
-                    });
+                    // Header keys are always in lower case
+                    std::string key {headerRaw.substr(0, pos1)}; 
+                    std::string value {headerRaw.substr(pos1 + 1, pos2 - pos1 - 1)};
+                    std::ranges::transform(key, key.begin(), [](char ch) { return std::tolower(ch); });
+                    headers.insert({trim(key), trim(value)});
 
-                    headerRaw = headerRaw.substr(nextPos + 2);
+                    headerRaw = headerRaw.substr(pos2 + 2);
                 }
             }
+
+            [[nodiscard]] inline bool ok() const { return statusCode >= 200 && statusCode < 400; }
 
             [[nodiscard]] JSON::JSONHandle json() const {
                 return JSON::Parser::loads(body);
             }
 
         public:
-            std::string raw, body, reason;
-            int statusCode;
+            std::string raw, body; int statusCode;
             std::unordered_map<std::string, std::string> headers;
     };
 
@@ -443,12 +454,12 @@ namespace net {
             HttpResponse _execute(std::string_view ipAddr, std::uint16_t port, long timeoutSec) {
                 net::Socket socket;
                 socket.connect(ipAddr, port);
-                socket.setTimeout(timeoutSec, timeoutSec);
+                if (timeoutSec > 0) socket.setTimeout(timeoutSec, timeoutSec);
                 socket.sendAll(serialize());
                 return socket.recvAll();
             }
 
-            std::string _executeSSL(std::string_view ipAddr, std::uint16_t port, std::string_view hostname = "") {
+            HttpResponse _executeSSL(std::string_view ipAddr, std::uint16_t port, std::string_view hostname = "") {
                 net::SSLSocket socket;
                 socket.connect(ipAddr, port, hostname);
                 socket.sendAll(serialize());
@@ -516,7 +527,8 @@ namespace net {
             void poll(bool) = delete;
 
             // Warning: While safe to `untrack` while iterating, Socket& can become dangling
-            [[nodiscard]] std::vector<std::pair<Socket&, EventType>> poll(int timeout = -1, bool raiseError = true) {
+            [[nodiscard]] std::vector<std::pair<Socket&, EventType>> 
+            poll(int timeout = -1, bool raiseError = true) {
                 // If poll failed return empty
                 if (::poll(pollFds.data(), pollFds.size(), timeout) == -1) {
                     if (raiseError) throw std::runtime_error("Poll failed");
