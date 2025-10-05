@@ -18,10 +18,9 @@ int main() {
     
     // Cast root into Object node
     auto &childObj {root["JSON Test Pattern pass3"].cast<JSON::JSONObjectNode>()};
-    childObj.setKey("Modify JSON");
+    childObj.setKey("Modified JSON");
     childObj.push(JSON::helper::createNode("But it could have", "been an array as well"));
 
     // Serialize the output
-    std::string processed {JSON::Parser::dumps(root)};
-    std::cout << "Modified ->\n" << JSON::helper::pretty(processed) << "\n";
+    std::cout << "Modified ->\n" << root.str() << "\n";
 }

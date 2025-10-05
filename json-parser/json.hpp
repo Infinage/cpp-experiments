@@ -278,6 +278,11 @@ namespace JSON {
             return std::get<VariantType>(value);
         }
 
+        /*
+         * Convenience wrapper to dump output as a string
+         */
+        inline std::string str(bool pretty = true) const;
+
         template<typename T>
         decltype(auto) cast() requires(std::is_base_of_v<JSONNode, T>) {
             if (getType() != T::staticType) throw std::runtime_error{"Invalid Cast"};
@@ -302,6 +307,14 @@ namespace JSON {
 
         // Helper function to prettify a JSON dump string
         inline std::string pretty(const std::string &jsonDump) {
+            // Helper to repeat string n times
+            auto repeat {[](std::string_view str, std::size_t times){
+                std::string result; 
+                result.reserve(str.size() * times);
+                while (times-- > 0) result += str;
+                return result;
+            }};
+
             // Levels to keep track of how tabs to indent
             std::size_t levels {0}; std::string result{""};
             bool insideQuote {false};
@@ -309,11 +322,15 @@ namespace JSON {
                 if (ch == '"' && (result.empty() || result.back() != '\\')) 
                     insideQuote = !insideQuote;
                 else if (!insideQuote && (ch == '{' || ch == '['))
-                    result += std::string(1, ch) + "\n" + std::string(++levels, '\t');
+                    result += std::string(1, ch) + "\n" + repeat("  ", ++levels);
                 else if (!insideQuote && (ch == ']' || ch == '}'))
-                    result += "\n" + std::string(--levels, '\t') + std::string(1, ch);
-                else if (ch == ',')
-                    result += std::string(1, ch) + "\n" + std::string(levels, '\t');
+                    result += "\n" + repeat("  ", --levels) + std::string(1, ch);
+                else if (!insideQuote && ch == ',')
+                    result += std::string(1, ch) + "\n" + repeat("  ", levels);
+                else if (!insideQuote && ch == ':')
+                    result += ": ";
+                else if (!insideQuote && ch == ' ')
+                    continue;
                 else
                     result += ch;
             }
@@ -564,14 +581,14 @@ namespace JSON {
             // Regardless we display what is present if the node is contained inside
             // an object. We hide what is present when the parent is an array
             // Recursive function for simplicity :)
-            static std::string dumps(JSONHandle root_, bool showEmptyKeys = false) {
+            static std::string dumps(JSONHandle root_, bool showEmptyKeys = false, bool _top = true) {
                 // Get underlying pointer
                 JSONNodePtr root {root_.ptr};
 
                 if (root == nullptr) return "";
                 else {
-                    std::string keyStr = {!root->getKey().empty() || showEmptyKeys? 
-                        "\"" + root->getKey() + "\": ": ""};
+                    std::string keyStr = {(!root->getKey().empty() || showEmptyKeys) && !_top? 
+                        "\"" + root->getKey() + "\":": ""};
 
                     if (root->getType() == NodeType::value) {
                         JSONValueNode &v = static_cast<JSONValueNode&>(*root);
@@ -582,12 +599,9 @@ namespace JSON {
                         std::string result {keyStr + "["};
                         JSONArrayNode &v = static_cast<JSONArrayNode&>(*root);
                         for (JSONNodePtr nxt: v)
-                            result += dumps(nxt, showEmptyKeys) + ", ";
+                            result += dumps(nxt, showEmptyKeys, false) + ",";
 
-                        if (v.size() > 0) {
-                            result.pop_back();
-                            result.pop_back();
-                        }
+                        if (v.size() > 0) result.pop_back();
                         result += "]";
                         return result;
                     }
@@ -596,15 +610,19 @@ namespace JSON {
                         std::string result {keyStr + "{"};
                         JSONObjectNode &v = static_cast<JSONObjectNode&>(*root);
                         for (JSONNodePtr nxt: v)
-                            result += dumps(nxt, showEmptyKeys) + ", ";
-                        if (v.size() > 0) {
-                            result.pop_back();
-                            result.pop_back();
-                        }
+                            result += dumps(nxt, showEmptyKeys, false) + ",";
+                        if (v.size() > 0) result.pop_back();
                         result += "}";
                         return result;
                     } 
                 }
             }
     };
+
+    // Define the JSONHandle::str convenience function
+    inline std::string JSONHandle::str(bool pretty) const { 
+        std::string jsonDump {Parser::dumps(*this, false)}; 
+        if (pretty) jsonDump = helper::pretty(jsonDump);
+        return jsonDump;
+    }
 }
