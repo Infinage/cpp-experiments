@@ -305,38 +305,6 @@ namespace JSON {
         inline JSONNodePtr createObject(const std::vector<JSONNodePtr> &values) { return std::make_shared<JSONObjectNode>(values); }
         inline JSONNodePtr createObject(const std::string &key, const std::vector<JSONNodePtr> &values) { return std::make_shared<JSONObjectNode>(key, values); }
 
-        // Helper function to prettify a JSON dump string
-        inline std::string pretty(const std::string &jsonDump) {
-            // Helper to repeat string n times
-            auto repeat {[](std::string_view str, std::size_t times){
-                std::string result; 
-                result.reserve(str.size() * times);
-                while (times-- > 0) result += str;
-                return result;
-            }};
-
-            // Levels to keep track of how tabs to indent
-            std::size_t levels {0}; std::string result{""};
-            bool insideQuote {false};
-            for (char ch: jsonDump) {
-                if (ch == '"' && (result.empty() || result.back() != '\\')) 
-                    insideQuote = !insideQuote;
-                else if (!insideQuote && (ch == '{' || ch == '['))
-                    result += std::string(1, ch) + "\n" + repeat("  ", ++levels);
-                else if (!insideQuote && (ch == ']' || ch == '}'))
-                    result += "\n" + repeat("  ", --levels) + std::string(1, ch);
-                else if (!insideQuote && ch == ',')
-                    result += std::string(1, ch) + "\n" + repeat("  ", levels);
-                else if (!insideQuote && ch == ':')
-                    result += ": ";
-                else if (!insideQuote && ch == ' ')
-                    continue;
-                else
-                    result += ch;
-            }
-            return result;
-        }
-
         // Helper function to format JSON_SIMPLE_TYPEs to String
         inline std::string simple_format (const JSONSimpleType &v) {
             // String
@@ -441,6 +409,51 @@ namespace JSON {
 
     // Handles logic To parse JSON from strings (and) To Dump JSON into string
     class Parser {
+        private:
+            static std::string repeatStr(std::string_view str, std::size_t times) {
+                std::string result; 
+                result.reserve(str.size() * times);
+                while (times-- > 0) result += str;
+                return result;
+            };
+
+            // Recursively dump output, skipKey and level are function parameters
+            static std::string _dumps(JSONNodePtr root, bool pretty, bool _skipKey, std::size_t _level) {
+                if (root == nullptr) return "";
+
+                std::string keyStr;
+                if (!_skipKey) {
+                    keyStr = "\"" + root->getKey() + "\":";
+                    if (pretty) keyStr.push_back(' ');
+                }
+
+                if (root->getType() == NodeType::value) {
+                    JSONValueNode &v = static_cast<JSONValueNode&>(*root);
+                    return keyStr + helper::simple_format(v.getValue());
+                }
+
+                else if (root->getType() == NodeType::array) {
+                    std::string result {keyStr + "["}, spacing {pretty? '\n' + repeatStr("  ", _level): ""};
+                    JSONArrayNode &v = static_cast<JSONArrayNode&>(*root);
+                    for (JSONNodePtr nxt: v) 
+                        result += spacing + _dumps(nxt, pretty, true, _level + 1) + ",";
+                    if (v.size() > 0) result.pop_back();
+                    if (pretty) result += '\n' + repeatStr(" ", _level - 1);
+                    result += ']';
+                    return result;
+                }
+
+                else {
+                    std::string result {keyStr + "{"}, spacing {pretty? '\n' + repeatStr("  ", _level): ""};
+                    JSONObjectNode &v = static_cast<JSONObjectNode&>(*root);
+                    for (JSONNodePtr nxt: v) result += spacing + _dumps(nxt, pretty, false, _level + 1) + ",";
+                    if (v.size() > 0) result.pop_back();
+                    if (pretty) result += '\n' + repeatStr(" ", _level - 1);
+                    result += '}';
+                    return result;
+                } 
+            }
+
         public:
             // Load from a string in memory into JSON
             static JSONHandle loads(const std::string &raw) {
@@ -576,53 +589,15 @@ namespace JSON {
                     throw std::logic_error("Invalid JSON");
             }
 
-            // JSON object to a string
-            // Note that the JSONNode's may or may not have a key
-            // Regardless we display what is present if the node is contained inside
-            // an object. We hide what is present when the parent is an array
-            // Recursive function for simplicity :)
-            static std::string dumps(JSONHandle root_, bool showEmptyKeys = false, bool _top = true) {
-                // Get underlying pointer
-                JSONNodePtr root {root_.ptr};
-
-                if (root == nullptr) return "";
-                else {
-                    std::string keyStr = {(!root->getKey().empty() || showEmptyKeys) && !_top? 
-                        "\"" + root->getKey() + "\":": ""};
-
-                    if (root->getType() == NodeType::value) {
-                        JSONValueNode &v = static_cast<JSONValueNode&>(*root);
-                        return keyStr + helper::simple_format(v.getValue());
-                    }
-
-                    else if (root->getType() == NodeType::array) {
-                        std::string result {keyStr + "["};
-                        JSONArrayNode &v = static_cast<JSONArrayNode&>(*root);
-                        for (JSONNodePtr nxt: v)
-                            result += dumps(nxt, showEmptyKeys, false) + ",";
-
-                        if (v.size() > 0) result.pop_back();
-                        result += "]";
-                        return result;
-                    }
-
-                    else {
-                        std::string result {keyStr + "{"};
-                        JSONObjectNode &v = static_cast<JSONObjectNode&>(*root);
-                        for (JSONNodePtr nxt: v)
-                            result += dumps(nxt, showEmptyKeys, false) + ",";
-                        if (v.size() > 0) result.pop_back();
-                        result += "}";
-                        return result;
-                    } 
-                }
+            // Exposed function hides some parameters from end user
+            static std::string dumps(JSONHandle root_, bool pretty = false) {
+                return _dumps(root_.ptr, pretty, true, 1);
             }
     };
 
     // Define the JSONHandle::str convenience function
     inline std::string JSONHandle::str(bool pretty) const { 
-        std::string jsonDump {Parser::dumps(*this, false)}; 
-        if (pretty) jsonDump = helper::pretty(jsonDump);
+        std::string jsonDump {Parser::dumps(*this, pretty)}; 
         return jsonDump;
     }
 }

@@ -25,6 +25,5 @@ int main() {
    JSON::JSONNodePtr root    = JSON::helper::createObject({arr_, bool_, null_, int_, float_, string_, obj_});
 
    // Serialize & print the result
-   std::string jsonDump {JSON::Parser::dumps(root)};
-   std::cout << JSON::helper::pretty(jsonDump) << "\n";
+   std::cout << JSON::Parser::dumps(root, true) << "\n";
 }
