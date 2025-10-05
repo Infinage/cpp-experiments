@@ -1,6 +1,5 @@
 /*
  * TODO:
- * - URL Encode parameters
  * - Support for UDP protocol with example
  * - Support IPV6 addresses
  * - Use C++ modules
@@ -10,6 +9,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <cstring>
+#include <iomanip>
 #include <memory>
 #include <sstream>
 #include <unordered_map>
@@ -80,6 +80,29 @@ namespace net {
             throw SocketError{"Failed to convert address to string"};
 
         return ipStr;
+    }
+
+    [[nodiscard]] inline std::string urlEncode(std::string_view str, 
+        bool mapSpaceToPlus = true) 
+    {
+        std::ostringstream oss; oss.fill('0');
+        for (char ch: str) {
+            bool isUnreserved {
+                (ch >= 'a' && ch <= 'z') ||
+                (ch >= 'A' && ch <= 'Z') ||
+                (ch >= '0' && ch <= '9') ||
+                ch == '-' || ch == '.' || ch == '_' || ch == '~'
+            };
+
+            if (ch == ' ' && mapSpaceToPlus) oss << '+';
+            else if (isUnreserved) oss << ch;
+            else {
+                oss << '%' << std::hex << std::uppercase << std::setw(2) 
+                    << static_cast<int>(static_cast<unsigned char>(ch))
+                    << std::dec << std::nouppercase;
+            }
+        }
+        return oss.str();
     }
 
     class Socket {
@@ -473,8 +496,10 @@ namespace net {
                 path{path}, method{method} {}
 
             void setHeader(const std::string &key, const std::string &value) { headers.push_back({key, value}); }
-            void setParam(const std::string &key, const std::string &value) { urlParams.push_back({key, value}); }
             void setBody(std::string body) { this->body = std::move(body); }
+            void setParam(const std::string &key, const std::string &value) { 
+                urlParams.push_back({urlEncode(key), urlEncode(value)}); 
+            }
 
             std::string serialize() const {
                 std::ostringstream oss;
@@ -532,7 +557,10 @@ namespace net {
                 return static_cast<EventType>(static_cast<T>(e1) | static_cast<T>(e2)); 
             }
 
-            friend bool operator==(EventType e1, EventType e2) {
+            // User almost certainly wanted to use '&' operator
+            friend bool operator==(EventType, EventType) = delete;
+
+            friend bool operator&(EventType e1, EventType e2) {
                 using T = std::underlying_type_t<EventType>;
                 return (static_cast<T>(e1) & static_cast<T>(e2)) != 0; 
             }
@@ -549,8 +577,8 @@ namespace net {
             void track(Socket &&socket, EventType event = EventType::Readable | EventType::Writable) {
                 int eventInt {}, fd {socket.fd()};
                 sockets.emplace(fd, std::move(socket));
-                if (event == EventType::Readable) eventInt |= POLLIN;
-                if (event == EventType::Writable) eventInt |= POLLOUT;
+                if (event & EventType::Readable) eventInt |= POLLIN;
+                if (event & EventType::Writable) eventInt |= POLLOUT;
                 pollFds.emplace_back(fd, eventInt, 0);
             }
 
@@ -559,8 +587,8 @@ namespace net {
                     throw std::runtime_error("Socket FD is not tracked: " + std::to_string(fd));
 
                 int eventInt {};
-                if (event == EventType::Readable) eventInt |= POLLIN;
-                if (event == EventType::Writable) eventInt |= POLLOUT;
+                if (event & EventType::Readable) eventInt |= POLLIN;
+                if (event & EventType::Writable) eventInt |= POLLOUT;
 
                 std::ranges::find(pollFds, fd, &pollfd::fd)->revents 
                     = static_cast<short>(eventInt);
@@ -596,7 +624,7 @@ namespace net {
                             event |= EventType::Closed;
                         if (pollFd.revents & POLLERR || pollFd.revents & POLLNVAL)
                             event |= EventType::Error;
-                        if (event != EventType::Unknown)
+                        if (event & EventType::Unknown)
                             result.emplace_back(getSocket(pollFd.fd), event);
                     }
                 }

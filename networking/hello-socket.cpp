@@ -57,15 +57,15 @@ int main(int argc, char **argv) try {
             while (serverRunning) {
                 for (auto &[socket, event]: manager.poll()) {
                     if (!serverRunning) break;
-                    else if (event == net::PollEventType::Closed || event == net::PollEventType::Error) {
+                    else if (event & net::PollEventType::Closed || event & net::PollEventType::Error) {
                         if (socket.fd() == serverFD) throw std::runtime_error("Server Socket poll failed");
                         manager.untrack(socket.fd());
-                    } else if (event == net::PollEventType::Readable && socket.fd() == serverFD) {
+                    } else if (event & net::PollEventType::Readable && socket.fd() & serverFD) {
                         net::Socket client {socket.accept()};
                         std::cout << "Connected to Client # " << client.fd() << ".\n";
                         client.setNonBlocking();
                         manager.track(std::move(client), net::PollEventType::Readable);
-                    } else if (event == net::PollEventType::Readable) {
+                    } else if (event & net::PollEventType::Readable) {
                         std::string message {socket.recvAll()};
                         if (!message.empty() && message != "quit") {
                             std::cout << "Received from Client #" << socket.fd() << ": " << message << "\n";
