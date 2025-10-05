@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <cstring>
 #include <memory>
 #include <sstream>
 #include <unordered_map>
@@ -30,20 +31,28 @@
 #include "../json-parser/json.hpp"
 
 namespace net {
+    // Custom exception class to automatically include the system error
+    class SocketError: public std::runtime_error {
+    public:
+        SocketError(const std::string &msg, const std::string &sysMsg = "")
+        : std::runtime_error{msg + ": " + (sysMsg.empty()? std::strerror(errno): sysMsg)} {}
+    };
+
+    // Given a hostname such as 'google.com' and an optional 'port/service' 
+    // resolves to an IP addr; Service eg: 'http', 'https', etc
     [[nodiscard]] inline std::string resolveHostname(std::string_view hostname, const char *service = nullptr) {
         addrinfo hints{}, *res {};
         hints.ai_family = AF_INET;
         hints.ai_socktype = SOCK_STREAM;
-        if (getaddrinfo(hostname.data(), service, &hints, &res) != 0)
-            throw std::runtime_error("Failed to resolve hostname");
+        if (int status = getaddrinfo(hostname.data(), service, &hints, &res); status != 0)
+            throw SocketError{"Failed to resolve hostname", gai_strerror(status)};
 
         // Ensure res is freed always by wrapping inside a smart pointer
         std::unique_ptr<addrinfo, decltype(&freeaddrinfo)> resGaurd {res, freeaddrinfo};
 
         char ipStr[INET_ADDRSTRLEN];
-        if (inet_ntop(AF_INET, &reinterpret_cast<sockaddr_in*>(res->ai_addr)->sin_addr, ipStr, sizeof(ipStr)) 
-                == nullptr)
-            throw std::runtime_error("Failed to convert address to string");
+        if (!inet_ntop(AF_INET, &reinterpret_cast<sockaddr_in*>(res->ai_addr)->sin_addr, ipStr, sizeof(ipStr)))
+            throw SocketError{"Failed to convert address to string"};
 
         return ipStr;
     }
@@ -76,6 +85,7 @@ namespace net {
 
             int fd() const { return _fd; }
             bool isBlocking() const { return _blocking; }
+            bool ok() const { return _fd != -1; }
 
             // Disable copy ctor and assignment
             Socket(const Socket&) = delete;
@@ -102,13 +112,13 @@ namespace net {
             // Default ctor
             Socket(SocketArgs args = { .domain = PF_INET, .type = SOCK_STREAM, .protocol = IPPROTO_TCP, .reuseSockAddr = true }) {
                 _fd = socket(args.domain, args.type, args.protocol);
-                if (_fd == -1) throw std::runtime_error("Error creating socket object");
+                if (_fd == -1) throw SocketError{"Error creating socket object"};
 
                 // Reuse socket address
                 if (args.reuseSockAddr) {
                     int opt {1};
                     if (setsockopt(_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) == -1)
-                        throw std::runtime_error("Error setting opt 'SO_REUSEADDDR'");
+                        throw SocketError{"Error setting opt 'SO_REUSEADDDR'"};
                 }
             }
 
@@ -117,8 +127,8 @@ namespace net {
                 int fcntl_flags {fcntl(_fd, F_GETFL, 0)}; // Get currently set flags
                 int fcntl_flags_modified = enable? fcntl_flags | O_NONBLOCK: fcntl_flags & ~O_NONBLOCK;
                 if(fcntl_flags == -1 || fcntl(_fd, F_SETFL, fcntl_flags_modified) == -1)
-                    throw std::runtime_error("Error setting client socket to non blocking mode to: " 
-                            + std::to_string(enable));
+                    throw SocketError{"Error setting client socket to non blocking mode to: " 
+                            + std::to_string(enable)};
                 _blocking = !enable;
             }
 
@@ -128,30 +138,30 @@ namespace net {
                 struct timeval sndTimeout {.tv_sec = sndTimeoutSec, .tv_usec = 0};
                 if (::setsockopt(_fd, SOL_SOCKET, SO_RCVTIMEO, &rcvTimeout, sizeof(rcvTimeout)) < 0 || 
                     ::setsockopt(_fd, SOL_SOCKET, SO_SNDTIMEO, &sndTimeout, sizeof(sndTimeout)) < 0)
-                    throw std::runtime_error("Failed to set socket timeouts");
+                    throw SocketError{"Failed to set socket timeouts"};
             }
 
             void bind(std::string_view serverIp, std::uint16_t port) {
                 sockaddr_in serverAddr {SockaddrIn(serverIp, port)};
                 int bindStatus {::bind(_fd, reinterpret_cast<sockaddr*>(&serverAddr), sizeof(serverAddr))};
-                if (bindStatus == -1) throw std::runtime_error("Error binding to the socket");
+                if (bindStatus == -1) throw SocketError{"Error binding to the socket"};
             }
 
             void listen(unsigned short backlog = 5) {
                 int listenStatus {::listen(_fd, backlog)};
-                if (listenStatus == -1) throw std::runtime_error("Error listening on socket");
+                if (listenStatus == -1) throw SocketError{"Error listening on socket"};
             }
 
             [[nodiscard]] Socket accept() {
                 int clientSocket {::accept(_fd, nullptr, nullptr)};
-                if (clientSocket == -1) throw std::runtime_error("Failed to accept an incomming connection");
+                if (clientSocket == -1) throw SocketError{"Failed to accept an incomming connection"};
                 return Socket{clientSocket};
             }
 
             [[nodiscard]] Socket accept(std::string &host, std::uint16_t &port) {
                 sockaddr_in hostAddr {}; socklen_t hostAddrLen{sizeof(hostAddr)};
                 int clientSocket {::accept(_fd, reinterpret_cast<sockaddr*>(&hostAddr), &hostAddrLen)};
-                if (clientSocket == -1) throw std::runtime_error("Failed to accept an incomming connection");
+                if (clientSocket == -1) throw SocketError{"Failed to accept an incomming connection"};
 
                 port = ntohs(hostAddr.sin_port);
                 char ipStr[INET_ADDRSTRLEN];
@@ -164,7 +174,7 @@ namespace net {
             void connect(std::string_view serverIp, std::uint16_t port) {
                 sockaddr_in serverAddr {SockaddrIn(serverIp, port)};
                 int connectStatus {::connect(_fd, reinterpret_cast<sockaddr*>(&serverAddr), sizeof(serverAddr))};
-                if (connectStatus == -1) throw std::runtime_error("Error connecting to server");
+                if (connectStatus == -1) throw SocketError{"Error connecting to server"};
             }
 
             // Send until all of the message is out, for blocking sockets guaranteed to 
@@ -173,9 +183,9 @@ namespace net {
             long sendAll(std::string_view message) {
                 long totalSent {};
                 while (!message.empty()) {
-                    long sentBytes {::send(_fd, message.data(), message.size(), 0)};
+                    long sentBytes {::send(_fd, message.data(), message.size(), MSG_NOSIGNAL)};
                     if (sentBytes <= 0 && errno != EAGAIN && errno != EWOULDBLOCK) 
-                        throw std::runtime_error("Failed to send");
+                        throw SocketError{"Failed to send"};
                     message.remove_prefix(static_cast<std::size_t>(sentBytes));
                     totalSent += sentBytes;
                 }
@@ -183,17 +193,18 @@ namespace net {
             }
 
             [[nodiscard]] long send(std::string_view message) {
-                long sentBytes {::send(_fd, message.data(), message.size(), 0)};
+                long sentBytes {::send(_fd, message.data(), message.size(), MSG_NOSIGNAL)};
                 if (sentBytes <= 0 && errno != EAGAIN && errno != EWOULDBLOCK) 
-                    throw std::runtime_error("Failed to send");
+                    throw SocketError{"Failed to send"};
                 return sentBytes;
             }
 
             [[nodiscard]] std::string recv(std::size_t maxBytes = 2048) {
                 std::vector<char> buffer(maxBytes);
                 long recvBytes {::recv(_fd, buffer.data(), maxBytes, 0)};
-                if (recvBytes < 0 && errno != EAGAIN && errno != EWOULDBLOCK)
-                    throw std::runtime_error("Failed to recv");
+                if (recvBytes == 0 || (recvBytes < 0 && errno == ECONNRESET)) close();
+                else if (recvBytes < 0 && errno != EAGAIN && errno != EWOULDBLOCK)
+                    throw SocketError{"Failed to recv"};
                 return {buffer.data(), static_cast<std::size_t>(recvBytes)};
             }
 
@@ -203,24 +214,27 @@ namespace net {
                 std::string message; char buffer[2048] {}; long recvBytes;
                 while ((recvBytes = ::recv(_fd, buffer, sizeof(buffer), 0)) > 0)
                     message.append(buffer, static_cast<std::size_t>(recvBytes));
-                if (recvBytes < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != ECONNRESET)
-                    throw std::runtime_error("Failed to recv");
+                if (recvBytes == 0 || (recvBytes < 0 && errno == ECONNRESET)) close();
+                else if (recvBytes < 0 && errno != EAGAIN && errno != EWOULDBLOCK)
+                    throw SocketError{"Failed to recv"};
                 return message;
             }
 
             void sendTo(std::string_view message, std::string_view host, std::uint16_t port) {
                 sockaddr_in hostAddr {SockaddrIn(host, port)};
-                long sentBytes {::sendto(_fd, message.data(), message.size(), 0, reinterpret_cast<sockaddr*>(&hostAddr), sizeof(hostAddr))};
-                if (sentBytes < 0 && errno != EAGAIN && errno != EWOULDBLOCK) 
-                    throw std::runtime_error("Failed to send");
+                long sentBytes {::sendto(_fd, message.data(), message.size(), 0, 
+                    reinterpret_cast<sockaddr*>(&hostAddr), sizeof(hostAddr))};
+                if (sentBytes <= 0 && errno != EAGAIN && errno != EWOULDBLOCK) 
+                    throw SocketError{"Failed to send"};
             }
 
             [[nodiscard]] std::string recvFrom(std::string &host, std::uint16_t &port, std::size_t maxBytes = 2048) {
                 sockaddr_in hostAddr {}; socklen_t hostAddrLen {sizeof(hostAddr)};
                 std::vector<char> buffer(maxBytes); 
                 long recvBytes {::recvfrom(_fd, buffer.data(), maxBytes, 0, reinterpret_cast<sockaddr*>(&hostAddr), &hostAddrLen)};
-                if (recvBytes < 0 && errno != EAGAIN && errno != EWOULDBLOCK) 
-                    throw std::runtime_error("Failed to recv");
+                if (recvBytes == 0 || (recvBytes < 0 && errno == ECONNRESET)) close();
+                else if (recvBytes < 0 && errno != EAGAIN && errno != EWOULDBLOCK) 
+                    throw SocketError{"Failed to recv"};
 
                 port = ntohs(hostAddr.sin_port);
                 char ipStr[INET_ADDRSTRLEN];
@@ -262,9 +276,9 @@ namespace net {
 
             // Force close a socket if required
             void close() {
-                if (ssl != nullptr) { SSL_shutdown(ssl); SSL_free(ssl); }
+                if (ssl != nullptr) { SSL_shutdown(ssl); SSL_free(ssl); ssl = nullptr; }
+                if (ctx != nullptr) { SSL_CTX_free(ctx); ctx = nullptr; }
                 socket.close();
-                if (ctx != nullptr) SSL_CTX_free(ctx);
             }
 
             // SSLSocket Destructor
@@ -294,6 +308,7 @@ namespace net {
             }
 
             // Forward function calls to the underlying socket obj
+            bool ok() const { return socket.ok(); }
             int fd() const { return socket.fd(); }
             void bind(std::string_view serverIp, std::uint16_t port) { socket.bind(serverIp, port); }
             void listen(unsigned short backlog = 5) { socket.listen(backlog); }
@@ -347,7 +362,8 @@ namespace net {
             [[nodiscard]] std::string recv(std::size_t maxBytes = 2048) {
                 std::vector<char> buffer(maxBytes);
                 long recvBytes {SSL_read(ssl, buffer.data(), static_cast<int>(maxBytes))};
-                if (recvBytes < 0) throw std::runtime_error("Failed to recv");
+                if (recvBytes == 0) close();
+                else if (recvBytes < 0) throw std::runtime_error("Failed to recv");
                 return {buffer.data(), static_cast<std::size_t>(recvBytes)};
             }
 
@@ -356,7 +372,8 @@ namespace net {
                 std::string message; char buffer[2048] {}; long recvBytes;
                 while ((recvBytes = SSL_read(ssl, buffer, sizeof(buffer))) > 0)
                     message.append(buffer, static_cast<std::size_t>(recvBytes));
-                if (recvBytes < 0) throw std::runtime_error("Failed to recv");
+                if (recvBytes == 0) close();
+                else if (recvBytes < 0) throw std::runtime_error("Failed to recv");
                 return message;
             }
 
@@ -451,6 +468,7 @@ namespace net {
                 return _execute(resolveHostname(hostname), 80, timeoutSec);
             }
 
+            // If timeout set to a negative number, timeouts are ignored
             HttpResponse _execute(std::string_view ipAddr, std::uint16_t port, long timeoutSec) {
                 net::Socket socket;
                 socket.connect(ipAddr, port);
@@ -531,27 +549,35 @@ namespace net {
             poll(int timeout = -1, bool raiseError = true) {
                 // If poll failed return empty
                 if (::poll(pollFds.data(), pollFds.size(), timeout) == -1) {
-                    if (raiseError) throw std::runtime_error("Poll failed");
+                    if (raiseError) throw SocketError{"Poll failed"};
                     return {};
                 }
 
-                // Store the result into events
+                // Store the result into events & clean any closed sockets
                 std::vector<std::pair<Socket&, EventType>> result;
+                std::vector<pollfd> pollFdsCleaned;
+                pollFdsCleaned.reserve(pollFds.size());
                 for (auto &pollFd: pollFds) {
-                    EventType event {EventType::Unknown};
-
-                    if (pollFd.revents & POLLIN) 
-                        event |= EventType::Readable;
-                    if (pollFd.revents & POLLOUT)
-                        event |= EventType::Writable;
-                    if (pollFd.revents & POLLHUP)
-                        event |= EventType::Closed;
-                    if (pollFd.revents & POLLERR || pollFd.revents & POLLNVAL)
-                        event |= EventType::Error;
-
-                    if (event != EventType::Unknown)
-                        result.emplace_back(getSocket(pollFd.fd), event);
+                    if (int fd = pollFd.fd; getSocket(pollFd.fd).fd() == -1) {
+                        sockets.erase(fd);
+                    } else {
+                        pollFdsCleaned.push_back(pollFd);
+                        EventType event {EventType::Unknown};
+                        if (pollFd.revents & POLLIN) 
+                            event |= EventType::Readable;
+                        if (pollFd.revents & POLLOUT)
+                            event |= EventType::Writable;
+                        if (pollFd.revents & POLLHUP)
+                            event |= EventType::Closed;
+                        if (pollFd.revents & POLLERR || pollFd.revents & POLLNVAL)
+                            event |= EventType::Error;
+                        if (event != EventType::Unknown)
+                            result.emplace_back(getSocket(pollFd.fd), event);
+                    }
                 }
+
+                std::swap(pollFds, pollFdsCleaned);
+                pollFds.shrink_to_fit();
 
                 return result;
             }

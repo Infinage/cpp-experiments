@@ -36,6 +36,7 @@ int main(int argc, char **argv) try {
             server.listen();
 
             std::signal(SIGINT, [](int) { serverRunning = false; server.close(); });
+            std::signal(SIGPIPE, SIG_IGN);
 
             std::cout << "Server is up and listening on port " << port << ".\n";
             std::vector<std::jthread> threads;
@@ -49,14 +50,14 @@ int main(int argc, char **argv) try {
                     std::cout << "Connected to Client # " << client.fd() << std::endl;
                     while (serverRunning) try {
                         std::string message {client.recv()};
-                        if (message.empty() || message != "quit") {
+                        if (!message.empty() && message != "quit") {
                             std::cout << "Received from Client #" << client.fd() << ": " << message << std::endl;
-                        } else {
+                        } else if (client.ok()) {
                             std::cout << "Disconnecting client #" << client.fd() << std::endl;
                             client.sendAll("Bye Socket!"); 
                             break;
                         }
-                    } catch (...) {}
+                    } catch (...) { break; }
 
                     // Release for consumption by other sockets
                     semaphore.release();
