@@ -7,11 +7,12 @@ int main() try {
     {
         const char *domain {"api6.ipify.org"};
         std::string ipAddr {net::resolveHostname(domain, nullptr, net::SOCKTYPE::TCP, net::IP::V6)};
-        std::println("Resolving IPV6 Domain (): {}", ipAddr);
-        net::HttpRequest req; req.setParam("format", "json");
-        std::println("{}", req.serialize());
-        net::HttpResponse resp {req._executeSSL(ipAddr, 443, domain)};
-        std::println("{}", resp.json().str());
+
+        net::HttpRequest req {"/", "GET", net::IP::V6}; 
+        req.setParam("format", "json");
+        net::HttpResponse resp {req.execute(domain)};
+        std::println("Resolved IPV6 Addr: {}\nResponse: {}\n", 
+            ipAddr, resp.json().str(false));
     }
 
     // Send a https get request to API (i.e with SSL support)

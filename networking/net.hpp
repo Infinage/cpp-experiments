@@ -1,6 +1,7 @@
 /*
  * TODO:
- * - Support IPV6 addresses, check support for SSLSocket & fix todos
+ * - HttpRequest parse from string for server side http handling
+ * - Modify httpserver to use this module
  * - getaddrinfo() to iterate through results instead of returning first one
  * - Use C++ modules
  * - Windows support?
@@ -92,7 +93,7 @@ namespace net {
         }
 
         if (!ret) throw SocketError{"Failed to convert address to string"};
-        ipStr.resize(std::strlen(ipStr.c_str()));
+        ipStr.resize(std::strlen(ipStr.data()));
         return ipStr;
     }
 
@@ -125,26 +126,46 @@ namespace net {
             bool _blocking {false};
             SOCKTYPE _sockType {SOCKTYPE::TCP};
             IP _ipType {IP::V4};
+            unsigned int _sockSize {sizeof(sockaddr_in)};
 
-            [[nodiscard]] static std::pair<sockaddr_storage, unsigned int> 
-            Sockaddr(std::string_view ip, std::uint16_t port, IP ipType = IP::V4) {
-                sockaddr_storage storage; unsigned int size;
+            [[nodiscard]] sockaddr_storage
+            Sockaddr(std::string_view ip, std::uint16_t port) const {
+                sockaddr_storage storage;
 
-                if (ipType == IP::V4) {
-                    size = sizeof(sockaddr_in);
+                if (_ipType == IP::V4) {
                     sockaddr_in *addr4 {reinterpret_cast<sockaddr_in*>(&storage)};
-                    addr4->sin_family = AF_INET; addr4->sin_port = htons(port);
+                    addr4->sin_port = htons(port); addr4->sin_family = AF_INET;
                     if (inet_pton(AF_INET, ip.data(), &addr4->sin_addr) <= 0)
                         throw SocketError{"Invalid IPV4 Address"};
                 } else {
-                    size = sizeof(sockaddr_in6);
                     sockaddr_in6 *addr6 {reinterpret_cast<sockaddr_in6*>(&storage)};
-                    addr6->sin6_family = AF_INET6; addr6->sin6_port = htons(port);
+                    addr6->sin6_port = htons(port); addr6->sin6_family = AF_INET6;
                     if (inet_pton(AF_INET6, ip.data(), &addr6->sin6_addr) <= 0)
                         throw SocketError{"Invalid IPV6 Address"};
                 }
 
-                return {storage, size};
+                return storage;
+            }
+
+            void extractSockaddr(sockaddr_storage &storage, std::string &host, 
+                std::uint16_t &port) const 
+            {
+                const char *ret;
+                if (_ipType == IP::V4) {
+                    sockaddr_in *addr4 {reinterpret_cast<sockaddr_in*>(&storage)};
+                    port = ntohs(addr4->sin_port); host.resize(INET_ADDRSTRLEN);
+                    ret = inet_ntop(AF_INET, &addr4->sin_addr, host.data(), INET_ADDRSTRLEN);
+                } else {
+                    sockaddr_in6 *addr6 {reinterpret_cast<sockaddr_in6*>(&storage)};
+                    port = ntohs(addr6->sin6_port); host.resize(INET6_ADDRSTRLEN);
+                    ret = inet_ntop(AF_INET6, &addr6->sin6_addr, host.data(), INET6_ADDRSTRLEN);
+                }
+
+                if (ret == nullptr)
+                    throw SocketError{"Failed to convert IP address to string in extractSockaddr"};
+
+                // Trim to actual length
+                host.resize(std::strlen(host.data()));
             }
 
         public:
@@ -174,6 +195,7 @@ namespace net {
                 swap(_blocking, other._blocking);
                 swap(_sockType, other._sockType);
                 swap(_ipType, other._ipType);
+                swap(_sockSize, other._sockSize);
             }
 
             // Implement move constructor
@@ -181,7 +203,8 @@ namespace net {
                 _fd{std::exchange(other._fd, -1)}, 
                 _blocking{std::exchange(other._blocking, false)},
                 _sockType{std::exchange(other._sockType, SOCKTYPE::TCP)},
-                _ipType{std::exchange(other._ipType, IP::V4)}
+                _ipType{std::exchange(other._ipType, IP::V4)},
+                _sockSize{std::exchange(other._sockSize, sizeof(sockaddr_in))}
             {}
 
             // Implement move assignment operator
@@ -191,8 +214,9 @@ namespace net {
             }
 
             // Default ctor
-            Socket(SOCKTYPE sockType = SOCKTYPE::TCP, IP ipType = IP::V4, bool reuseSockAddr = true):
-                _sockType{sockType}, _ipType{ipType}
+            Socket(SOCKTYPE sockType = SOCKTYPE::TCP, IP ipType = IP::V4):
+                _sockType{sockType}, _ipType{ipType}, 
+                _sockSize{static_cast<unsigned int>(ipType == IP::V4? sizeof(sockaddr_in): sizeof(sockaddr_in6))}
             {
                 int domain {_ipType == IP::V4? PF_INET: PF_INET6};
                 int type {_sockType == SOCKTYPE::TCP? SOCK_STREAM: SOCK_DGRAM};
@@ -200,11 +224,9 @@ namespace net {
                 if (_fd == -1) throw SocketError{"Error creating socket object"};
 
                 // Reuse socket address
-                if (reuseSockAddr) {
-                    int opt {1};
-                    if (setsockopt(_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) == -1)
-                        throw SocketError{"Error setting opt 'SO_REUSEADDDR'"};
-                }
+                int opt {1};
+                if (setsockopt(_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) == -1)
+                    throw SocketError{"Error setting opt 'SO_REUSEADDDR'"};
             }
 
             // Set socket as blocking / nonblocking
@@ -227,8 +249,8 @@ namespace net {
             }
 
             void bind(std::string_view serverIp, std::uint16_t port) {
-                auto [serverAddr, size] {Sockaddr(serverIp, port)};
-                int bindStatus {::bind(_fd, reinterpret_cast<sockaddr*>(&serverAddr), size)};
+                sockaddr_storage serverAddr {Sockaddr(serverIp, port)};
+                int bindStatus {::bind(_fd, reinterpret_cast<sockaddr*>(&serverAddr), _sockSize)};
                 if (bindStatus == -1) throw SocketError{"Error binding to the socket"};
             }
 
@@ -243,23 +265,17 @@ namespace net {
                 return Socket{clientSocket, _sockType, _ipType};
             }
 
-            // TODO: Accept with correct parameters - IPV4 or IPV6
             [[nodiscard]] Socket accept(std::string &host, std::uint16_t &port) {
-                sockaddr_in hostAddr {}; socklen_t hostAddrLen{sizeof(hostAddr)};
+                sockaddr_storage hostAddr {}; socklen_t hostAddrLen{_sockSize};
                 int clientSocket {::accept(_fd, reinterpret_cast<sockaddr*>(&hostAddr), &hostAddrLen)};
                 if (clientSocket == -1) throw SocketError{"Failed to accept an incomming connection"};
-
-                port = ntohs(hostAddr.sin_port);
-                char ipStr[INET_ADDRSTRLEN];
-                inet_ntop(AF_INET, &hostAddr.sin_addr, ipStr, sizeof(ipStr));
-                host = ipStr;
-
+                extractSockaddr(hostAddr, host, port);
                 return Socket{clientSocket, _sockType, _ipType};
             }
 
             void connect(std::string_view serverIp, std::uint16_t port) {
-                auto [serverAddr, size] {Sockaddr(serverIp, port)};
-                int connectStatus {::connect(_fd, reinterpret_cast<sockaddr*>(&serverAddr), size)};
+                sockaddr_storage serverAddr {Sockaddr(serverIp, port)};
+                int connectStatus {::connect(_fd, reinterpret_cast<sockaddr*>(&serverAddr), _sockSize)};
                 if (connectStatus == -1) throw SocketError{"Error connecting to server"};
             }
 
@@ -307,27 +323,21 @@ namespace net {
             }
 
             void sendTo(std::string_view message, std::string_view host, std::uint16_t port) {
-                auto [hostAddr, size] {Sockaddr(host, port)};
+                sockaddr_storage hostAddr {Sockaddr(host, port)};
                 long sentBytes {::sendto(_fd, message.data(), message.size(), 0, 
-                    reinterpret_cast<sockaddr*>(&hostAddr), size)};
+                    reinterpret_cast<sockaddr*>(&hostAddr), _sockSize)};
                 if (sentBytes <= 0 && errno != EAGAIN && errno != EWOULDBLOCK) 
                     throw SocketError{"Failed to send"};
             }
 
-            // TODO: Accept with correct parameters - IPV4 or IPV6
             [[nodiscard]] std::string recvFrom(std::string &host, std::uint16_t &port, std::size_t maxBytes = 2048) {
-                sockaddr_in hostAddr {}; socklen_t hostAddrLen {sizeof(hostAddr)};
+                sockaddr_storage hostAddr {}; socklen_t hostAddrLen {_sockSize};
                 std::vector<char> buffer(maxBytes); 
                 long recvBytes {::recvfrom(_fd, buffer.data(), maxBytes, 0, reinterpret_cast<sockaddr*>(&hostAddr), &hostAddrLen)};
                 if (recvBytes == 0 || (recvBytes < 0 && errno == ECONNRESET)) close();
                 else if (recvBytes < 0 && errno != EAGAIN && errno != EWOULDBLOCK) 
                     throw SocketError{"Failed to recv"};
-
-                port = ntohs(hostAddr.sin_port);
-                char ipStr[INET_ADDRSTRLEN];
-                inet_ntop(AF_INET, &hostAddr.sin_addr, ipStr, sizeof(ipStr));
-                host = ipStr;
-
+                extractSockaddr(hostAddr, host, port);
                 return {buffer.data(), static_cast<std::size_t>(recvBytes)};
             }
     };
@@ -341,8 +351,13 @@ namespace net {
             {}
 
             // Default constructor - certPath and keyPath.pem mandatory for SSLSocket Server, optional for client
-            SSLSocket(bool isServer = false, std::string_view certPath = "", std::string_view keyPath = ""):
-                isServer{isServer}, socket{},
+            SSLSocket(
+                bool isServer = false, 
+                std::string_view certPath = "", 
+                std::string_view keyPath = "",
+                IP ipType = IP::V4
+            ):
+                isServer{isServer}, socket{SOCKTYPE::TCP, ipType},
                 ctx{SSL_CTX_new(isServer? TLS_server_method(): TLS_client_method())},
                 ssl {nullptr}
             {
@@ -531,8 +546,11 @@ namespace net {
 
     class HttpRequest {
         public:
-            HttpRequest(const std::string &path = "/", const std::string &method = "GET"): 
-                path{path}, method{method} {}
+            HttpRequest(
+                const std::string &path = "/", 
+                const std::string &method = "GET", 
+                IP ipType = IP::V4
+            ): path{path}, method{method}, ipType{ipType} {}
 
             void setHeader(const std::string &key, const std::string &value) { headers.push_back({key, value}); }
             void setBody(std::string body) { this->body = std::move(body); }
@@ -553,29 +571,34 @@ namespace net {
             execute(std::string_view hostname, bool enableSSL = true, long timeoutSec = 5) {
                 if (std::ranges::find(headers, "Host", &std::pair<std::string,std::string>::first) == headers.end())
                     setHeader("Host", std::string{hostname});
-                if (enableSSL) return _executeSSL(resolveHostname(hostname), 443, hostname);
-                return _execute(resolveHostname(hostname), 80, timeoutSec);
+                std::string ipAddr {resolveHostname(hostname, nullptr, SOCKTYPE::TCP, ipType)};
+                if (enableSSL) return _executeSSL(ipAddr, 443, hostname, "");
+                return _execute(ipAddr, 80, timeoutSec);
             }
 
             // If timeout set to a negative number, timeouts are ignored
             HttpResponse _execute(std::string_view ipAddr, std::uint16_t port, long timeoutSec) {
-                net::Socket socket;
+                net::Socket socket {SOCKTYPE::TCP, ipType};
                 socket.connect(ipAddr, port);
                 if (timeoutSec > 0) socket.setTimeout(timeoutSec, timeoutSec);
                 socket.sendAll(serialize());
                 return socket.recvAll();
             }
 
-            HttpResponse _executeSSL(std::string_view ipAddr, std::uint16_t port, std::string_view hostname = "") {
-                net::SSLSocket socket;
+            HttpResponse _executeSSL(std::string_view ipAddr, std::uint16_t port, 
+                std::string_view hostname = "", std::string_view certPath = "")
+            {
+                net::SSLSocket socket{false, certPath, "", ipType};
                 socket.connect(ipAddr, port, hostname);
                 socket.sendAll(serialize());
                 return socket.recvAll();
             }
 
         private:
-            std::vector<std::pair<std::string, std::string>> urlParams, headers {{"Content-Type", "application/json"}, {"Connection", "close"}};
+            std::vector<std::pair<std::string, std::string>> urlParams, 
+                headers {{"Content-Type", "application/json"}, {"Connection", "close"}};
             std::string path, method, body;
+            IP ipType {IP::V4};
 
             static std::string getPathWithParams(const std::string &path, const std::vector<std::pair<std::string, std::string>> &params) {
                 if (params.empty()) return path;
@@ -629,7 +652,7 @@ namespace net {
                 if (event & EventType::Readable) eventInt |= POLLIN;
                 if (event & EventType::Writable) eventInt |= POLLOUT;
 
-                std::ranges::find(pollFds, fd, &pollfd::fd)->revents 
+                std::ranges::find(pollFds, fd, &pollfd::fd)->events 
                     = static_cast<short>(eventInt);
             }
 
@@ -663,7 +686,7 @@ namespace net {
                             event |= EventType::Closed;
                         if (pollFd.revents & POLLERR || pollFd.revents & POLLNVAL)
                             event |= EventType::Error;
-                        if (event & EventType::Unknown)
+                        if (!(event & EventType::Unknown))
                             result.emplace_back(getSocket(pollFd.fd), event);
                     }
                 }

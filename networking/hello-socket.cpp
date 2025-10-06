@@ -60,7 +60,7 @@ int main(int argc, char **argv) try {
                     else if (event & net::PollEventType::Closed || event & net::PollEventType::Error) {
                         if (socket.fd() == serverFD) throw std::runtime_error("Server Socket poll failed");
                         manager.untrack(socket.fd());
-                    } else if (event & net::PollEventType::Readable && socket.fd() & serverFD) {
+                    } else if (event & net::PollEventType::Readable && socket.fd() == serverFD) {
                         net::Socket client {socket.accept()};
                         std::cout << "Connected to Client # " << client.fd() << ".\n";
                         client.setNonBlocking();
@@ -91,6 +91,6 @@ int main(int argc, char **argv) try {
             std::cout << "Received from Server: " << client.recv() << "\n";
         }
     }
-} catch(std::exception& ex) {
+} catch(std::exception&) {
     std::cout << "Exiting..\n"; 
 }
