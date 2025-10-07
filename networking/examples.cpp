@@ -6,7 +6,7 @@ int main() try {
     // Resolve IPV6 domain and get resp (curl -6 https://api6.ipify.org?format=json)
     {
         const char *domain {"api6.ipify.org"};
-        std::string ipAddr {net::resolveHostname(domain, nullptr, net::SOCKTYPE::TCP, net::IP::V6)};
+        std::string ipAddr {net::utils::resolveHostname(domain, nullptr, net::SOCKTYPE::TCP, net::IP::V6)};
 
         net::HttpRequest req {"/", "GET", net::IP::V6}; 
         req.setParam("format", "json");

@@ -1,6 +1,8 @@
 /*
  * TODO:
+ * - HttpRequest and HttpResponse - support duplicate keys use multi map?
  * - HttpRequest parse from string for server side http handling
+ * - Write unit test cases
  * - Modify httpserver to use this module
  * - getaddrinfo() to iterate through results instead of returning first one
  * - Use C++ modules
@@ -68,57 +70,118 @@ namespace net {
         }
     };
 
-    // Given a hostname such as 'google.com' and an optional 'port/service' 
-    // resolves to an IP addr; Service eg: 'http', 'https', etc
-    [[nodiscard]] inline std::string resolveHostname(std::string_view hostname, const char *service = nullptr,
-        SOCKTYPE sockType = SOCKTYPE::TCP, IP ipType = IP::V4)
-    {
-        int domain {ipType == IP::V4? PF_INET: PF_INET6};
-        int type {sockType == SOCKTYPE::TCP? SOCK_STREAM: SOCK_DGRAM};
-        addrinfo hints{}, *res {}; hints.ai_family = domain; hints.ai_socktype = type;
-        if (int status = getaddrinfo(hostname.data(), service, &hints, &res); status != 0)
-            throw SocketError{"Failed to resolve hostname", gai_strerror(status)};
-
-        // Ensure res is freed always by wrapping inside a smart pointer
-        std::unique_ptr<addrinfo, decltype(&freeaddrinfo)> resGaurd {res, freeaddrinfo};
-
-        unsigned int ipLen {static_cast<unsigned int>(ipType == IP::V4? INET_ADDRSTRLEN: INET6_ADDRSTRLEN)};
-        std::string ipStr(ipLen, '\0'); const char *ret;
-        if (ipType == IP::V4) {
-            auto *addr = reinterpret_cast<sockaddr_in*>(res->ai_addr);
-            ret = inet_ntop(AF_INET, &addr->sin_addr, ipStr.data(), ipLen);
-        } else {
-            auto *addr6 = reinterpret_cast<sockaddr_in6*>(res->ai_addr);
-            ret = inet_ntop(AF_INET6, &addr6->sin6_addr, ipStr.data(), ipLen);
+    namespace utils {
+        [[nodiscard]] inline std::string trimStr(std::string_view str) {
+            auto first = str.find_first_not_of(' ');
+            if (first == std::string::npos) return "";
+            auto last = str.find_last_not_of(' ');
+            return {str.begin() + first, str.begin() + last + 1};
         }
 
-        if (!ret) throw SocketError{"Failed to convert address to string"};
-        ipStr.resize(std::strlen(ipStr.data()));
-        return ipStr;
-    }
+        [[nodiscard]] inline std::string toLower(std::string_view str) {
+            std::string res(str.size(), '\0'); 
+            std::ranges::transform(str, res.begin(), [](unsigned char ch) { return std::tolower(ch); }); 
+            return res;
+        }
 
-    [[nodiscard]] inline std::string urlEncode(std::string_view str, 
-        bool mapSpaceToPlus = true) 
-    {
-        std::ostringstream oss; oss.fill('0');
-        for (char ch: str) {
-            bool isUnreserved {
-                (ch >= 'a' && ch <= 'z') ||
-                (ch >= 'A' && ch <= 'Z') ||
-                (ch >= '0' && ch <= '9') ||
-                ch == '-' || ch == '.' || ch == '_' || ch == '~'
+        // Given a hostname such as 'google.com' and an optional 'port/service' 
+        // resolves to an IP addr; Service eg: 'http', 'https', etc
+        [[nodiscard]] inline std::string resolveHostname(std::string_view hostname, const char *service = nullptr,
+            SOCKTYPE sockType = SOCKTYPE::TCP, IP ipType = IP::V4)
+        {
+            int domain {ipType == IP::V4? PF_INET: PF_INET6};
+            int type {sockType == SOCKTYPE::TCP? SOCK_STREAM: SOCK_DGRAM};
+            addrinfo hints{}, *res {}; hints.ai_family = domain; hints.ai_socktype = type;
+            if (int status = getaddrinfo(hostname.data(), service, &hints, &res); status != 0)
+                throw SocketError{"Failed to resolve hostname", gai_strerror(status)};
+
+            // Ensure res is freed always by wrapping inside a smart pointer
+            std::unique_ptr<addrinfo, decltype(&freeaddrinfo)> resGaurd {res, freeaddrinfo};
+
+            unsigned int ipLen {static_cast<unsigned int>(ipType == IP::V4? INET_ADDRSTRLEN: INET6_ADDRSTRLEN)};
+            std::string ipStr(ipLen, '\0'); const char *ret;
+            if (ipType == IP::V4) {
+                auto *addr = reinterpret_cast<sockaddr_in*>(res->ai_addr);
+                ret = inet_ntop(AF_INET, &addr->sin_addr, ipStr.data(), ipLen);
+            } else {
+                auto *addr6 = reinterpret_cast<sockaddr_in6*>(res->ai_addr);
+                ret = inet_ntop(AF_INET6, &addr6->sin6_addr, ipStr.data(), ipLen);
+            }
+
+            if (!ret) throw SocketError{"Failed to convert address to string"};
+            ipStr.resize(std::strlen(ipStr.data()));
+            return ipStr;
+        }
+
+        [[nodiscard]] inline std::string urlEncode(std::string_view str, 
+            bool mapSpaceToPlus = true) 
+        {
+            std::ostringstream oss; oss.fill('0');
+            for (char ch: str) {
+                bool isUnreserved {
+                    (ch >= 'a' && ch <= 'z') ||
+                    (ch >= 'A' && ch <= 'Z') ||
+                    (ch >= '0' && ch <= '9') ||
+                    ch == '-' || ch == '.' || ch == '_' || ch == '~'
+                };
+
+                if (ch == ' ' && mapSpaceToPlus) oss << '+';
+                else if (isUnreserved) oss << ch;
+                else {
+                    oss << '%' << std::hex << std::uppercase << std::setw(2) 
+                        << static_cast<int>(static_cast<unsigned char>(ch))
+                        << std::dec << std::nouppercase;
+                }
+            }
+            return oss.str();
+        }
+
+        [[nodiscard]] inline std::string 
+        getPathWithParams(const std::string &path, const std::vector<std::pair<std::string, std::string>> &params) {
+            if (params.empty()) return path;
+            std::ostringstream oss; oss << path << '?';
+            for (const auto &kv: params) oss << kv.first << "=" << kv.second << '&';
+            std::string res {oss.str()}; res.pop_back();
+            return res;
+        }
+
+        [[nodiscard]] inline 
+        std::tuple<std::string, std::unordered_map<std::string, std::string>, std::string> 
+        parseHttpString(std::string_view raw) {
+            // Extract request / status line
+            std::size_t pos1 {raw.find("\r\n")}, pos2;
+            if (pos1 == std::string::npos) throw std::runtime_error("Invalid Http string");
+            std::string firstLine {trimStr(raw.substr(0, pos1))};
+
+            // Seperate the body and headers
+            pos2 = raw.find("\r\n\r\n", pos1 + 2);
+            if (pos2 == std::string::npos) throw std::runtime_error("Invalid Http string");
+            std::string body {raw.substr(pos2 + 4)};
+            std::string_view headerRaw {
+                raw.begin() + static_cast<long>(pos1) + 2, 
+                raw.begin() + static_cast<long>(pos2) + 2
             };
 
-            if (ch == ' ' && mapSpaceToPlus) oss << '+';
-            else if (isUnreserved) oss << ch;
-            else {
-                oss << '%' << std::hex << std::uppercase << std::setw(2) 
-                    << static_cast<int>(static_cast<unsigned char>(ch))
-                    << std::dec << std::nouppercase;
+            // Parse the headers
+            std::unordered_map<std::string, std::string> headers;
+            while (!headerRaw.empty()) {
+                pos1 = headerRaw.find(':');
+                if (pos1 == std::string::npos) throw std::runtime_error("Invalid Http header");
+
+                pos2 = headerRaw.find("\r\n", pos1 + 1);
+                if (pos2 == std::string::npos) throw std::runtime_error("Invalid Http header");
+
+                // Header keys are always in lower case
+                std::string key {toLower(headerRaw.substr(0, pos1))}; 
+                std::string value {headerRaw.substr(pos1 + 1, pos2 - pos1 - 1)};
+                headers.insert({trimStr(key), trimStr(value)});
+
+                headerRaw = headerRaw.substr(pos2 + 2);
             }
+
+            return std::make_tuple(firstLine, headers, body);
         }
-        return oss.str();
-    }
+    };
 
     class Socket {
         protected:
@@ -486,51 +549,19 @@ namespace net {
     };
 
     class HttpResponse {
-        private:
-            static std::string trim(const std::string &str) {
-                auto begin {str.find_first_not_of(' ')}; 
-                if (begin == std::string::npos) return "";
-                return str.substr(begin, str.find_last_not_of(' ') - begin + 1);
-            }
-
         public:
             HttpResponse(const std::string &raw): raw{raw} {
-                std::size_t pos1 {raw.find("\r\n")}, pos2;
+                std::string statusLine;
+                std::tie(statusLine, headers, body) = utils::parseHttpString(raw);
+
+                // Extract status code from status line
+                std::size_t pos1 {statusLine.find(" ")};
                 if (pos1 == std::string::npos) throw std::runtime_error("Invalid HttpResponse string");
-                std::string statusRaw {trim(raw.substr(0, pos1))};
-
-                pos2 = raw.find("\r\n\r\n", pos1 + 2);
-                if (pos2 == std::string::npos) throw std::runtime_error("Invalid HttpResponse string");
-                body = raw.substr(pos2 + 4);
-                std::string_view headerRaw {
-                    raw.begin() + static_cast<long>(pos1) + 2, 
-                    raw.begin() + static_cast<long>(pos2) + 2
-                };
-
-                // Extract status code
-                pos1 = statusRaw.find(" ");
+                pos1 = statusLine.find_first_not_of(" ", pos1 + 1);
                 if (pos1 == std::string::npos) throw std::runtime_error("Invalid HttpResponse string");
-                pos1 = statusRaw.find_first_not_of(" ", pos1 + 1);
-                if (pos1 == std::string::npos) throw std::runtime_error("Invalid HttpResponse string");
-                pos2 = statusRaw.find(" ", pos1); if (pos2 == std::string::npos) pos2 = statusRaw.size();
-                statusCode = std::stoi(statusRaw.substr(pos1, pos2 - pos1));
-
-                // Parse the headers
-                while (!headerRaw.empty()) {
-                    pos1 = headerRaw.find(':');
-                    if (pos1 == std::string::npos) throw std::runtime_error("Invalid HttpResponse header");
-
-                    pos2 = headerRaw.find("\r\n", pos1 + 1);
-                    if (pos2 == std::string::npos) throw std::runtime_error("Invalid HttpResponse header");
-
-                    // Header keys are always in lower case
-                    std::string key {headerRaw.substr(0, pos1)}; 
-                    std::string value {headerRaw.substr(pos1 + 1, pos2 - pos1 - 1)};
-                    std::ranges::transform(key, key.begin(), [](char ch) { return std::tolower(ch); });
-                    headers.insert({trim(key), trim(value)});
-
-                    headerRaw = headerRaw.substr(pos2 + 2);
-                }
+                std::size_t pos2 = statusLine.find(" ", pos1); 
+                if (pos2 == std::string::npos) pos2 = statusLine.size();
+                statusCode = std::stoi(statusLine.substr(pos1, pos2 - pos1).data());
             }
 
             [[nodiscard]] inline bool ok() const { return statusCode >= 200 && statusCode < 400; }
@@ -552,15 +583,35 @@ namespace net {
                 IP ipType = IP::V4
             ): path{path}, method{method}, ipType{ipType} {}
 
-            void setHeader(const std::string &key, const std::string &value) { headers.push_back({key, value}); }
-            void setBody(std::string body) { this->body = std::move(body); }
-            void setParam(const std::string &key, const std::string &value) { 
-                urlParams.push_back({urlEncode(key), urlEncode(value)}); 
+            /*
+            HttpRequest(const std::string &raw, IP ipType = IP::V4) {
+                std::string statusLine;
+                std::tie(statusLine, headers, body) = utils::parseHttpString(raw);
+
+                // Extract status code from status line
+                std::size_t pos1 {statusLine.find(" ")};
+                if (pos1 == std::string::npos) throw std::runtime_error("Invalid HttpResponse string");
+                pos1 = statusLine.find_first_not_of(" ", pos1 + 1);
+                if (pos1 == std::string::npos) throw std::runtime_error("Invalid HttpResponse string");
+                std::size_t pos2 = statusLine.find(" ", pos1); 
+                if (pos2 == std::string::npos) pos2 = statusLine.size();
+                statusCode = std::stoi(statusLine.substr(pos1, pos2 - pos1).data());
+            }
+            */
+
+            void setHeader(const std::string &key, const std::string &value) { 
+                headers.push_back({key, value}); 
             }
 
-            std::string serialize() const {
+            void setBody(std::string body) { this->body = std::move(body); }
+
+            void setParam(const std::string &key, const std::string &value) { 
+                urlParams.push_back({utils::urlEncode(key), utils::urlEncode(value)}); 
+            }
+
+            [[nodiscard]] std::string serialize() const {
                 std::ostringstream oss;
-                oss << method << ' ' << getPathWithParams(path, urlParams) << " HTTP/1.1\r\n";
+                oss << method << ' ' << utils::getPathWithParams(path, urlParams) << " HTTP/1.1\r\n";
                 for (const auto &kv: headers) oss << kv.first << ": " << kv.second << "\r\n";
                 if (!body.empty()) oss << "Content-Length: " << body.size() << "\r\n\r\n" << body;
                 else oss << "\r\n";
@@ -571,7 +622,7 @@ namespace net {
             execute(std::string_view hostname, bool enableSSL = true, long timeoutSec = 5) {
                 if (std::ranges::find(headers, "Host", &std::pair<std::string,std::string>::first) == headers.end())
                     setHeader("Host", std::string{hostname});
-                std::string ipAddr {resolveHostname(hostname, nullptr, SOCKTYPE::TCP, ipType)};
+                std::string ipAddr {utils::resolveHostname(hostname, nullptr, SOCKTYPE::TCP, ipType)};
                 if (enableSSL) return _executeSSL(ipAddr, 443, hostname, "");
                 return _execute(ipAddr, 80, timeoutSec);
             }
@@ -599,14 +650,6 @@ namespace net {
                 headers {{"Content-Type", "application/json"}, {"Connection", "close"}};
             std::string path, method, body;
             IP ipType {IP::V4};
-
-            static std::string getPathWithParams(const std::string &path, const std::vector<std::pair<std::string, std::string>> &params) {
-                if (params.empty()) return path;
-                std::ostringstream oss; oss << path << '?';
-                for (const auto &kv: params) oss << kv.first << "=" << kv.second << '&';
-                std::string res {oss.str()}; res.pop_back();
-                return res;
-            }
     };
 
     class PollManager {
