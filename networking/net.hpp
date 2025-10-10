@@ -136,6 +136,11 @@ namespace net {
             return oss.str();
         }
 
+        // TODO: Implement this function
+        [[nodiscard]] inline std::string urlDecode(std::string_view str) {
+
+        }
+
         [[nodiscard]] inline std::string 
         getPathWithParams(const std::string &path, const std::vector<std::pair<std::string, std::string>> &params) {
             if (params.empty()) return path;
@@ -145,8 +150,14 @@ namespace net {
             return res;
         }
 
+        // TODO: Implement this function
+        [[nodiscard]] inline std::vector<std::pair<std::string, std::string>>
+        getParamsFromPath(std::string_view path) {
+
+        }
+
         [[nodiscard]] inline 
-        std::tuple<std::string, std::unordered_map<std::string, std::string>, std::string> 
+        std::tuple<std::string, std::unordered_map<std::string, std::vector<std::string>>, std::string> 
         parseHttpString(std::string_view raw) {
             // Extract request / status line
             std::size_t pos1 {raw.find("\r\n")}, pos2;
@@ -163,7 +174,7 @@ namespace net {
             };
 
             // Parse the headers
-            std::unordered_map<std::string, std::string> headers;
+            std::unordered_map<std::string, std::vector<std::string>> headers;
             while (!headerRaw.empty()) {
                 pos1 = headerRaw.find(':');
                 if (pos1 == std::string::npos) throw std::runtime_error("Invalid Http header");
@@ -172,9 +183,9 @@ namespace net {
                 if (pos2 == std::string::npos) throw std::runtime_error("Invalid Http header");
 
                 // Header keys are always in lower case
-                std::string key {toLower(headerRaw.substr(0, pos1))}; 
-                std::string value {headerRaw.substr(pos1 + 1, pos2 - pos1 - 1)};
-                headers.insert({trimStr(key), trimStr(value)});
+                std::string key {trimStr(toLower(headerRaw.substr(0, pos1)))}; 
+                std::string value {trimStr(headerRaw.substr(pos1 + 1, pos2 - pos1 - 1))};
+                headers[key].push_back(value);
 
                 headerRaw = headerRaw.substr(pos2 + 2);
             }
@@ -551,16 +562,17 @@ namespace net {
     class HttpResponse {
         public:
             HttpResponse(const std::string &raw): raw{raw} {
-                std::string statusLine;
+                std::string statusLine; // Must be a string (below func returns rvalue)
                 std::tie(statusLine, headers, body) = utils::parseHttpString(raw);
 
                 // Extract status code from status line
-                std::size_t pos1 {statusLine.find(" ")};
+                // <HTTP-Version> <Status-Code> [<Reason-Phrase>]
+                std::size_t pos1 {statusLine.find(' ')};
                 if (pos1 == std::string::npos) throw std::runtime_error("Invalid HttpResponse string");
-                pos1 = statusLine.find_first_not_of(" ", pos1 + 1);
+                pos1 = statusLine.find_first_not_of(' ', pos1 + 1);
                 if (pos1 == std::string::npos) throw std::runtime_error("Invalid HttpResponse string");
-                std::size_t pos2 = statusLine.find(" ", pos1); 
-                if (pos2 == std::string::npos) pos2 = statusLine.size();
+                std::size_t pos2 = statusLine.find(' ', pos1); 
+                if (pos2 == std::string::npos) pos2 = statusLine.size(); // since reason is optional
                 statusCode = std::stoi(statusLine.substr(pos1, pos2 - pos1).data());
             }
 
@@ -570,9 +582,17 @@ namespace net {
                 return JSON::Parser::loads(body);
             }
 
+            // Convenience wrapper that returns the first value found, ensure 
+            // you manually check for multiple values if required
+            [[nodiscard]] std::string header(std::string_view key) const {
+                auto it {headers.find(utils::toLower(key))};
+                if (it == headers.end() || it->second.empty()) return "";
+                else return it->second.front();
+            }
+
         public:
             std::string raw, body; int statusCode;
-            std::unordered_map<std::string, std::string> headers;
+            std::unordered_map<std::string, std::vector<std::string>> headers;
     };
 
     class HttpRequest {
@@ -583,24 +603,34 @@ namespace net {
                 IP ipType = IP::V4
             ): path{path}, method{method}, ipType{ipType} {}
 
-            /*
-            HttpRequest(const std::string &raw, IP ipType = IP::V4) {
-                std::string statusLine;
-                std::tie(statusLine, headers, body) = utils::parseHttpString(raw);
+            HttpRequest(const std::string &raw, IP ipType = IP::V4): ipType{ipType} {
+                std::string requestLine; // Must be a string (below func returns rvalue)
+                std::tie(requestLine, headers, body) = utils::parseHttpString(raw);
 
-                // Extract status code from status line
-                std::size_t pos1 {statusLine.find(" ")};
-                if (pos1 == std::string::npos) throw std::runtime_error("Invalid HttpResponse string");
-                pos1 = statusLine.find_first_not_of(" ", pos1 + 1);
-                if (pos1 == std::string::npos) throw std::runtime_error("Invalid HttpResponse string");
-                std::size_t pos2 = statusLine.find(" ", pos1); 
-                if (pos2 == std::string::npos) pos2 = statusLine.size();
-                statusCode = std::stoi(statusLine.substr(pos1, pos2 - pos1).data());
+                // Extract method, path and path params
+                // <Method> <Request-URI> <HTTP-Version>
+                std::size_t pos1 {requestLine.find(' ')};
+                if (pos1 == std::string::npos) throw std::runtime_error("Invalid HttpRequest string");
+                method = requestLine.substr(0, pos1);
+                pos1 = requestLine.find_first_not_of(' ', pos1 + 1);
+                if (pos1 == std::string::npos) throw std::runtime_error("Invalid HttpRequest string");
+                std::size_t pos2 {requestLine.find(' ', pos1)};
+                if (pos2 == std::string::npos) throw std::runtime_error("Invalid HttpRequest string");
+                std::string_view requestURI {requestLine.data() + pos1, pos2 - pos1};
+                urlParams = utils::getParamsFromPath(requestURI);
             }
-            */
 
-            void setHeader(const std::string &key, const std::string &value) { 
-                headers.push_back({key, value}); 
+            // Clears any prev set header and inserts current params
+            // Suitable when same key has multiple values (eg: 'set-cookie')
+            template<typename Vec> 
+            requires(std::is_same_v<std::remove_cvref<Vec>, std::vector<std::string>>)
+            void setHeader(std::string_view key, Vec &&value) { 
+                headers[utils::toLower(key)] = std::forward(value);
+            }
+
+            // Clears any previously set header and inserts current params
+            void setHeader(std::string_view key, std::string value) { 
+                headers[utils::toLower(key)] = {std::move(value)};
             }
 
             void setBody(std::string body) { this->body = std::move(body); }
@@ -612,15 +642,18 @@ namespace net {
             [[nodiscard]] std::string serialize() const {
                 std::ostringstream oss;
                 oss << method << ' ' << utils::getPathWithParams(path, urlParams) << " HTTP/1.1\r\n";
-                for (const auto &kv: headers) oss << kv.first << ": " << kv.second << "\r\n";
-                if (!body.empty()) oss << "Content-Length: " << body.size() << "\r\n\r\n" << body;
+                for (const auto &kv: headers) {
+                    for (const auto &val: kv.second)
+                        oss << kv.first << ": " << val << "\r\n";
+                }
+                if (!body.empty()) oss << "content-length: " << body.size() << "\r\n\r\n" << body;
                 else oss << "\r\n";
                 return oss.str();
             }
 
             [[nodiscard]] HttpResponse 
             execute(std::string_view hostname, bool enableSSL = true, long timeoutSec = 5) {
-                if (std::ranges::find(headers, "Host", &std::pair<std::string,std::string>::first) == headers.end())
+                if (headers.find("host") == headers.end())
                     setHeader("Host", std::string{hostname});
                 std::string ipAddr {utils::resolveHostname(hostname, nullptr, SOCKTYPE::TCP, ipType)};
                 if (enableSSL) return _executeSSL(ipAddr, 443, hostname, "");
@@ -646,8 +679,9 @@ namespace net {
             }
 
         private:
-            std::vector<std::pair<std::string, std::string>> urlParams, 
-                headers {{"Content-Type", "application/json"}, {"Connection", "close"}};
+            std::vector<std::pair<std::string, std::string>> urlParams; 
+            std::unordered_map<std::string, std::vector<std::string>> headers 
+                {{"content-type", {"application/json"}}, {"connection", {"close"}}};
             std::string path, method, body;
             IP ipType {IP::V4};
     };
