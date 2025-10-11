@@ -1,7 +1,5 @@
 /*
  * TODO:
- * - HttpRequest and HttpResponse - support duplicate keys use multi map?
- * - HttpRequest parse from string for server side http handling
  * - Write unit test cases
  * - Modify httpserver to use this module
  * - getaddrinfo() to iterate through results instead of returning first one
@@ -136,9 +134,21 @@ namespace net {
             return oss.str();
         }
 
-        // TODO: Implement this function
         [[nodiscard]] inline std::string urlDecode(std::string_view str) {
-
+            std::ostringstream oss; std::string acc;
+            for (char ch: str) {
+                if (!acc.empty()) {
+                    if (acc.size() < 2) acc.push_back(ch);
+                    else {
+                        oss << static_cast<unsigned char>(std::stoi(acc, 0, 16));
+                        acc.clear();
+                    }
+                }
+                else if (ch == '+') oss << ' ';
+                else if (ch != '%') oss << ch;
+                else acc.push_back('0');
+            }
+            return oss.str();
         }
 
         [[nodiscard]] inline std::string 
@@ -150,10 +160,40 @@ namespace net {
             return res;
         }
 
-        // TODO: Implement this function
-        [[nodiscard]] inline std::vector<std::pair<std::string, std::string>>
+        [[nodiscard]] inline std::pair<std::string, std::vector<std::pair<std::string, std::string>>>
         getParamsFromPath(std::string_view path) {
+            // Seperate logic for extracting a single key=value pair
+            auto extractKV {[](std::string_view raw) {
+                std::size_t sepPos {raw.find('=')};
+                std::string_view key {raw}, value {};
+                if (sepPos != std::string::npos) {
+                    key = raw.substr(0, sepPos);
+                    value = raw.substr(sepPos + 1);
+                } 
+                return std::pair(std::string{key}, std::string{value});
+            }};
 
+            // Extract all k=v separated by an ampersand
+            std::vector<std::pair<std::string, std::string>> params;
+            if (path.empty() || path.at(0) != '/') throw std::runtime_error("Invalid URI path");
+
+            // Find '?', if not found no params -> /path1/path2/
+            // If found seperate path and paramPath
+            std::size_t pos {path.find('?')}; std::string_view paramPath {};
+            if (pos != std::string::npos) {
+                paramPath = path.substr(pos + 1);
+                path = path.substr(0, pos);
+            }
+
+            // Iterate and extract all parameters
+            while (!paramPath.empty()) {
+                pos = paramPath.find('&'); 
+                bool lastPiece {pos == std::string::npos};
+                params.emplace_back(extractKV(lastPiece? paramPath: paramPath.substr(0, pos)));
+                paramPath = lastPiece? std::string_view{} :paramPath.substr(pos + 1);
+            }
+
+            return {std::string{path}, params};
         }
 
         [[nodiscard]] inline 
@@ -561,9 +601,12 @@ namespace net {
 
     class HttpResponse {
         public:
-            HttpResponse(const std::string &raw): raw{raw} {
+            HttpResponse() = default;
+
+            static HttpResponse fromString(const std::string &raw) {
+                HttpResponse resp; resp.raw = raw;
                 std::string statusLine; // Must be a string (below func returns rvalue)
-                std::tie(statusLine, headers, body) = utils::parseHttpString(raw);
+                std::tie(statusLine, resp.headers, resp.body) = utils::parseHttpString(raw);
 
                 // Extract status code from status line
                 // <HTTP-Version> <Status-Code> [<Reason-Phrase>]
@@ -573,7 +616,8 @@ namespace net {
                 if (pos1 == std::string::npos) throw std::runtime_error("Invalid HttpResponse string");
                 std::size_t pos2 = statusLine.find(' ', pos1); 
                 if (pos2 == std::string::npos) pos2 = statusLine.size(); // since reason is optional
-                statusCode = std::stoi(statusLine.substr(pos1, pos2 - pos1).data());
+                resp.statusCode = std::stoi(statusLine.substr(pos1, pos2 - pos1).data());
+                return resp;
             }
 
             [[nodiscard]] inline bool ok() const { return statusCode >= 200 && statusCode < 400; }
@@ -591,7 +635,7 @@ namespace net {
             }
 
         public:
-            std::string raw, body; int statusCode;
+            std::string raw, body; int statusCode {200};
             std::unordered_map<std::string, std::vector<std::string>> headers;
     };
 
@@ -603,21 +647,23 @@ namespace net {
                 IP ipType = IP::V4
             ): path{path}, method{method}, ipType{ipType} {}
 
-            HttpRequest(const std::string &raw, IP ipType = IP::V4): ipType{ipType} {
+            static HttpRequest fromString(const std::string &raw, IP ipType = IP::V4) {
+                HttpRequest req; req.ipType = ipType;
                 std::string requestLine; // Must be a string (below func returns rvalue)
-                std::tie(requestLine, headers, body) = utils::parseHttpString(raw);
+                std::tie(requestLine, req.headers, req.body) = utils::parseHttpString(raw);
 
                 // Extract method, path and path params
                 // <Method> <Request-URI> <HTTP-Version>
                 std::size_t pos1 {requestLine.find(' ')};
                 if (pos1 == std::string::npos) throw std::runtime_error("Invalid HttpRequest string");
-                method = requestLine.substr(0, pos1);
+                req.method = requestLine.substr(0, pos1);
                 pos1 = requestLine.find_first_not_of(' ', pos1 + 1);
                 if (pos1 == std::string::npos) throw std::runtime_error("Invalid HttpRequest string");
                 std::size_t pos2 {requestLine.find(' ', pos1)};
                 if (pos2 == std::string::npos) throw std::runtime_error("Invalid HttpRequest string");
                 std::string_view requestURI {requestLine.data() + pos1, pos2 - pos1};
-                urlParams = utils::getParamsFromPath(requestURI);
+                std::tie(req.path, req.urlParams) = utils::getParamsFromPath(requestURI);
+                return req;
             }
 
             // Clears any prev set header and inserts current params
@@ -639,7 +685,7 @@ namespace net {
                 urlParams.push_back({utils::urlEncode(key), utils::urlEncode(value)}); 
             }
 
-            [[nodiscard]] std::string serialize() const {
+            [[nodiscard]] std::string toString() const {
                 std::ostringstream oss;
                 oss << method << ' ' << utils::getPathWithParams(path, urlParams) << " HTTP/1.1\r\n";
                 for (const auto &kv: headers) {
@@ -665,8 +711,8 @@ namespace net {
                 net::Socket socket {SOCKTYPE::TCP, ipType};
                 socket.connect(ipAddr, port);
                 if (timeoutSec > 0) socket.setTimeout(timeoutSec, timeoutSec);
-                socket.sendAll(serialize());
-                return socket.recvAll();
+                socket.sendAll(this->toString());
+                return HttpResponse::fromString(socket.recvAll());
             }
 
             HttpResponse _executeSSL(std::string_view ipAddr, std::uint16_t port, 
@@ -674,14 +720,42 @@ namespace net {
             {
                 net::SSLSocket socket{false, certPath, "", ipType};
                 socket.connect(ipAddr, port, hostname);
-                socket.sendAll(serialize());
-                return socket.recvAll();
+                socket.sendAll(this->toString());
+                return HttpResponse::fromString(socket.recvAll());
             }
 
-        private:
-            std::vector<std::pair<std::string, std::string>> urlParams; 
+            [[nodiscard]] auto getHeaders() const { return headers; }
+
+            [[nodiscard]] std::vector<std::string> getHeaders(std::string_view key) const {
+                auto it {headers.find(utils::toLower(key))};
+                return it != headers.end()? it->second: std::vector<std::string>{};
+            }
+
+            // Does urldecoding of keys and values, hence is expensive
+            [[nodiscard]] auto getParams() const {
+                auto urlDecodePair {[](const std::pair<std::string, std::string> &pair) {
+                    return std::make_pair(
+                        utils::urlDecode(pair.first),
+                        utils::urlDecode(pair.second)
+                    );
+                }};
+
+                return std::views::transform(urlParams, urlDecodePair);
+            }
+
+            [[nodiscard]] const auto &getRawParams() const { return urlParams; }
+            [[nodiscard]] const std::string &getBody() const { return body; }
+            [[nodiscard]] const std::string &getPath() const { return path; }
+
+            [[nodiscard]] std::string getMethod() const { return method; }
+            [[nodiscard]] IP getIPType() const { return ipType; }
+
+        // Unlike httpresponse unintended modification of these values can mean trouble
+        // So we keep them private and provide functions for access
+        private: 
             std::unordered_map<std::string, std::vector<std::string>> headers 
                 {{"content-type", {"application/json"}}, {"connection", {"close"}}};
+            std::vector<std::pair<std::string, std::string>> urlParams; 
             std::string path, method, body;
             IP ipType {IP::V4};
     };
