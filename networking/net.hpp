@@ -233,6 +233,39 @@ namespace net {
 
             return std::make_tuple(firstLine, headers, body);
         }
+
+        // Returns tuple of [protocol, domain, port, path], port is 0 if missing
+        // Assumes pattern: <protocol>:://[username:password@]<domain>[:port]/<path>
+        [[nodiscard]] inline 
+        std::tuple<std::string, std::string, std::uint16_t, std::string>
+        extractURLPieces(std::string_view url) {
+            std::string protocol, path {"/"}; std::uint16_t port {};
+            std::size_t pos {url.find("://")};
+            if (pos == std::string::npos) throw std::runtime_error("Missing protocol");
+            protocol = url.substr(0, pos); url = url.substr(pos + 3);
+
+            // Extract the path out
+            if ((pos = url.find('/')) != std::string::npos) {
+                path = url.substr(pos); url = url.substr(0, pos);
+            }
+
+            // Remove [username:password@] if exists
+            if ((pos = url.find('@')) != std::string::npos) {
+                url = url.substr(pos + 1);
+            }
+
+            // Extract port if available
+            if ((pos = url.find(':')) != std::string::npos) {
+                try {
+                    port = static_cast<std::uint16_t>(std::stol(std::string{url.substr(pos + 1)}));
+                } catch(...) {
+                    throw std::runtime_error("Invalid or out of range port in URL");
+                }
+                url = url.substr(0, pos);
+            }
+
+            return {protocol, std::string{url}, port, path};
+        }
     };
 
     class Socket {

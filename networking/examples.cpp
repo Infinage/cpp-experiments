@@ -49,6 +49,20 @@ int main() try {
             long _ {client.send("Message: " + std::to_string(i) + '\n')};
         }
     }
+
+    // Utils to extract pieces of an url
+    {
+        auto [protocol, domain, port, path] {
+            net::utils::extractURLPieces(
+                "udp://tracker.coppersurfer.tk:6969/"
+                "announce?info_hash=062c43b1b47e25c7bee1fefc3b945758bd11318b&peer_id"
+                "=leH8z33e9V0ODjlHZD4z&uploaded=0&downloaded=0&compact=1&left=124234"
+            )
+        };
+
+        std::println("Protocol: {}\nDomain: {}\nPort: {}\nPath: {}",
+            protocol, domain, port, path);
+    }
 } catch (std::exception &ex) {
     std::println("{}", ex.what());
 }
