@@ -1,12 +1,12 @@
 // https://allenkim67.github.io/programming/2016/05/04/how-to-make-your-own-bittorrent-client.html
-// https://blog.jse.li/posts/torrent/
+#include "../networking/net.hpp"
 #include "../json-parser/json.hpp"
 #include "../cryptography/hashlib.hpp"
 #include <cassert>
+#include <endian.h>
 #include <fstream>
 #include <print>
 #include <random>
-#include <regex>
 #include <sstream>
 #include <stack>
 #include <stdexcept>
@@ -186,32 +186,52 @@ namespace Bencode {
 namespace Torrent {
     class TorrentFile {
         private:
-            static std::string randString(std::size_t size) {
+            static std::string randString(std::size_t length) {
                 static char chars[] { "0123456789"
                     "abcdefghijklmnopqrstuvwxyz"
                     "ABCDEFGHIJKLMNOPQRSTUVWXYZ"};
                 std::mt19937 rng {std::random_device{}()};
                 std::uniform_int_distribution<std::size_t> gen{0, sizeof(chars) - 2};
-                std::string str; str.reserve(size);
-                while (size--) str.push_back(chars[gen(rng)]);
+                std::string str; str.reserve(length);
+                while (length--) str.push_back(chars[gen(rng)]);
                 return str;
             }
 
-            static unsigned long extractPortFromURL(const std::string URL) {
-                std::regex portReg {R"EOF(:(\d+))EOF"}; std::smatch match;
-                if (!std::regex_search(URL, match, portReg))
-                    throw std::runtime_error("Unable to extract Port from URL: " + URL);
-                return std::stoul(match[1].str());
+            template<std::integral T> 
+            static T randInteger() {
+                std::mt19937 rng {std::random_device{}()};
+                std::uniform_int_distribution<T> gen{
+                    std::numeric_limits<T>::min(), 
+                    std::numeric_limits<T>::max()
+                };
+                return gen(rng);
+            }
+
+            [[nodiscard]] std::string buildTrackerURL() const {
+                return std::format(
+                    "{}?{}={}&{}={}&uploaded=0&downloaded=0&compact=1&left={}", 
+                    announceURL, "info_hash", infoHash, "peer_id", peerID, length
+                );
+            }
+
+            [[nodiscard]] std::string buildConnectionRequest() const {
+                char buffer[16];
+                std::uint64_t connectionId {htobe64(0x41727101980)};
+                std::uint32_t action {0}, transactionId {randInteger<std::uint32_t>()};
+                std::memcpy(buffer +  0, &connectionId, sizeof(connectionId));
+                std::memcpy(buffer +  8, &action, sizeof(action));
+                std::memcpy(buffer + 12, &transactionId, sizeof(transactionId));
+                return {buffer, 16};
             }
 
             // Associate a random 20 char long peer id
             std::string peerID;
 
             // Extract port from Announce URL
-            unsigned long announcePort;
+            std::uint16_t announcePort;
 
             // Read from torrent file
-            std::string announceURL;
+            std::string announceURL, announceDomain, announcePath;
             long length, pieceLen;
             std::string name;
 
@@ -237,11 +257,17 @@ namespace Torrent {
                 // Read the bencoded torrent file
                 auto root {Bencode::decode(buffer)};
 
-                // Parse the required fields
+                // Ensure announce protocol is UDP (http unsupported for now)
+                std::string announceProto;
+                announceURL = root["announce"].to<std::string>();
+                std::tie(announceProto, announceDomain, announcePort, announcePath) 
+                    = net::utils::extractURLPieces(announceURL);
+                if (announceProto != "udp") 
+                    throw std::runtime_error("Unsuported announce protocol: " + announceProto);
+
+                // Extract other required fields
                 name = root["info"]["name"].to<std::string>();
                 length = root["info"]["length"].to<long>();
-                announceURL = root["announce"].to<std::string>();
-                announcePort = extractPortFromURL(announceURL);
                 pieceLen = root["info"]["piece length"].to<long>(); 
                 pieceBlob = root["info"]["pieces"].to<std::string>();
                 numPieces = pieceBlob.size() / 20;
@@ -253,16 +279,23 @@ namespace Torrent {
                 infoHash = hashutil::sha1(Bencode::encode(root["info"].ptr));
             }
 
-            [[nodiscard]] std::string buildTrackerURL() const {
-                return std::format(
-                    "{}?{}={}&{}={}&uploaded=0&downloaded=0&compact=1&left={}", 
-                    announceURL, "info_hash", infoHash, "peer_id", peerID, length
-                );
+            std::vector<std::string> getPeers() const {
+                net::Socket udpSock {net::SOCKTYPE::UDP};
+                udpSock.setTimeout(3, 3);
+                std::string ipAddr {net::utils::resolveHostname(announceDomain)};
+                std::println("Resolving announce url domain: {} => {}", announceDomain, ipAddr);
+                udpSock.connect(ipAddr, announcePort);
+                std::string connReq {buildConnectionRequest()};
+                long sentBytes {udpSock.send(connReq)};
+                std::println("Sent {}/16 bytes to tracker server", sentBytes);
+                std::string raw {udpSock.recv()};
+                std::println("Received from tracker: {}", raw);
+                return {};
             }
     };
 };
 
 int main() {
-    Torrent::TorrentFile torrent{"alpine.iso.torrent"};
-    std::println("{}", torrent.buildTrackerURL());
+    Torrent::TorrentFile torrent{"alpine.torrent"};
+    torrent.getPeers();
 }
