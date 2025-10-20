@@ -1,5 +1,6 @@
 /*
  * TODO:
+ * - Support for proxy
  * - Write unit test cases
  * - Modify httpserver to use this module
  * - getaddrinfo() to iterate through results instead of returning first one
@@ -330,7 +331,8 @@ namespace net {
             // Default ctor
             Socket(SOCKTYPE sockType = SOCKTYPE::TCP, IP ipType = IP::V4):
                 _sockType{sockType}, _ipType{ipType}, 
-                _sockSize{static_cast<unsigned int>(ipType == IP::V4? sizeof(sockaddr_in): sizeof(sockaddr_in6))}
+                _sockSize{static_cast<unsigned int>(ipType == IP::V4? 
+                        sizeof(sockaddr_in): sizeof(sockaddr_in6))}
             {
                 int domain {_ipType == IP::V4? PF_INET: PF_INET6};
                 int type {_sockType == SOCKTYPE::TCP? SOCK_STREAM: SOCK_DGRAM};
@@ -399,15 +401,15 @@ namespace net {
             long sendAll(std::string_view message) {
                 long totalSent {};
                 while (!message.empty()) {
-                    long sentBytes {::send(_fd, message.data(), message.size(), MSG_NOSIGNAL)};
-                    if (sentBytes <= 0 && errno != EAGAIN && errno != EWOULDBLOCK) 
-                        throw SocketError{"Failed to send"};
+                    long sentBytes {this->send(message)};
                     message.remove_prefix(static_cast<std::size_t>(sentBytes));
                     totalSent += sentBytes;
                 }
                 return totalSent;
             }
 
+            // Can send serialized char* messages, provided string_view is explicitly constructed
+            // by passing the size. For eg: send({reinterpret_cast<char*>(&obj), sizeof(obj)});
             [[nodiscard]] long send(std::string_view message) {
                 long sentBytes {::send(_fd, message.data(), message.size(), MSG_NOSIGNAL)};
                 if (sentBytes <= 0 && errno != EAGAIN && errno != EWOULDBLOCK) 
@@ -421,19 +423,21 @@ namespace net {
                 if (recvBytes == 0 || (recvBytes < 0 && errno == ECONNRESET)) close();
                 else if (recvBytes < 0 && errno != EAGAIN && errno != EWOULDBLOCK)
                     throw SocketError{"Failed to recv"};
-                return {buffer.data(), static_cast<std::size_t>(recvBytes)};
+                return {buffer.data(), static_cast<std::size_t>(std::max(0l, recvBytes))};
             }
 
             // Recv until connection is closed or non blocking errcode is hit
             // Use with caution for blocking sockets, it will hang until con is closed
-            [[nodiscard]] std::string recvAll() {
-                std::string message; char buffer[2048] {}; long recvBytes;
-                while ((recvBytes = ::recv(_fd, buffer, sizeof(buffer), 0)) > 0)
-                    message.append(buffer, static_cast<std::size_t>(recvBytes));
-                if (recvBytes == 0 || (recvBytes < 0 && errno == ECONNRESET)) close();
-                else if (recvBytes < 0 && errno != EAGAIN && errno != EWOULDBLOCK)
-                    throw SocketError{"Failed to recv"};
-                return message;
+            [[nodiscard]] std::string recvAll(std::size_t recvBatchSize = 2048) {
+                long recvBytes {}, totalRecv {}; std::vector<char> buffer(recvBatchSize);
+                while ((recvBytes = ::recv(_fd, buffer.data() + totalRecv, recvBatchSize, 0)) > 0) {
+                    totalRecv += recvBytes;
+                    if (recvBytes > 0) buffer.resize(static_cast<std::size_t>(totalRecv) + recvBatchSize);
+                    else if (recvBytes == 0 || (recvBytes < 0 && errno == ECONNRESET)) close();
+                    else if (recvBytes < 0 && errno != EAGAIN && errno != EWOULDBLOCK)
+                        throw SocketError{"Failed to recv"};
+                }
+                return {buffer.data(), static_cast<std::size_t>(std::max(0l, totalRecv))};
             }
 
             void sendTo(std::string_view message, std::string_view host, std::uint16_t port) {
@@ -452,7 +456,7 @@ namespace net {
                 else if (recvBytes < 0 && errno != EAGAIN && errno != EWOULDBLOCK) 
                     throw SocketError{"Failed to recv"};
                 extractSockaddr(hostAddr, host, port);
-                return {buffer.data(), static_cast<std::size_t>(recvBytes)};
+                return {buffer.data(), static_cast<std::size_t>(std::max(0l, recvBytes))};
             }
     };
 
@@ -584,13 +588,16 @@ namespace net {
             }
 
             // Recv until connection is closed; Use with caution, can block until connection is closed
-            [[nodiscard]] std::string recvAll() {
-                std::string message; char buffer[2048] {}; long recvBytes;
-                while ((recvBytes = SSL_read(ssl, buffer, sizeof(buffer))) > 0)
-                    message.append(buffer, static_cast<std::size_t>(recvBytes));
-                if (recvBytes == 0) close();
-                else if (recvBytes < 0) throw SSLSocketError{"Failed to recv"};
-                return message;
+            [[nodiscard]] std::string recvAll(std::size_t recvBatchSize = 2048) {
+                long recvBytes {}, totalRecv {};
+                std::vector<char> buffer(recvBatchSize);
+                while ((recvBytes = SSL_read(ssl, buffer.data() + totalRecv, static_cast<int>(recvBatchSize))) > 0) {
+                    totalRecv += recvBytes;
+                    if (recvBytes == 0) close();
+                    else if (recvBytes < 0) throw SSLSocketError{"Failed to recv"};
+                    else buffer.resize(static_cast<std::size_t>(totalRecv) + recvBatchSize);
+                }
+                return {buffer.data(), static_cast<std::size_t>(totalRecv)};
             }
 
         private:
