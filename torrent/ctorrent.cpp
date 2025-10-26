@@ -1,12 +1,17 @@
 // https://allenkim67.github.io/programming/2016/05/04/how-to-make-your-own-bittorrent-client.html
+// https://www.rasterbar.com/products/libtorrent/udp_tracker_protocol.html
+
 #include "../networking/net.hpp"
 #include "../json-parser/json.hpp"
 #include "../cryptography/hashlib.hpp"
+
 #include <cassert>
 #include <endian.h>
 #include <fstream>
+#include <iostream>
 #include <print>
 #include <random>
+#include <ranges>
 #include <sstream>
 #include <stack>
 #include <stdexcept>
@@ -207,21 +212,55 @@ namespace Torrent {
                 return gen(rng);
             }
 
-            [[nodiscard]] std::string buildTrackerURL() const {
-                return std::format(
-                    "{}?{}={}&{}={}&uploaded=0&downloaded=0&compact=1&left={}", 
-                    announceURL, "info_hash", infoHash, "peer_id", peerID, length
-                );
-            }
-
-            [[nodiscard]] std::string buildConnectionRequest() const {
-                char buffer[16];
-                std::uint64_t connectionId {htobe64(0x41727101980)};
-                std::uint32_t action {0}, transactionId {randInteger<std::uint32_t>()};
+            std::string buildConnectionRequest() const {
+                char buffer[16] {};
+                std::uint32_t transactionId {randInteger<std::uint32_t>()};
+                std::uint64_t connectionId {net::utils::bswap<std::uint64_t>(0x41727101980ULL)};
                 std::memcpy(buffer +  0, &connectionId, sizeof(connectionId));
-                std::memcpy(buffer +  8, &action, sizeof(action));
                 std::memcpy(buffer + 12, &transactionId, sizeof(transactionId));
                 return {buffer, 16};
+            }
+
+            std::string buildAnnounceRequest(const std::string &connectionId) const {
+                // Get the data fields to write into the announce request
+                std::uint32_t action {net::utils::bswap<std::uint32_t>(1)}, 
+                      transactionId {randInteger<std::uint32_t>()}; 
+                std::string key {randString(4)}; 
+                std::int32_t numWant {net::utils::bswap<std::int32_t>(-1)};
+                std::uint16_t pPort {net::utils::bswap<std::uint16_t>(6881)};
+
+                // Construct the announce request
+                char buffer[98] {}; // Init to 0 & skip few fields below
+                std::memcpy(buffer +  0, connectionId.c_str(), 8);
+                std::memcpy(buffer +  8, &action, 4);
+                std::memcpy(buffer + 12, &transactionId, 4);
+                std::memcpy(buffer + 16, &infoHash, 20);
+                std::memcpy(buffer + 36, &peerID, 20);
+                std::memcpy(buffer + 64, &length, 8);
+                std::memcpy(buffer + 88, &key, 4);
+                std::memcpy(buffer + 92, &numWant, 4);
+                std::memcpy(buffer + 96, &pPort, 2);
+                return {buffer, 98};
+            }
+
+            inline std::string_view getPieceHash(std::size_t idx) const {
+                if (idx >= numPieces)
+                    throw std::runtime_error("Piece Hash idx requested out of range");
+                return std::string_view{pieceBlob}.substr(idx * 20, 20);
+            }
+
+            // If multiple files exist, compute sum of all files else return length
+            static std::uint32_t calculateTotalLength(JSON::JSONHandle info) {
+                auto files {info["files"]};
+                if (!files.ptr) return static_cast<std::uint32_t>(info.at("length").to<long>());
+                else {
+                    auto filesObj {files.cast<JSON::JSONObjectNode>()};
+                    return std::accumulate(filesObj.begin(), filesObj.end(), std::uint32_t {}, 
+                        [] (std::uint32_t acc, JSON::JSONHandle file) {
+                            return acc + file.at("length").to<long>();
+                        }
+                    );
+                }
             }
 
             // Associate a random 20 char long peer id
@@ -232,7 +271,7 @@ namespace Torrent {
 
             // Read from torrent file
             std::string announceURL, announceDomain, announcePath;
-            long length, pieceLen;
+            std::uint32_t length, pieceLen, interval, seeders, leechers;
             std::string name;
 
             // Process torrent file and store
@@ -240,13 +279,7 @@ namespace Torrent {
             std::string pieceBlob, infoHash;
 
         public:
-            [[nodiscard]] inline std::string_view getPieceHash(std::size_t idx) const {
-                if (idx >= numPieces)
-                    throw std::runtime_error("Piece Hash idx requested out of range");
-                return std::string_view{pieceBlob}.substr(idx * 20, 20);
-            }
-
-            TorrentFile(const std::string_view torrentFP): peerID{randString(20)} {
+            TorrentFile(const std::string_view torrentFP): peerID{"-NJT-" + randString(20 - 5)} {
                 // Read from file
                 std::ifstream ifs {torrentFP.data(), std::ios::binary | std::ios::ate};
                 auto size {ifs.tellg()};
@@ -259,43 +292,88 @@ namespace Torrent {
 
                 // Ensure announce protocol is UDP (http unsupported for now)
                 std::string announceProto;
-                announceURL = root["announce"].to<std::string>();
+                announceURL = root.at("announce").to<std::string>();
                 std::tie(announceProto, announceDomain, announcePort, announcePath) 
                     = net::utils::extractURLPieces(announceURL);
                 if (announceProto != "udp") 
                     throw std::runtime_error("Unsuported announce protocol: " + announceProto);
 
                 // Extract other required fields
-                name = root["info"]["name"].to<std::string>();
-                length = root["info"]["length"].to<long>();
-                pieceLen = root["info"]["piece length"].to<long>(); 
-                pieceBlob = root["info"]["pieces"].to<std::string>();
+                auto info {root.at("info")};
+                name = info["name"].to<std::string>();
+                length = calculateTotalLength(info);
+                pieceLen = static_cast<std::uint32_t>(info["piece length"].to<long>()); 
+                pieceBlob = info["pieces"].to<std::string>();
                 numPieces = pieceBlob.size() / 20;
 
                 // Sanity check on blob validity - can be equally split
                 if (pieceBlob.size() % 20) throw std::runtime_error("Piece blob is corrupted");
 
                 // Reencode just the info dict to compute its sha1 hash
-                infoHash = hashutil::sha1(Bencode::encode(root["info"].ptr));
+                infoHash = hashutil::sha1(Bencode::encode(info.ptr));
             }
 
-            std::vector<std::string> getPeers() const {
+            [[nodiscard]] std::vector<std::pair<std::string, std::uint16_t>> getPeers() {
+                std::string ipAddr {net::utils::resolveHostname(announceDomain)};
+                std::println("Resolved announce url ({}) as udp://{}:{}", announceURL, ipAddr, announcePort);
+
+                // Build & send a connection request (TODO: Implement retry logic)
+                std::string cReq {buildConnectionRequest()};
                 net::Socket udpSock {net::SOCKTYPE::UDP};
                 udpSock.setTimeout(3, 3);
-                std::string ipAddr {net::utils::resolveHostname(announceDomain)};
-                std::println("Resolving announce url domain: {} => {}", announceDomain, ipAddr);
                 udpSock.connect(ipAddr, announcePort);
-                std::string connReq {buildConnectionRequest()};
-                long sentBytes {udpSock.send(connReq)};
+                long sentBytes {udpSock.send(cReq)};
                 std::println("Sent {}/16 bytes to tracker server", sentBytes);
-                std::string raw {udpSock.recv()};
-                std::println("Received from tracker: {}", raw);
-                return {};
+                std::string cResp {udpSock.recv()};
+                std::println("Recv {}/16 bytes from tracker server", cResp.size());
+
+                // Validate recv connection response
+                if (!(cResp.size() == 16 &&
+                    std::equal(cResp.begin(), cResp.begin() + 4, "\0\0\0\0") &&
+                    std::equal(cResp.begin() + 4, cResp.begin() + 8, cReq.begin() + 12)))
+                    throw std::runtime_error("Invalid conn response from tracker");
+
+                // Build & send a announce request (TODO: Implement retry logic)
+                std::string aReq {buildAnnounceRequest(cResp.substr(8, 8))};
+                sentBytes = udpSock.send(aReq);
+                std::println("Sent {}/98 bytes to tracker server", sentBytes);
+                std::string aResp {udpSock.recv()}; // Ensure we read complete IP addrs
+                std::println("Recv {}/* bytes from tracker server", aResp.size());
+
+                // Validate announce response
+                if (!(aResp.size() >= 16 && 
+                    std::equal(aResp.begin(), aResp.begin() + 4, aReq.begin() + 8) &&
+                    std::equal(aResp.begin() + 4, aResp.begin() + 8, aReq.begin() + 12)))
+                    throw std::runtime_error("Invalid announce response from tracker");
+
+                // Store the tracker-interval, seeders, leechers
+                std::memcpy(&interval, aResp.data() + 8, 4);
+                std::memcpy(&leechers, aResp.data() + 12, 4);
+                std::memcpy(&seeders, aResp.data() + 16, 4);
+                interval = net::utils::bswap(interval);
+                leechers = net::utils::bswap(leechers);
+                seeders = net::utils::bswap(seeders);
+                std::println("Seeders: {}, Leechers: {}", seeders, leechers);
+
+                // Extract the peers
+                std::vector<std::pair<std::string, std::uint16_t>> peers;
+                auto substrs {std::string_view{aResp.data() + 16, aResp.size() - 16} | std::ranges::views::chunk(6)};
+                for (auto substr: substrs) {
+                    std::string ip {substr.begin(), substr.begin() + 4};
+                    std::uint16_t port; std::memcpy(&port, substr.data() + 4, 2);
+                    peers.push_back({net::utils::ipBytesToString(ip), net::utils::bswap(port)});
+                }
+
+                return peers;
             }
     };
 };
 
-int main() {
-    Torrent::TorrentFile torrent{"alpine.torrent"};
-    torrent.getPeers();
+int main(int argc, char **argv) {
+    if (argc != 2) std::println(std::cerr, "Usage: ctorrent <torrent-file>");
+    else {
+        Torrent::TorrentFile torrent{argv[1]};
+        for (auto &[ip, port]: torrent.getPeers())
+            std::println("{}:{}", ip, port);
+    }
 }

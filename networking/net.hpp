@@ -70,6 +70,22 @@ namespace net {
     };
 
     namespace utils {
+        [[nodiscard]] constexpr inline auto bswap(std::integral auto val) {
+            if constexpr (std::endian::native == std::endian::little)
+                return std::byteswap(val);
+            return val;
+        }
+
+        [[nodiscard]] inline std::string ipBytesToString(std::string_view raw, IP ipType = IP::V4) {
+            const unsigned int ipLen {static_cast<unsigned int>(ipType == IP::V4? INET_ADDRSTRLEN: INET6_ADDRSTRLEN)};
+            const int ipFamily {ipType == IP::V4? PF_INET: PF_INET6};
+            std::string ipStr(ipLen, '\0');
+            if (!inet_ntop(ipFamily, raw.data(), ipStr.data(), ipLen))
+                throw SocketError{"Failed to convert address to string"};
+            ipStr.resize(std::strlen(ipStr.data()));
+            return ipStr;
+        }
+
         [[nodiscard]] inline std::string trimStr(std::string_view str) {
             auto first = str.find_first_not_of(' ');
             if (first == std::string::npos) return "";
@@ -282,12 +298,12 @@ namespace net {
 
                 if (_ipType == IP::V4) {
                     sockaddr_in *addr4 {reinterpret_cast<sockaddr_in*>(&storage)};
-                    addr4->sin_port = htons(port); addr4->sin_family = AF_INET;
+                    addr4->sin_port = utils::bswap(port); addr4->sin_family = AF_INET;
                     if (inet_pton(AF_INET, ip.data(), &addr4->sin_addr) <= 0)
                         throw SocketError{"Invalid IPV4 Address"};
                 } else {
                     sockaddr_in6 *addr6 {reinterpret_cast<sockaddr_in6*>(&storage)};
-                    addr6->sin6_port = htons(port); addr6->sin6_family = AF_INET6;
+                    addr6->sin6_port = utils::bswap(port); addr6->sin6_family = AF_INET6;
                     if (inet_pton(AF_INET6, ip.data(), &addr6->sin6_addr) <= 0)
                         throw SocketError{"Invalid IPV6 Address"};
                 }
@@ -301,11 +317,11 @@ namespace net {
                 const char *ret;
                 if (_ipType == IP::V4) {
                     sockaddr_in *addr4 {reinterpret_cast<sockaddr_in*>(&storage)};
-                    port = ntohs(addr4->sin_port); host.resize(INET_ADDRSTRLEN);
+                    port = utils::bswap(addr4->sin_port); host.resize(INET_ADDRSTRLEN);
                     ret = inet_ntop(AF_INET, &addr4->sin_addr, host.data(), INET_ADDRSTRLEN);
                 } else {
                     sockaddr_in6 *addr6 {reinterpret_cast<sockaddr_in6*>(&storage)};
-                    port = ntohs(addr6->sin6_port); host.resize(INET6_ADDRSTRLEN);
+                    port = utils::bswap(addr6->sin6_port); host.resize(INET6_ADDRSTRLEN);
                     ret = inet_ntop(AF_INET6, &addr6->sin6_addr, host.data(), INET6_ADDRSTRLEN);
                 }
 
