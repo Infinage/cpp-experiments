@@ -254,7 +254,7 @@ namespace Torrent {
                 auto files {info["files"]};
                 if (!files.ptr) return static_cast<std::uint32_t>(info.at("length").to<long>());
                 else {
-                    auto filesObj {files.cast<JSON::JSONObjectNode>()};
+                    auto filesObj {files.cast<JSON::JSONArrayNode>()};
                     return std::accumulate(filesObj.begin(), filesObj.end(), std::uint32_t {}, 
                         [] (std::uint32_t acc, JSON::JSONHandle file) {
                             return acc + file.at("length").to<long>();
@@ -290,13 +290,26 @@ namespace Torrent {
                 // Read the bencoded torrent file
                 auto root {Bencode::decode(buffer)};
 
-                // Ensure announce protocol is UDP (http unsupported for now)
-                std::string announceProto;
+                // Find first udp url, either from announce or announce-list
                 announceURL = root.at("announce").to<std::string>();
-                std::tie(announceProto, announceDomain, announcePort, announcePath) 
+                if (!announceURL.starts_with("udp://")) {
+                    announceURL.clear();
+                    for (JSON::JSONHandle urls: root["announce-list"]) {
+                        if (!announceURL.empty()) break;
+                        for (JSON::JSONHandle url: urls) {
+                            auto urlStr {url.to<std::string>()};
+                            if (urlStr.starts_with("udp://")) {
+                                announceURL = urlStr;
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                // If no UDP url found, abort
+                if (announceURL.empty()) throw std::runtime_error("No UDP announce urls found");
+                std::tie(std::ignore, announceDomain, announcePort, announcePath) 
                     = net::utils::extractURLPieces(announceURL);
-                if (announceProto != "udp") 
-                    throw std::runtime_error("Unsuported announce protocol: " + announceProto);
 
                 // Extract other required fields
                 auto info {root.at("info")};

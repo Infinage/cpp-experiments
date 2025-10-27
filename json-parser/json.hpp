@@ -214,9 +214,31 @@ namespace JSON {
         NodeType getType() const { return ptr->getType(); }
         JSONHandle(JSONNodePtr ptr): ptr{ptr} {}
 
+        std::vector<JSONNodePtr>::iterator begin(this auto &&self) { 
+            if (!self.ptr || self.getType() == NodeType::value) {
+                static std::vector<JSONNodePtr> empty;
+                return empty.begin();
+            } else if (self.getType() == NodeType::array) {
+                return self. template cast<JSONArrayNode>().begin();
+            } else {
+                return self. template cast<JSONObjectNode>().begin();
+            }
+        }
+
+        std::vector<JSONNodePtr>::iterator end(this auto &&self) { 
+            if (!self.ptr || self.getType() == NodeType::value) {
+                static std::vector<JSONNodePtr> empty;
+                return empty.end();
+            } else if (self.getType() == NodeType::array) {
+                return self. template cast<JSONArrayNode>().end();
+            } else {
+                return self. template cast<JSONObjectNode>().end();
+            }        
+        }
+
         [[nodiscard]] JSONHandle operator[](this auto &&self, const std::size_t idx) {
             // Check if type is indeed an array
-            if (!self.ptr || self.ptr->getType() != NodeType::array) 
+            if (!self.ptr || self.getType() != NodeType::array) 
                 return {nullptr};
 
             // Check if idx within bounds
@@ -229,7 +251,8 @@ namespace JSON {
 
         [[nodiscard]] JSONHandle operator[](this auto &&self, const std::string &key) {
             // Check if type is indeed an object
-            if (self.ptr->getType() != NodeType::object) return {nullptr};
+            if (!self.ptr || self.getType() != NodeType::object) 
+                return {nullptr};
 
             // Check if object has the required key
             auto &obj {self. template cast<JSONObjectNode>()};
@@ -267,7 +290,7 @@ namespace JSON {
             // Return 0 equivalent or whatever that is default constructible
             if (!self.ptr) return VariantType{};
 
-            if (self.ptr->getType() != NodeType::value)
+            if (self.getType() != NodeType::value)
                 throw std::runtime_error{"Node is not an simple type"};
 
             auto &value {self. template cast<JSONValueNode>().value};
@@ -283,7 +306,8 @@ namespace JSON {
         template<typename T>
         [[nodiscard]] decltype(auto) cast(this auto &&self) 
         requires(std::is_base_of_v<JSONNode, std::remove_cvref_t<T>>) {
-            if (self.getType() != T::staticType) throw std::runtime_error{"Invalid Cast"};
+            if (!self.ptr || self.getType() != T::staticType) 
+                throw std::runtime_error{"Invalid Cast"};
             return static_cast<T&>(*self.ptr);
         }
 
@@ -599,7 +623,7 @@ namespace JSON {
 
     // Define the JSONHandle::str convenience function
     inline std::string JSONHandle::str(bool pretty) const { 
-        std::string jsonDump {Parser::dumps(*this, pretty)}; 
+        std::string jsonDump {this->ptr? Parser::dumps(*this, pretty): ""}; 
         return jsonDump;
     }
 }
