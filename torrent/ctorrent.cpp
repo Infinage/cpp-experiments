@@ -263,73 +263,8 @@ namespace Torrent {
                 }
             }
 
-            // Associate a random 20 char long peer id
-            std::string peerID;
-
-            // Extract port from Announce URL
-            std::uint16_t announcePort;
-
-            // Read from torrent file
-            std::string announceURL, announceDomain, announcePath;
-            std::uint32_t length, pieceLen, interval, seeders, leechers;
-            std::string name;
-
-            // Process torrent file and store
-            std::size_t numPieces;
-            std::string pieceBlob, infoHash;
-
-        public:
-            TorrentFile(const std::string_view torrentFP): peerID{"-NJT-" + randString(20 - 5)} {
-                // Read from file
-                std::ifstream ifs {torrentFP.data(), std::ios::binary | std::ios::ate};
-                auto size {ifs.tellg()};
-                std::string buffer(static_cast<std::size_t>(size), 0);
-                ifs.seekg(0, std::ios::beg);
-                ifs.read(buffer.data(), size);
-
-                // Read the bencoded torrent file
-                auto root {Bencode::decode(buffer)};
-
-                // Find first udp url, either from announce or announce-list
-                announceURL = root.at("announce").to<std::string>();
-                if (!announceURL.starts_with("udp://")) {
-                    announceURL.clear();
-                    for (JSON::JSONHandle urls: root["announce-list"]) {
-                        if (!announceURL.empty()) break;
-                        for (JSON::JSONHandle url: urls) {
-                            auto urlStr {url.to<std::string>()};
-                            if (urlStr.starts_with("udp://")) {
-                                announceURL = urlStr;
-                                break;
-                            }
-                        }
-                    }
-                }
-
-                // If no UDP url found, abort
-                if (announceURL.empty()) throw std::runtime_error("No UDP announce urls found");
-                std::tie(std::ignore, announceDomain, announcePort, announcePath) 
-                    = net::utils::extractURLPieces(announceURL);
-
-                // Extract other required fields
-                auto info {root.at("info")};
-                name = info["name"].to<std::string>();
-                length = calculateTotalLength(info);
-                pieceLen = static_cast<std::uint32_t>(info["piece length"].to<long>()); 
-                pieceBlob = info["pieces"].to<std::string>();
-                numPieces = pieceBlob.size() / 20;
-
-                // Sanity check on blob validity - can be equally split
-                if (pieceBlob.size() % 20) throw std::runtime_error("Piece blob is corrupted");
-
-                // Reencode just the info dict to compute its sha1 hash
-                infoHash = hashutil::sha1(Bencode::encode(info.ptr));
-            }
-
-            [[nodiscard]] std::vector<std::pair<std::string, std::uint16_t>> getPeers() {
-                std::string ipAddr {net::utils::resolveHostname(announceDomain)};
-                std::println("Resolved announce url ({}) as udp://{}:{}", announceURL, ipAddr, announcePort);
-
+            [[nodiscard]] std::vector<std::pair<std::string, std::uint16_t>> 
+            getUDPPeers(std::string_view ipAddr) {
                 // Build & send a connection request (TODO: Implement retry logic)
                 std::string cReq {buildConnectionRequest()};
                 net::Socket udpSock {net::SOCKTYPE::UDP};
@@ -370,7 +305,7 @@ namespace Torrent {
 
                 // Extract the peers
                 std::vector<std::pair<std::string, std::uint16_t>> peers;
-                auto substrs {std::string_view{aResp.data() + 16, aResp.size() - 16} | std::ranges::views::chunk(6)};
+                auto substrs {std::string_view{aResp.data() + 20, aResp.size() - 20} | std::ranges::views::chunk(6)};
                 for (auto substr: substrs) {
                     std::string ip {substr.begin(), substr.begin() + 4};
                     std::uint16_t port; std::memcpy(&port, substr.data() + 4, 2);
@@ -378,6 +313,80 @@ namespace Torrent {
                 }
 
                 return peers;
+            }
+
+            [[nodiscard]] std::vector<std::pair<std::string, std::uint16_t>> 
+            getTCPPeers(std::string_view ipAddr) {
+                net::HttpRequest req{announcePath};
+                req.setParam("info_hash", infoHash);
+                req.setParam("peer_id", peerID);
+                req.setParam("port", "6881");
+                req.setParam("uploaded", "0");
+                req.setParam("downloaded", "0");
+                req.setParam("compact", "1");
+                req.setParam("left", std::to_string(length));
+                net::HttpResponse resp {
+                    announceProto == "http"? req._execute(ipAddr, announcePort, 3): 
+                    req._executeSSL(ipAddr, announcePort, 3, announceDomain)
+                };
+                std::println("Request: {}, Response: {}", req.toString(), resp.raw);
+                return {};
+            }
+
+            // Associate a random 20 char long peer id
+            std::string peerID;
+
+            // Extract port from Announce URL
+            std::uint16_t announcePort;
+
+            // Read from torrent file
+            std::string announceURL, announceProto, announceDomain, announcePath;
+            std::uint32_t length, pieceLen, interval, seeders, leechers;
+            std::string name;
+
+            // Process torrent file and store
+            std::size_t numPieces;
+            std::string pieceBlob, infoHash;
+
+        public:
+            TorrentFile(const std::string_view torrentFP): peerID{"-NJT-" + randString(20 - 5)} {
+                // Read from file
+                std::ifstream ifs {torrentFP.data(), std::ios::binary | std::ios::ate};
+                auto size {ifs.tellg()};
+                std::string buffer(static_cast<std::size_t>(size), 0);
+                ifs.seekg(0, std::ios::beg);
+                ifs.read(buffer.data(), size);
+
+                // Read the bencoded torrent file
+                auto root {Bencode::decode(buffer)};
+
+                // Extract the announce URL from torrent file
+                announceURL = root.at("announce").to<std::string>();
+                std::tie(announceProto, announceDomain, announcePort, announcePath) 
+                    = net::utils::extractURLPieces(announceURL);
+                if (announceProto != "udp" && announceProto != "http" && announceProto != "https")
+                    throw std::runtime_error("Torrent announce URL has unsupported protocol: " + announceProto);
+
+                // Extract other required fields
+                auto info {root.at("info")};
+                name = info["name"].to<std::string>();
+                length = calculateTotalLength(info);
+                pieceLen = static_cast<std::uint32_t>(info["piece length"].to<long>()); 
+                pieceBlob = info["pieces"].to<std::string>();
+                numPieces = pieceBlob.size() / 20;
+
+                // Sanity check on blob validity - can be equally split
+                if (pieceBlob.size() % 20) throw std::runtime_error("Piece blob is corrupted");
+
+                // Reencode just the info dict to compute its sha1 hash
+                infoHash = hashutil::sha1(Bencode::encode(info.ptr));
+            }
+
+            [[nodiscard]] std::vector<std::pair<std::string, std::uint16_t>> getPeers() {
+                std::string ipAddr {net::utils::resolveHostname(announceDomain)};
+                std::println("Resolved announce url ({}) as {}://{}:{}", announceURL, 
+                    announceProto, ipAddr, announcePort);
+                return announceProto == "UDP"? getUDPPeers(ipAddr): getTCPPeers(ipAddr);
             }
     };
 };

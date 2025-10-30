@@ -1,5 +1,8 @@
 /*
  * TODO:
+ * - Modify HttpRequest::execute to take in a url: <protocol>://<hostname>[:port]
+        - If `path` is set, it will override any values set manually with setParam and the constructor (implement this)
+ *      - Add logic to follow redirects: 301, 302, 303, 307, 308
  * - Support for proxy
  * - Write unit test cases
  * - Modify httpserver to use this module
@@ -753,28 +756,33 @@ namespace net {
                 return oss.str();
             }
 
-            [[nodiscard]] HttpResponse 
-            execute(std::string_view hostname, bool enableSSL = true, long timeoutSec = 5) {
-                if (headers.find("host") == headers.end())
-                    setHeader("Host", std::string{hostname});
+            // URL: <protocol>:://<domain>[:port]/<path>
+            // Note: If `path` is set, it will override any values set manually with setParam and the constructor
+            // If timeout set to a negative number, timeouts are ignored
+            [[nodiscard]] HttpResponse execute(std::string_view url, long timeoutSec = 5, bool follow = true) {
+                auto [protocol, hostname, port, path] {net::utils::extractURLPieces(url)};
+                if (protocol != "http" && protocol != "https") throw std::runtime_error("Unsupported protocol: " + protocol);
+                if (headers.find("host") == headers.end()) setHeader("Host", std::string{hostname});
                 std::string ipAddr {utils::resolveHostname(hostname, nullptr, SOCKTYPE::TCP, ipType)};
-                if (enableSSL) return _executeSSL(ipAddr, 443, hostname, "");
-                return _execute(ipAddr, 80, timeoutSec);
+                if (protocol == "https") return _executeSSL(ipAddr, port == 0? 443: port, timeoutSec, hostname, "");
+                else return _execute(ipAddr, port == 0? 80: port, timeoutSec);
             }
 
             // If timeout set to a negative number, timeouts are ignored
             HttpResponse _execute(std::string_view ipAddr, std::uint16_t port, long timeoutSec) {
                 net::Socket socket {SOCKTYPE::TCP, ipType};
-                socket.connect(ipAddr, port);
                 if (timeoutSec > 0) socket.setTimeout(timeoutSec, timeoutSec);
+                socket.connect(ipAddr, port);
                 socket.sendAll(this->toString());
                 return HttpResponse::fromString(socket.recvAll());
             }
 
-            HttpResponse _executeSSL(std::string_view ipAddr, std::uint16_t port, 
+            // If timeout set to a negative number, timeouts are ignored
+            HttpResponse _executeSSL(std::string_view ipAddr, std::uint16_t port, long timeoutSec, 
                 std::string_view hostname = "", std::string_view certPath = "")
             {
                 net::SSLSocket socket{false, certPath, "", ipType};
+                if (timeoutSec > 0) socket.setTimeout(timeoutSec, timeoutSec);
                 socket.connect(ipAddr, port, hostname);
                 socket.sendAll(this->toString());
                 return HttpResponse::fromString(socket.recvAll());
