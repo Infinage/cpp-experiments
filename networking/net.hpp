@@ -1,8 +1,5 @@
 /*
  * TODO:
- * - Modify HttpRequest::execute to take in a url: <protocol>://<hostname>[:port]
-        - If `path` is set, it will override any values set manually with setParam and the constructor (implement this)
- *      - Add logic to follow redirects: 301, 302, 303, 307, 308
  * - Support for proxy
  * - Write unit test cases
  * - Modify httpserver to use this module
@@ -100,35 +97,6 @@ namespace net {
             std::string res(str.size(), '\0'); 
             std::ranges::transform(str, res.begin(), [](unsigned char ch) { return std::tolower(ch); }); 
             return res;
-        }
-
-        // Given a hostname such as 'google.com' and an optional 'port/service' 
-        // resolves to an IP addr; Service eg: 'http', 'https', etc
-        [[nodiscard]] inline std::string resolveHostname(std::string_view hostname, const char *service = nullptr,
-            SOCKTYPE sockType = SOCKTYPE::TCP, IP ipType = IP::V4)
-        {
-            int domain {ipType == IP::V4? PF_INET: PF_INET6};
-            int type {sockType == SOCKTYPE::TCP? SOCK_STREAM: SOCK_DGRAM};
-            addrinfo hints{}, *res {}; hints.ai_family = domain; hints.ai_socktype = type;
-            if (int status = getaddrinfo(hostname.data(), service, &hints, &res); status != 0)
-                throw SocketError{"Failed to resolve hostname", gai_strerror(status)};
-
-            // Ensure res is freed always by wrapping inside a smart pointer
-            std::unique_ptr<addrinfo, decltype(&freeaddrinfo)> resGaurd {res, freeaddrinfo};
-
-            unsigned int ipLen {static_cast<unsigned int>(ipType == IP::V4? INET_ADDRSTRLEN: INET6_ADDRSTRLEN)};
-            std::string ipStr(ipLen, '\0'); const char *ret;
-            if (ipType == IP::V4) {
-                auto *addr = reinterpret_cast<sockaddr_in*>(res->ai_addr);
-                ret = inet_ntop(AF_INET, &addr->sin_addr, ipStr.data(), ipLen);
-            } else {
-                auto *addr6 = reinterpret_cast<sockaddr_in6*>(res->ai_addr);
-                ret = inet_ntop(AF_INET6, &addr6->sin6_addr, ipStr.data(), ipLen);
-            }
-
-            if (!ret) throw SocketError{"Failed to convert address to string"};
-            ipStr.resize(std::strlen(ipStr.data()));
-            return ipStr;
         }
 
         [[nodiscard]] inline std::string urlEncode(std::string_view str, 
@@ -254,13 +222,13 @@ namespace net {
         }
 
         // Returns tuple of [protocol, domain, port, path], port is 0 if missing
-        // Assumes pattern: <protocol>:://[username:password@]<domain>[:port]/<path>
+        // Assumes pattern: `<protocol>:://[username:password@]<domain>[:port]/<path>`
         [[nodiscard]] inline 
         std::tuple<std::string, std::string, std::uint16_t, std::string>
         extractURLPieces(std::string_view url) {
             std::string protocol, path {"/"}; std::uint16_t port {};
             std::size_t pos {url.find("://")};
-            if (pos == std::string::npos) throw std::runtime_error("Missing protocol");
+            if (pos == std::string::npos) throw std::runtime_error("Missing protocol: " + std::string{url});
             protocol = url.substr(0, pos); url = url.substr(pos + 3);
 
             // Extract the path out
@@ -278,12 +246,52 @@ namespace net {
                 try {
                     port = static_cast<std::uint16_t>(std::stol(std::string{url.substr(pos + 1)}));
                 } catch(...) {
-                    throw std::runtime_error("Invalid or out of range port in URL");
+                    throw std::runtime_error("Invalid or out of range port : " + std::string{url});
                 }
                 url = url.substr(0, pos);
             }
 
             return {protocol, std::string{url}, port, path};
+        }
+
+        // Given a hostname such as 'google.com' and an optional 'port/service' resolves to an IP addr 
+        // Service can be 'http', 'https', '443', etc and can be set to a nullptr
+        [[nodiscard]] inline std::string resolveHostname(std::string_view hostname, const char *service,
+            SOCKTYPE sockType = SOCKTYPE::TCP, IP ipType = IP::V4)
+        {
+            int domain {ipType == IP::V4? PF_INET: PF_INET6};
+            int type {sockType == SOCKTYPE::TCP? SOCK_STREAM: SOCK_DGRAM};
+            addrinfo hints{}, *res {}; hints.ai_family = domain; hints.ai_socktype = type;
+            if (int status = getaddrinfo(hostname.data(), service, &hints, &res); status != 0)
+                throw SocketError{"Failed to resolve hostname", gai_strerror(status)};
+
+            // Ensure res is freed always by wrapping inside a smart pointer
+            std::unique_ptr<addrinfo, decltype(&freeaddrinfo)> resGaurd {res, freeaddrinfo};
+
+            unsigned int ipLen {static_cast<unsigned int>(ipType == IP::V4? INET_ADDRSTRLEN: INET6_ADDRSTRLEN)};
+            std::string ipStr(ipLen, '\0'); const char *ret;
+            if (ipType == IP::V4) {
+                auto *addr = reinterpret_cast<sockaddr_in*>(res->ai_addr);
+                ret = inet_ntop(AF_INET, &addr->sin_addr, ipStr.data(), ipLen);
+            } else {
+                auto *addr6 = reinterpret_cast<sockaddr_in6*>(res->ai_addr);
+                ret = inet_ntop(AF_INET6, &addr6->sin6_addr, ipStr.data(), ipLen);
+            }
+
+            if (!ret) throw SocketError{"Failed to convert address to string"};
+            ipStr.resize(std::strlen(ipStr.data()));
+            return ipStr;
+        }
+
+        // Given a url of form: `<protocol>:://<hostname>[:port]` resolves to its IP addr
+        [[nodiscard]] inline std::string resolveURL(std::string_view url, 
+            SOCKTYPE sockType = SOCKTYPE::TCP, IP ipType = IP::V4)
+        {
+            std::string protocol, hostname; std::uint16_t port;
+            std::tie(protocol, hostname, port, std::ignore) = extractURLPieces(url);
+            std::string portStr {std::to_string(port)};
+            return resolveHostname(hostname, portStr.empty()? protocol.c_str(): portStr.c_str(), 
+                sockType, ipType);
         }
     };
 
@@ -694,7 +702,7 @@ namespace net {
             }
 
         public:
-            std::string raw, body; int statusCode {200};
+            std::string raw, body, location; int statusCode {200};
             std::unordered_map<std::string, std::vector<std::string>> headers;
     };
 
@@ -756,16 +764,37 @@ namespace net {
                 return oss.str();
             }
 
-            // URL: <protocol>:://<domain>[:port]/<path>
+            // URL: `<protocol>:://<domain>[:port]/<path>`
             // Note: If `path` is set, it will override any values set manually with setParam and the constructor
-            // If timeout set to a negative number, timeouts are ignored
-            [[nodiscard]] HttpResponse execute(std::string_view url, long timeoutSec = 5, bool follow = true) {
-                auto [protocol, hostname, port, path] {net::utils::extractURLPieces(url)};
+            // If timeout set to a negative number, timeouts are ignored. They are applied for each redirect & not on a cumulative basis
+            // HttpResponse object will have the final url set post resolving any redirects
+            [[nodiscard]] HttpResponse execute(std::string_view url, long timeoutSec = 5, std::size_t follow = 5) {
+                std::string protocol, hostname, path_; std::uint16_t port;
+                std::tie(protocol, hostname, port, path_) = net::utils::extractURLPieces(url);
                 if (protocol != "http" && protocol != "https") throw std::runtime_error("Unsupported protocol: " + protocol);
+                if (!path_.empty() && path_ != "/") std::tie(path, urlParams) = utils::getParamsFromPath(path_);
                 if (headers.find("host") == headers.end()) setHeader("Host", std::string{hostname});
                 std::string ipAddr {utils::resolveHostname(hostname, nullptr, SOCKTYPE::TCP, ipType)};
-                if (protocol == "https") return _executeSSL(ipAddr, port == 0? 443: port, timeoutSec, hostname, "");
-                else return _execute(ipAddr, port == 0? 80: port, timeoutSec);
+                std::uint16_t port_ = port != 0? port: protocol == "http"? 80: 443;
+                HttpResponse resp {protocol == "http"? _execute(ipAddr, port_, timeoutSec):
+                    _executeSSL(ipAddr, port_, timeoutSec, hostname, "")};
+                resp.location = url;
+
+                // Handle redirects (relative urls such as '../../' are not supported)
+                int status {resp.statusCode}; 
+                if ((status == 301 || status == 302 || status == 303 || status == 307 || status == 308) && follow > 0) {
+                    std::string redirectURL {resp.header("location")};
+                    if (redirectURL.empty()) return resp;
+                    if (status == 303) method = "GET";
+                    if (redirectURL.front() == '/') {
+                        redirectURL = port != 0? 
+                            std::format("{}://{}:{}{}", protocol, hostname, port, redirectURL):
+                            std::format("{}://{}{}", protocol, hostname, redirectURL);
+                    }
+                    return execute(redirectURL, timeoutSec, follow - 1);
+                }
+
+                return resp;
             }
 
             // If timeout set to a negative number, timeouts are ignored

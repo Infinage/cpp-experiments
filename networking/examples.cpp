@@ -5,12 +5,12 @@
 int main() try {
     // Resolve IPV6 domain and get resp (curl -6 https://api6.ipify.org?format=json)
     {
-        const char *domain {"api6.ipify.org"};
-        std::string ipAddr {net::utils::resolveHostname(domain, nullptr, net::SOCKTYPE::TCP, net::IP::V6)};
+        const char *url {"https://api6.ipify.org"};
+        std::string ipAddr {net::utils::resolveURL(url, net::SOCKTYPE::TCP, net::IP::V6)};
 
         net::HttpRequest req {"/", "GET", net::IP::V6}; 
         req.setParam("format", "json");
-        net::HttpResponse resp {req.execute(domain)};
+        net::HttpResponse resp {req.execute(url)};
         std::println("Resolved IPV6 Addr: {}\nResponse: {}\n", 
             ipAddr, resp.json().str(false));
     }
@@ -18,7 +18,7 @@ int main() try {
     // Send a https get request to API (i.e with SSL support)
     {
         net::HttpRequest req {"/users/1"};
-        net::HttpResponse resp {req.execute("jsonplaceholder.typicode.com")};
+        net::HttpResponse resp {req.execute("https://jsonplaceholder.typicode.com")};
         JSON::JSONHandle json {resp.json()};
         std::println(
             "Status Code: {}\nContent Type: {}\n\n"
@@ -36,8 +36,9 @@ int main() try {
     // Github forces redirect to https
     {
         net::HttpRequest req;
-        net::HttpResponse resp {req.execute("github.com", false)};
-        std::println("Raw response: {}", resp.raw);
+        net::HttpResponse resp {req.execute("http://github.com")};
+        std::println("Response Status: {}\nRequest URL redirected to: {}\n", 
+            resp.statusCode, resp.location);
     }
 
     // Send UDP packets to `nc -l -u 4444`, ensure running
