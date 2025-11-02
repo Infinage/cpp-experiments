@@ -3,22 +3,25 @@
 #include <thread>
 
 int main() try {
-    // Resolve IPV6 domain and get resp (curl -6 https://api6.ipify.org?format=json)
+    // Resolve just a domain without caring about its protocol
     {
-        const char *url {"https://api6.ipify.org"};
-        std::string ipAddr {net::utils::resolveURL(url, net::SOCKTYPE::TCP, net::IP::V6)};
+        std::println("\ngoogle.com resolved to: {}\n", net::utils::resolveHostname("google.com"));
+    }
 
-        net::HttpRequest req {"/", "GET", net::IP::V6}; 
-        req.setParam("format", "json");
-        net::HttpResponse resp {req.execute(url)};
-        std::println("Resolved IPV6 Addr: {}\nResponse: {}\n", 
-            ipAddr, resp.json().str(false));
+    // Resolve IPV6 domain and get resp (curl -6 https://api6.ipify.org?format=json)
+    // We need to explicitly resolve URL, but HttpRequest auto resolves for us
+    {
+        net::URL url {"https://api6.ipify.org", net::IP::V6};
+        url.setParam("format", "json");
+        net::HttpRequest req {url, "GET"};
+        net::HttpResponse resp {req.execute()};
+        std::println("Resolved IPV6 Addr: {}\nResponse: {}\n", url.ipAddr, resp.body);
     }
 
     // Send a https get request to API (i.e with SSL support)
     {
-        net::HttpRequest req {"/users/1"};
-        net::HttpResponse resp {req.execute("https://jsonplaceholder.typicode.com")};
+        net::HttpRequest req {"https://jsonplaceholder.typicode.com/users/1"};
+        net::HttpResponse resp {req.execute()};
         JSON::JSONHandle json {resp.json()};
         std::println(
             "Status Code: {}\nContent Type: {}\n\n"
@@ -35,8 +38,8 @@ int main() try {
     // Send a http get request to API (i.e without SSL support)
     // Github forces redirect to https
     {
-        net::HttpRequest req;
-        net::HttpResponse resp {req.execute("http://github.com")};
+        net::HttpRequest req {"http://github.com"};
+        net::HttpResponse resp {req.execute()};
         std::println("Response Status: {}\nRequest URL redirected to: {}\n", 
             resp.statusCode, resp.location);
     }
@@ -49,20 +52,6 @@ int main() try {
             std::this_thread::sleep_for(std::chrono::seconds(1));
             long _ {client.send("Message: " + std::to_string(i) + '\n')};
         }
-    }
-
-    // Utils to extract pieces of an url
-    {
-        auto [protocol, domain, port, path] {
-            net::utils::extractURLPieces(
-                "udp://tracker.coppersurfer.tk:6969/"
-                "announce?info_hash=062c43b1b47e25c7bee1fefc3b945758bd11318b&peer_id"
-                "=leH8z33e9V0ODjlHZD4z&uploaded=0&downloaded=0&compact=1&left=124234"
-            )
-        };
-
-        std::println("Protocol: {}\nDomain: {}\nPort: {}\nPath: {}",
-            protocol, domain, port, path);
     }
 } catch (std::exception &ex) {
     std::println("{}", ex.what());

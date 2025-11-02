@@ -70,7 +70,7 @@ namespace net {
     };
 
     namespace utils {
-        [[nodiscard]] constexpr inline auto bswap(std::integral auto val) {
+        [[nodiscard]] constexpr auto bswap(std::integral auto val) {
             if constexpr (std::endian::native == std::endian::little)
                 return std::byteswap(val);
             return val;
@@ -86,102 +86,17 @@ namespace net {
             return ipStr;
         }
 
-        [[nodiscard]] inline std::string trimStr(std::string_view str) {
+        [[nodiscard]] constexpr std::string trimStr(std::string_view str) {
             auto first = str.find_first_not_of(' ');
             if (first == std::string::npos) return "";
             auto last = str.find_last_not_of(' ');
             return {str.begin() + first, str.begin() + last + 1};
         }
 
-        [[nodiscard]] inline std::string toLower(std::string_view str) {
+        [[nodiscard]] constexpr std::string toLower(std::string_view str) {
             std::string res(str.size(), '\0'); 
             std::ranges::transform(str, res.begin(), [](unsigned char ch) { return std::tolower(ch); }); 
             return res;
-        }
-
-        [[nodiscard]] inline std::string urlEncode(std::string_view str, 
-            bool mapSpaceToPlus = true) 
-        {
-            std::ostringstream oss; oss.fill('0');
-            for (char ch: str) {
-                bool isUnreserved {
-                    (ch >= 'a' && ch <= 'z') ||
-                    (ch >= 'A' && ch <= 'Z') ||
-                    (ch >= '0' && ch <= '9') ||
-                    ch == '-' || ch == '.' || ch == '_' || ch == '~'
-                };
-
-                if (ch == ' ' && mapSpaceToPlus) oss << '+';
-                else if (isUnreserved) oss << ch;
-                else {
-                    oss << '%' << std::hex << std::uppercase << std::setw(2) 
-                        << static_cast<int>(static_cast<unsigned char>(ch))
-                        << std::dec << std::nouppercase;
-                }
-            }
-            return oss.str();
-        }
-
-        [[nodiscard]] inline std::string urlDecode(std::string_view str) {
-            std::ostringstream oss; std::string acc;
-            for (char ch: str) {
-                if (!acc.empty()) {
-                    if (acc.size() < 2) acc.push_back(ch);
-                    else {
-                        oss << static_cast<unsigned char>(std::stoi(acc, 0, 16));
-                        acc.clear();
-                    }
-                }
-                else if (ch == '+') oss << ' ';
-                else if (ch != '%') oss << ch;
-                else acc.push_back('0');
-            }
-            return oss.str();
-        }
-
-        [[nodiscard]] inline std::string 
-        getPathWithParams(const std::string &path, const std::vector<std::pair<std::string, std::string>> &params) {
-            if (params.empty()) return path;
-            std::ostringstream oss; oss << path << '?';
-            for (const auto &kv: params) oss << kv.first << "=" << kv.second << '&';
-            std::string res {oss.str()}; res.pop_back();
-            return res;
-        }
-
-        [[nodiscard]] inline std::pair<std::string, std::vector<std::pair<std::string, std::string>>>
-        getParamsFromPath(std::string_view path) {
-            // Seperate logic for extracting a single key=value pair
-            auto extractKV {[](std::string_view raw) {
-                std::size_t sepPos {raw.find('=')};
-                std::string_view key {raw}, value {};
-                if (sepPos != std::string::npos) {
-                    key = raw.substr(0, sepPos);
-                    value = raw.substr(sepPos + 1);
-                } 
-                return std::pair(std::string{key}, std::string{value});
-            }};
-
-            // Extract all k=v separated by an ampersand
-            std::vector<std::pair<std::string, std::string>> params;
-            if (path.empty() || path.at(0) != '/') throw std::runtime_error("Invalid URI path");
-
-            // Find '?', if not found no params -> /path1/path2/
-            // If found seperate path and paramPath
-            std::size_t pos {path.find('?')}; std::string_view paramPath {};
-            if (pos != std::string::npos) {
-                paramPath = path.substr(pos + 1);
-                path = path.substr(0, pos);
-            }
-
-            // Iterate and extract all parameters
-            while (!paramPath.empty()) {
-                pos = paramPath.find('&'); 
-                bool lastPiece {pos == std::string::npos};
-                params.emplace_back(extractKV(lastPiece? paramPath: paramPath.substr(0, pos)));
-                paramPath = lastPiece? std::string_view{} :paramPath.substr(pos + 1);
-            }
-
-            return {std::string{path}, params};
         }
 
         [[nodiscard]] inline 
@@ -221,42 +136,10 @@ namespace net {
             return std::make_tuple(firstLine, headers, body);
         }
 
-        // Returns tuple of [protocol, domain, port, path], port is 0 if missing
-        // Assumes pattern: `<protocol>:://[username:password@]<domain>[:port]/<path>`
-        [[nodiscard]] inline 
-        std::tuple<std::string, std::string, std::uint16_t, std::string>
-        extractURLPieces(std::string_view url) {
-            std::string protocol, path {"/"}; std::uint16_t port {};
-            std::size_t pos {url.find("://")};
-            if (pos == std::string::npos) throw std::runtime_error("Missing protocol: " + std::string{url});
-            protocol = url.substr(0, pos); url = url.substr(pos + 3);
-
-            // Extract the path out
-            if ((pos = url.find('/')) != std::string::npos) {
-                path = url.substr(pos); url = url.substr(0, pos);
-            }
-
-            // Remove [username:password@] if exists
-            if ((pos = url.find('@')) != std::string::npos) {
-                url = url.substr(pos + 1);
-            }
-
-            // Extract port if available
-            if ((pos = url.find(':')) != std::string::npos) {
-                try {
-                    port = static_cast<std::uint16_t>(std::stol(std::string{url.substr(pos + 1)}));
-                } catch(...) {
-                    throw std::runtime_error("Invalid or out of range port : " + std::string{url});
-                }
-                url = url.substr(0, pos);
-            }
-
-            return {protocol, std::string{url}, port, path};
-        }
-
         // Given a hostname such as 'google.com' and an optional 'port/service' resolves to an IP addr 
         // Service can be 'http', 'https', '443', etc and can be set to a nullptr
-        [[nodiscard]] inline std::string resolveHostname(std::string_view hostname, const char *service,
+        [[nodiscard]] inline std::string resolveHostname(
+            std::string_view hostname, const char *service = nullptr,
             SOCKTYPE sockType = SOCKTYPE::TCP, IP ipType = IP::V4)
         {
             int domain {ipType == IP::V4? PF_INET: PF_INET6};
@@ -281,17 +164,6 @@ namespace net {
             if (!ret) throw SocketError{"Failed to convert address to string"};
             ipStr.resize(std::strlen(ipStr.data()));
             return ipStr;
-        }
-
-        // Given a url of form: `<protocol>:://<hostname>[:port]` resolves to its IP addr
-        [[nodiscard]] inline std::string resolveURL(std::string_view url, 
-            SOCKTYPE sockType = SOCKTYPE::TCP, IP ipType = IP::V4)
-        {
-            std::string protocol, hostname; std::uint16_t port;
-            std::tie(protocol, hostname, port, std::ignore) = extractURLPieces(url);
-            std::string portStr {std::to_string(port)};
-            return resolveHostname(hostname, portStr.empty()? protocol.c_str(): portStr.c_str(), 
-                sockType, ipType);
         }
     };
 
@@ -666,6 +538,230 @@ namespace net {
             SSL_CTX *ctx; SSL* ssl; 
     };
 
+    class URL {
+        private:
+            // Given a path with optional parameters, it extracts and returns {path, params}
+            // Params will be url encoded and would need to be decoded
+            static std::pair<std::string, std::vector<std::pair<std::string, std::string>>>
+            getParamsFromPath(std::string_view path) {
+                // Seperate logic for extracting a single key=value pair
+                auto extractKV {[](std::string_view raw) {
+                    std::size_t sepPos {raw.find('=')};
+                    std::string_view key {raw}, value {};
+                    if (sepPos != std::string::npos) {
+                        key = raw.substr(0, sepPos);
+                        value = raw.substr(sepPos + 1);
+                    } 
+                    return std::pair(std::string{key}, std::string{value});
+                }};
+
+                // Extract all k=v separated by an ampersand
+                std::vector<std::pair<std::string, std::string>> params;
+                if (path.empty() || path.at(0) != '/') throw std::runtime_error("Invalid URI path");
+
+                // Find '?', if not found no params -> /path1/path2/
+                // If found seperate path and paramPath
+                std::size_t pos {path.find('?')}; std::string_view paramPath {};
+                if (pos != std::string::npos) {
+                    paramPath = path.substr(pos + 1);
+                    path = path.substr(0, pos);
+                }
+
+                // Iterate and extract all parameters
+                while (!paramPath.empty()) {
+                    pos = paramPath.find('&'); 
+                    bool lastPiece {pos == std::string::npos};
+                    params.emplace_back(extractKV(lastPiece? paramPath: paramPath.substr(0, pos)));
+                    paramPath = lastPiece? std::string_view{} :paramPath.substr(pos + 1);
+                }
+
+                return {std::string{path}, params};
+            }
+
+            // Returns tuple of [protocol, domain, port, path], port is 0 if missing
+            // Assumes pattern: `<protocol>:://[username:password@]<domain>[:port]/<path>`
+            [[nodiscard]] inline 
+            std::tuple<std::string, std::string, std::uint16_t, std::string>
+            extractURLPieces(std::string_view url) {
+                std::string protocol, path {"/"}; std::uint16_t port {};
+                std::size_t pos {url.find("://")};
+                if (pos == std::string::npos) throw std::runtime_error("Missing protocol: " + std::string{url});
+                protocol = url.substr(0, pos); url = url.substr(pos + 3);
+
+                // Extract the path out
+                if ((pos = url.find('/')) != std::string::npos) {
+                    path = url.substr(pos); url = url.substr(0, pos);
+                }
+
+                // Remove [username:password@] if exists
+                if ((pos = url.find('@')) != std::string::npos) {
+                    url = url.substr(pos + 1);
+                }
+
+                // Extract port if available
+                if ((pos = url.find(':')) != std::string::npos) {
+                    try {
+                        port = static_cast<std::uint16_t>(std::stol(std::string{url.substr(pos + 1)}));
+                    } catch(...) {
+                        throw std::runtime_error("Invalid or out of range port : " + std::string{url});
+                    }
+                    url = url.substr(0, pos);
+                }
+
+                return {protocol, std::string{url}, port, path};
+            }
+
+        public:
+            IP ipType {IP::V4};
+            std::string protocol {"http"};
+            std::string domain {"localhost"}, ipAddr {"127.0.0.0"};
+            std::uint16_t port {0};
+            std::string path {"/"};
+            std::vector<std::pair<std::string, std::string>> params; 
+
+        public:
+            URL() = default;
+
+            void swap(URL &other) noexcept {
+                using std::swap;
+                swap(this->ipType, other.ipType);
+                swap(this->protocol, other.protocol);
+                swap(this->domain, other.domain);
+                swap(this->ipAddr, other.ipAddr);
+                swap(this->port, other.port);
+                swap(this->path, other.path);
+                swap(this->params, other.params);
+            }
+
+            URL &operator=(std::string_view url) {
+                URL{url}.swap(*this);
+                return *this;
+            }
+
+            // URL: `<protocol>:://<domain>[:port]/<path>`
+            // Constructs it lazily, you may want to call `resolve` to get its IP address
+            URL(std::string_view url, IP ipType = IP::V4): ipType{ipType}, ipAddr{""} {
+                std::tie(protocol, domain, port, path) = extractURLPieces(url);
+                port = port != 0 || (protocol != "http" && protocol != "https")? port: protocol == "https"? 443: 80;
+                this->setPath(path);
+            }
+
+            // URL translates to: [proto]://127.0.0.1:[port]/<path>
+            // Unless port is set correctly, URL will remain unroutable
+            [[nodiscard]] static URL localhost(
+                std::uint16_t port, std::string_view path = "/", 
+                std::string_view proto = "http", IP ipType = IP::V4
+            ) {
+                URL url;
+                url.port = port;
+                url.protocol = proto; 
+                url.ipType = ipType;
+                url.setPath(path);
+                return url;
+            }
+
+            // Resolve the hostname to its ipaddr
+            std::string resolve(bool force = false) {
+                if ((ipAddr.empty() && domain.empty()) || port == 0) 
+                    throw std::runtime_error("Not a valid URL: " + getFullPath());
+                if (ipAddr.empty() || force) 
+                    ipAddr = utils::resolveHostname(domain, nullptr, SOCKTYPE::TCP, ipType);
+                return ipAddr;
+            }
+
+            // Set path along with params from input string
+            void setPath(std::string_view path) {
+                std::tie(this->path, this->params) = getParamsFromPath(path);
+            }
+
+            // Set path only ignoring the parameters
+            void setPathWithoutParams(std::string_view path) {
+                std::tie(this->path, std::ignore) = getParamsFromPath(path);
+            }
+
+            // Returns path with the encoded parameters, if access to just path 
+            // is required, simply access the path member variable
+            [[nodiscard]] inline std::string getPath() const { 
+                if (params.empty()) return path;
+                std::ostringstream oss; oss << path << '?';
+                for (const auto &kv: params) oss << kv.first << "=" << kv.second << '&';
+                std::string res {oss.str()}; res.pop_back();
+                return res;
+            }
+
+            // For absolute returns: <protocol>://<hostname/ip>[:port]/<path>[?params]
+            // For relative returns: /<path>[?params]
+            [[nodiscard]] inline std::string getFullPath() const {
+                const auto path_ {getPath()};
+                const auto hostname_ {domain.empty()? ipAddr: domain};
+                if (protocol.empty() || hostname_.empty()) return path_;
+                return port != 0?
+                    std::format("{}://{}:{}{}", protocol, hostname_, port, path_):
+                    std::format("{}://{}{}", protocol, hostname_, path_);
+            }
+
+            // Adds to params post encoding input key & value
+            void setParam(std::string_view key, std::string_view value) { 
+                params.push_back({encode(key), encode(value)}); 
+            }
+
+            // Deletes all occurrences of a key
+            std::size_t unsetParam(std::string_view key) {
+                const auto key_ {encode(key)};
+                return std::erase_if(params, [&](const auto &p) { return p.first == key_; });
+            }
+
+            // Returns all params post url decoding of key-value pairs
+            [[nodiscard]] auto getParams() const {
+                auto urlDecodePair {[](const std::pair<std::string, std::string> &pair) {
+                    return std::make_pair(decode(pair.first), decode(pair.second));
+                }};
+
+                return std::views::transform(params, urlDecodePair);
+            }
+
+            [[nodiscard]] static std::string encode(std::string_view str, 
+                bool mapSpaceToPlus = true) 
+            {
+                std::ostringstream oss; oss.fill('0');
+                for (char ch: str) {
+                    bool isUnreserved {
+                        (ch >= 'a' && ch <= 'z') ||
+                        (ch >= 'A' && ch <= 'Z') ||
+                        (ch >= '0' && ch <= '9') ||
+                        ch == '-' || ch == '.' || ch == '_' || ch == '~'
+                    };
+
+                    if (ch == ' ' && mapSpaceToPlus) oss << '+';
+                    else if (isUnreserved) oss << ch;
+                    else {
+                        oss << '%' << std::hex << std::uppercase << std::setw(2) 
+                            << static_cast<int>(static_cast<unsigned char>(ch))
+                            << std::dec << std::nouppercase;
+                    }
+                }
+                return oss.str();
+            }
+
+            [[nodiscard]] static std::string decode(std::string_view str) {
+                std::ostringstream oss; std::string acc;
+                for (char ch: str) {
+                    if (!acc.empty()) {
+                        if (acc.size() == 1) acc.push_back(ch);
+                        else {
+                            acc.push_back(ch);
+                            oss << static_cast<unsigned char>(std::stoi(acc, 0, 16));
+                            acc.clear();
+                        }
+                    }
+                    else if (ch == '+') oss << ' ';
+                    else if (ch != '%') oss << ch;
+                    else acc.push_back('0');
+                }
+                return oss.str();
+            }
+    };
+
     class HttpResponse {
         public:
             HttpResponse() = default;
@@ -708,15 +804,12 @@ namespace net {
 
     class HttpRequest {
         public:
-            HttpRequest(
-                const std::string &path = "/", 
-                const std::string &method = "GET", 
-                IP ipType = IP::V4
-            ): path{path}, method{method}, ipType{ipType} {}
+            HttpRequest(auto &&url, const std::string &method = "GET"): 
+                url{std::forward<decltype(url)>(url)}, method{method} {}
 
-            static HttpRequest fromString(const std::string &raw, IP ipType = IP::V4) {
-                HttpRequest req; req.ipType = ipType;
-                std::string requestLine; // Must be a string (below func returns rvalue)
+            static HttpRequest fromString(const std::string &raw) {
+                // reqLine must be a string (below func returns rvalue)
+                HttpRequest req {URL::localhost(0)}; std::string requestLine;
                 std::tie(requestLine, req.headers, req.body) = utils::parseHttpString(raw);
 
                 // Extract method, path and path params
@@ -729,7 +822,7 @@ namespace net {
                 std::size_t pos2 {requestLine.find(' ', pos1)};
                 if (pos2 == std::string::npos) throw std::runtime_error("Invalid HttpRequest string");
                 std::string_view requestURI {requestLine.data() + pos1, pos2 - pos1};
-                std::tie(req.path, req.urlParams) = utils::getParamsFromPath(requestURI);
+                req.url.setPath(requestURI);
                 return req;
             }
 
@@ -746,15 +839,29 @@ namespace net {
                 headers[utils::toLower(key)] = {std::move(value)};
             }
 
+            // Clears input key from the list of headers; returns true if found
+            bool unsetHeader(std::string_view key) { return headers.erase(utils::toLower(key)); }
+
+            decltype(auto) getURL(this auto &&self) { return self.url; }
+
             void setBody(std::string body) { this->body = std::move(body); }
 
-            void setParam(const std::string &key, const std::string &value) { 
-                urlParams.push_back({utils::urlEncode(key), utils::urlEncode(value)}); 
+            [[nodiscard]] auto &getHeaders() const { return headers; }
+
+            [[nodiscard]] std::vector<std::string> getHeader(std::string_view key) const {
+                auto it {headers.find(utils::toLower(key))};
+                return it != headers.end()? it->second: std::vector<std::string>{};
             }
+
+            [[nodiscard]] const std::string &getBody() const { return body; }
+            [[nodiscard]] const URL &getURL() const { return url; }
+
+            [[nodiscard]] std::string getMethod() const { return method; }
+            [[nodiscard]] IP getIPType() const { return url.ipType; }
 
             [[nodiscard]] std::string toString() const {
                 std::ostringstream oss;
-                oss << method << ' ' << utils::getPathWithParams(path, urlParams) << " HTTP/1.1\r\n";
+                oss << method << ' ' << url.getPath() << " HTTP/1.1\r\n";
                 for (const auto &kv: headers) {
                     for (const auto &val: kv.second)
                         oss << kv.first << ": " << val << "\r\n";
@@ -764,21 +871,17 @@ namespace net {
                 return oss.str();
             }
 
-            // URL: `<protocol>:://<domain>[:port]/<path>`
-            // Note: If `path` is set, it will override any values set manually with setParam and the constructor
-            // If timeout set to a negative number, timeouts are ignored. They are applied for each redirect & not on a cumulative basis
-            // HttpResponse object will have the final url set post resolving any redirects
-            [[nodiscard]] HttpResponse execute(std::string_view url, long timeoutSec = 5, std::size_t follow = 5) {
-                std::string protocol, hostname, path_; std::uint16_t port;
-                std::tie(protocol, hostname, port, path_) = net::utils::extractURLPieces(url);
-                if (protocol != "http" && protocol != "https") throw std::runtime_error("Unsupported protocol: " + protocol);
-                if (!path_.empty() && path_ != "/") std::tie(path, urlParams) = utils::getParamsFromPath(path_);
-                if (headers.find("host") == headers.end()) setHeader("Host", std::string{hostname});
-                std::string ipAddr {utils::resolveHostname(hostname, nullptr, SOCKTYPE::TCP, ipType)};
-                std::uint16_t port_ = port != 0? port: protocol == "http"? 80: 443;
-                HttpResponse resp {protocol == "http"? _execute(ipAddr, port_, timeoutSec):
-                    _executeSSL(ipAddr, port_, timeoutSec, hostname, "")};
-                resp.location = url;
+            // If timeout set to a negative number, timeouts are ignored. They are applied for each redirect & not on a cumulative basis.
+            // HttpResponse object will have the final url set post resolving any redirect
+            [[nodiscard]] HttpResponse execute(long timeoutSec = 5, std::string_view certPath = "", std::size_t follow = 5) {
+                url.resolve(); // Resolve the URL and throw on failure
+
+                if (url.protocol != "http" && url.protocol != "https")
+                    throw std::runtime_error("Unsupported protocol: " + url.protocol);
+
+                if (headers.find("host") == headers.end()) setHeader("Host", url.domain);
+                HttpResponse resp {_execute(timeoutSec, certPath, url.protocol == "https")};
+                resp.location = url.getFullPath();
 
                 // Handle redirects (relative urls such as '../../' are not supported)
                 int status {resp.statusCode}; 
@@ -786,71 +889,45 @@ namespace net {
                     std::string redirectURL {resp.header("location")};
                     if (redirectURL.empty()) return resp;
                     if (status == 303) method = "GET";
-                    if (redirectURL.front() == '/') {
-                        redirectURL = port != 0? 
-                            std::format("{}://{}:{}{}", protocol, hostname, port, redirectURL):
-                            std::format("{}://{}{}", protocol, hostname, redirectURL);
-                    }
-                    return execute(redirectURL, timeoutSec, follow - 1);
+
+                    // If abs path, modify entire URL to location header value
+                    // If rel path, only modify the path. We reset the params
+                    if (redirectURL.front() != '/') url = URL {redirectURL}; 
+                    else url.setPath(redirectURL);
+
+                    // Clear the host header to be set in the next call
+                    unsetHeader("host");
+
+                    return execute(timeoutSec, certPath, follow - 1);
                 }
 
                 return resp;
             }
 
-            // If timeout set to a negative number, timeouts are ignored
-            HttpResponse _execute(std::string_view ipAddr, std::uint16_t port, long timeoutSec) {
-                net::Socket socket {SOCKTYPE::TCP, ipType};
-                if (timeoutSec > 0) socket.setTimeout(timeoutSec, timeoutSec);
-                socket.connect(ipAddr, port);
-                socket.sendAll(this->toString());
-                return HttpResponse::fromString(socket.recvAll());
-            }
-
-            // If timeout set to a negative number, timeouts are ignored
-            HttpResponse _executeSSL(std::string_view ipAddr, std::uint16_t port, long timeoutSec, 
-                std::string_view hostname = "", std::string_view certPath = "")
-            {
-                net::SSLSocket socket{false, certPath, "", ipType};
-                if (timeoutSec > 0) socket.setTimeout(timeoutSec, timeoutSec);
-                socket.connect(ipAddr, port, hostname);
-                socket.sendAll(this->toString());
-                return HttpResponse::fromString(socket.recvAll());
-            }
-
-            [[nodiscard]] auto getHeaders() const { return headers; }
-
-            [[nodiscard]] std::vector<std::string> getHeaders(std::string_view key) const {
-                auto it {headers.find(utils::toLower(key))};
-                return it != headers.end()? it->second: std::vector<std::string>{};
-            }
-
-            // Does urldecoding of keys and values, hence is expensive
-            [[nodiscard]] auto getParams() const {
-                auto urlDecodePair {[](const std::pair<std::string, std::string> &pair) {
-                    return std::make_pair(
-                        utils::urlDecode(pair.first),
-                        utils::urlDecode(pair.second)
-                    );
-                }};
-
-                return std::views::transform(urlParams, urlDecodePair);
-            }
-
-            [[nodiscard]] const auto &getRawParams() const { return urlParams; }
-            [[nodiscard]] const std::string &getBody() const { return body; }
-            [[nodiscard]] const std::string &getPath() const { return path; }
-
-            [[nodiscard]] std::string getMethod() const { return method; }
-            [[nodiscard]] IP getIPType() const { return ipType; }
-
         // Unlike httpresponse unintended modification of these values can mean trouble
         // So we keep them private and provide functions for access
         private: 
-            std::unordered_map<std::string, std::vector<std::string>> headers 
-                {{"content-type", {"application/json"}}, {"connection", {"close"}}};
-            std::vector<std::pair<std::string, std::string>> urlParams; 
-            std::string path, method, body;
-            IP ipType {IP::V4};
+            URL url; std::string method, body;
+            std::unordered_map<std::string, std::vector<std::string>> headers {{"connection", {"close"}}};
+
+        private:
+            // If timeout set to a negative number, timeouts are ignored
+            HttpResponse _execute(long timeoutSec, std::string_view certPath, bool ssl) {
+                if (!ssl) {
+                    net::Socket socket {SOCKTYPE::TCP, url.ipType};
+                    if (timeoutSec > 0) socket.setTimeout(timeoutSec, timeoutSec);
+                    socket.connect(url.ipAddr, url.port);
+                    socket.sendAll(this->toString());
+                    return HttpResponse::fromString(socket.recvAll());
+                } 
+                else {
+                    net::SSLSocket socket{false, certPath, "", url.ipType};
+                    if (timeoutSec > 0) socket.setTimeout(timeoutSec, timeoutSec);
+                    socket.connect(url.ipAddr, url.port, url.domain);
+                    socket.sendAll(this->toString());
+                    return HttpResponse::fromString(socket.recvAll());
+                }
+            }
     };
 
     class PollManager {

@@ -263,13 +263,15 @@ namespace Torrent {
                 }
             }
 
-            [[nodiscard]] std::vector<std::pair<std::string, std::uint16_t>> 
-            getUDPPeers(std::string_view ipAddr) {
+            [[nodiscard]] std::vector<std::pair<std::string, std::uint16_t>> getUDPPeers() {
+                std::println("Announce url => {}://{}:{}", announceURL.protocol, announceURL.domain, announceURL.port);
+                announceURL.resolve();
+
                 // Build & send a connection request (TODO: Implement retry logic)
                 std::string cReq {buildConnectionRequest()};
                 net::Socket udpSock {net::SOCKTYPE::UDP};
                 udpSock.setTimeout(3, 3);
-                udpSock.connect(ipAddr, announcePort);
+                udpSock.connect(announceURL.ipAddr, announceURL.port);
                 long sentBytes {udpSock.send(cReq)};
                 std::println("Sent {}/16 bytes to tracker server", sentBytes);
                 std::string cResp {udpSock.recv()};
@@ -316,19 +318,17 @@ namespace Torrent {
             }
 
             [[nodiscard]] std::vector<std::pair<std::string, std::uint16_t>> 
-            getTCPPeers(std::string_view ipAddr) {
-                net::HttpRequest req{announcePath};
-                req.setParam("info_hash", infoHash);
-                req.setParam("peer_id", peerID);
-                req.setParam("port", "6881");
-                req.setParam("uploaded", "0");
-                req.setParam("downloaded", "0");
-                req.setParam("compact", "1");
-                req.setParam("left", std::to_string(length));
-                net::HttpResponse resp {
-                    announceProto == "http"? req._execute(ipAddr, announcePort, 3): 
-                    req._executeSSL(ipAddr, announcePort, 3, announceDomain)
-                };
+            getTCPPeers() {
+                announceURL.params.clear();
+                announceURL.setParam("info_hash", infoHash);
+                announceURL.setParam("peer_id", peerID);
+                announceURL.setParam("port", "6881");
+                announceURL.setParam("uploaded", "0");
+                announceURL.setParam("downloaded", "0");
+                announceURL.setParam("compact", "1");
+                announceURL.setParam("left", std::to_string(length));
+                net::HttpRequest req {announceURL};
+                net::HttpResponse resp{req.execute()};
                 std::println("Request: {}, Response: {}", req.toString(), resp.raw);
                 return {};
             }
@@ -336,11 +336,8 @@ namespace Torrent {
             // Associate a random 20 char long peer id
             std::string peerID;
 
-            // Extract port from Announce URL
-            std::uint16_t announcePort;
-
             // Read from torrent file
-            std::string announceURL, announceProto, announceDomain, announcePath;
+            net::URL announceURL;
             std::uint32_t length, pieceLen, interval, seeders, leechers;
             std::string name;
 
@@ -362,10 +359,8 @@ namespace Torrent {
 
                 // Extract the announce URL from torrent file
                 announceURL = root.at("announce").to<std::string>();
-                std::tie(announceProto, announceDomain, announcePort, announcePath) 
-                    = net::utils::extractURLPieces(announceURL);
-                if (announceProto != "udp" && announceProto != "http" && announceProto != "https")
-                    throw std::runtime_error("Torrent announce URL has unsupported protocol: " + announceProto);
+                if (announceURL.protocol != "udp" && announceURL.protocol != "http" && announceURL.protocol != "https")
+                    throw std::runtime_error("Torrent announce URL has unsupported protocol: " + announceURL.protocol);
 
                 // Extract other required fields
                 auto info {root.at("info")};
@@ -383,10 +378,7 @@ namespace Torrent {
             }
 
             [[nodiscard]] std::vector<std::pair<std::string, std::uint16_t>> getPeers() {
-                std::string ipAddr {net::utils::resolveHostname(announceDomain)};
-                std::println("Resolved announce url ({}) as {}://{}:{}", announceURL, 
-                    announceProto, ipAddr, announcePort);
-                return announceProto == "UDP"? getUDPPeers(ipAddr): getTCPPeers(ipAddr);
+                return announceURL.protocol == "udp"? getUDPPeers(): getTCPPeers();
             }
     };
 };
