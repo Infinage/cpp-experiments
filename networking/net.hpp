@@ -791,6 +791,20 @@ namespace net {
                 return JSON::Parser::loads(body);
             }
 
+            [[nodiscard]] inline std::string unchunk() const {
+                std::istringstream iss {body}; 
+                std::ostringstream res; std::size_t chunkSize {};
+                do {
+                    iss >> std::hex >> chunkSize;
+                    iss.seekg(2, std::ios::cur);
+                    std::string acc(chunkSize, 0);
+                    iss.read(acc.data(), static_cast<std::streamsize>(chunkSize));
+                    res << acc;
+                    iss.seekg(2, std::ios::cur);
+                } while (chunkSize);
+                return res.str();
+            }
+
             // Convenience wrapper that returns the first value found, ensure 
             // you manually check for multiple values if required
             [[nodiscard]] std::string header(std::string_view key) const {

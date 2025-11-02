@@ -18,7 +18,7 @@
 
 namespace Bencode {
     // We will need to sort keys when encoding for creating the info hash (always skip first key)
-    std::string encode(JSON::JSONNodePtr root, bool sortKeys = false, bool _skipKey = true) {
+    [[nodiscard]] std::string encode(JSON::JSONNodePtr root, bool sortKeys = false, bool _skipKey = true) {
         if (!root) return "";
         else {
             std::ostringstream oss;
@@ -64,7 +64,7 @@ namespace Bencode {
         }
     }
 
-    JSON::JSONHandle decode(const std::string &encoded, bool ignoreSpaces = true) {
+    [[nodiscard]] JSON::JSONHandle decode(const std::string &encoded, bool ignoreSpaces = true) {
         // Extract top and insert it into its ancestor
         auto extract_Push_to_ancestor { [](std::stack<JSON::JSONNodePtr> &stk) { 
             assert(stk.size() > 1);
@@ -266,14 +266,14 @@ namespace Torrent {
                 }
             }
 
-            [[nodiscard]] std::vector<std::pair<std::string, std::uint16_t>> getUDPPeers() {
+            [[nodiscard]] std::vector<std::pair<std::string, std::uint16_t>> getUDPPeers(long timeout) {
                 std::println("Announce url => {}://{}:{}", announceURL.protocol, announceURL.domain, announceURL.port);
                 announceURL.resolve();
 
                 // Build & send a connection request (TODO: Implement retry logic)
                 std::string cReq {buildConnectionRequest()};
                 net::Socket udpSock {net::SOCKTYPE::UDP};
-                udpSock.setTimeout(3, 3);
+                udpSock.setTimeout(timeout, timeout);
                 udpSock.connect(announceURL.ipAddr, announceURL.port);
                 long sentBytes {udpSock.send(cReq)};
                 std::println("Sent {}/16 bytes to tracker server", sentBytes);
@@ -320,20 +320,25 @@ namespace Torrent {
                 return peers;
             }
 
-            [[nodiscard]] std::vector<std::pair<std::string, std::uint16_t>> getTCPPeers() {
+            [[nodiscard]] std::vector<std::pair<std::string, std::uint16_t>> getTCPPeers(long timeout) {
                 announceURL.params.clear();
                 announceURL.setParam("info_hash", infoHash);
                 announceURL.setParam("peer_id", peerID);
                 announceURL.setParam("port", "6881");
                 announceURL.setParam("uploaded", "0");
                 announceURL.setParam("downloaded", "0");
-                announceURL.setParam("compact", "1");
                 announceURL.setParam("left", std::to_string(length));
                 net::HttpRequest req {announceURL};
                 req.setHeader("user-agent", "CTorrent");
-                net::HttpResponse resp{req.execute()};
-                std::println("Request: {}\nResponse: {}", req.toString(), resp.raw);
-                return {};
+                net::HttpResponse resp{req.execute(timeout)};
+
+                std::string respBodyStr {resp.header("transfer-encoding") == "chunked"? resp.unchunk(): resp.body};
+                JSON::JSONHandle respBody {Bencode::decode(respBodyStr)};
+                std::vector<std::pair<std::string, std::uint16_t>> peers;
+                for (JSON::JSONHandle ipObj: respBody["peers"])
+                    peers.push_back({ipObj["ip"].to<std::string>(), ipObj["port"].to<long>()});     
+
+                return peers;
             }
 
             // Associate a random 20 char long peer id
@@ -381,8 +386,8 @@ namespace Torrent {
                 infoHash = hashutil::sha1(Bencode::encode(info.ptr, true), true);
             }
 
-            [[nodiscard]] std::vector<std::pair<std::string, std::uint16_t>> getPeers() {
-                return announceURL.protocol == "udp"? getUDPPeers(): getTCPPeers();
+            [[nodiscard]] std::vector<std::pair<std::string, std::uint16_t>> getPeers(long timeout = 10) {
+                return announceURL.protocol == "udp"? getUDPPeers(timeout): getTCPPeers(timeout);
             }
     };
 };
@@ -390,8 +395,9 @@ namespace Torrent {
 int main(int argc, char **argv) {
     if (argc != 2) std::println(std::cerr, "Usage: ctorrent <torrent-file>");
     else {
+        long timeout {10};
         Torrent::TorrentFile torrent{argv[1]};
-        for (auto &[ip, port]: torrent.getPeers())
+        for (auto &[ip, port]: torrent.getPeers(timeout))
             std::println("{}:{}", ip, port);
     }
 }
