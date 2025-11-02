@@ -107,8 +107,8 @@ namespace net {
             if (pos1 == std::string::npos) throw std::runtime_error("Invalid Http string");
             std::string firstLine {trimStr(raw.substr(0, pos1))};
 
-            // Seperate the body and headers
-            pos2 = raw.find("\r\n\r\n", pos1 + 2);
+            // Seperate the body and headers (headers are optional)
+            pos2 = raw.find("\r\n\r\n", pos1);
             if (pos2 == std::string::npos) throw std::runtime_error("Invalid Http string");
             std::string body {raw.substr(pos2 + 4)};
             std::string_view headerRaw {
@@ -724,7 +724,8 @@ namespace net {
                 bool mapSpaceToPlus = true) 
             {
                 std::ostringstream oss; oss.fill('0');
-                for (char ch: str) {
+                for (std::size_t i {}; i < str.size(); ++i) {
+                    char ch {str.at(i)};
                     bool isUnreserved {
                         (ch >= 'a' && ch <= 'z') ||
                         (ch >= 'A' && ch <= 'Z') ||
@@ -745,7 +746,8 @@ namespace net {
 
             [[nodiscard]] static std::string decode(std::string_view str) {
                 std::ostringstream oss; std::string acc;
-                for (char ch: str) {
+                for (std::size_t i {}; i < str.size(); ++i) {
+                    char ch {str.at(i)};
                     if (!acc.empty()) {
                         if (acc.size() == 1) acc.push_back(ch);
                         else {

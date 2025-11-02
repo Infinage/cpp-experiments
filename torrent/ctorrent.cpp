@@ -17,12 +17,13 @@
 #include <stdexcept>
 
 namespace Bencode {
-    std::string encode(JSON::JSONNodePtr root) {
+    // We will need to sort keys when encoding for creating the info hash (always skip first key)
+    std::string encode(JSON::JSONNodePtr root, bool sortKeys = false, bool _skipKey = true) {
         if (!root) return "";
         else {
             std::ostringstream oss;
             const std::string &key {root->getKey()};
-            if (!key.empty()) oss << key.size() << ':' << key;
+            if (!key.empty() && !_skipKey) oss << key.size() << ':' << key;
             switch (root->getType()) {
                 case JSON::NodeType::value: {
                     // Only allow string / long
@@ -33,7 +34,7 @@ namespace Bencode {
                     }, val)};
 
                     if (!isValid) 
-                        throw std::runtime_error("Encoder got a non string / int");
+                        throw std::runtime_error("BEncoder got a non string / int");
                     else if (auto *ptr {std::get_if<std::string>(&val)})
                         oss << ptr->size() << ':' << *ptr;
                     else
@@ -44,15 +45,17 @@ namespace Bencode {
                 case JSON::NodeType::array: {
                     oss << 'l';
                     for (auto &node: static_cast<JSON::JSONArrayNode&>(*root))
-                        oss << encode(node);
+                        oss << encode(node, sortKeys, true);
                     oss << 'e';
                     break;
                 }
 
                 case JSON::NodeType::object: {
+                    JSON::JSONObjectNode obj {static_cast<JSON::JSONObjectNode&>(*root)};
+                    std::vector<JSON::JSONNodePtr> nodes {obj.begin(), obj.end()};
+                    if (sortKeys) std::ranges::sort(nodes, [](auto &n1, auto &n2) { return n1->getKey() < n2->getKey(); });
                     oss << 'd';
-                    for (auto &node: static_cast<JSON::JSONObjectNode&>(*root))
-                        oss << encode(node);
+                    for (auto &node: nodes) oss << encode(node, sortKeys, false);
                     oss << 'e';
                     break;
                 }
@@ -234,10 +237,10 @@ namespace Torrent {
                 std::memcpy(buffer +  0, connectionId.c_str(), 8);
                 std::memcpy(buffer +  8, &action, 4);
                 std::memcpy(buffer + 12, &transactionId, 4);
-                std::memcpy(buffer + 16, &infoHash, 20);
-                std::memcpy(buffer + 36, &peerID, 20);
+                std::memcpy(buffer + 16, infoHash.c_str(), 20);
+                std::memcpy(buffer + 36, peerID.c_str(), 20);
                 std::memcpy(buffer + 64, &length, 8);
-                std::memcpy(buffer + 88, &key, 4);
+                std::memcpy(buffer + 88, key.c_str(), 4);
                 std::memcpy(buffer + 92, &numWant, 4);
                 std::memcpy(buffer + 96, &pPort, 2);
                 return {buffer, 98};
@@ -250,14 +253,14 @@ namespace Torrent {
             }
 
             // If multiple files exist, compute sum of all files else return length
-            static std::uint32_t calculateTotalLength(JSON::JSONHandle info) {
+            static std::uint64_t calculateTotalLength(JSON::JSONHandle info) {
                 auto files {info["files"]};
-                if (!files.ptr) return static_cast<std::uint32_t>(info.at("length").to<long>());
+                if (!files.ptr) return static_cast<std::uint64_t>(info.at("length").to<long>());
                 else {
                     auto filesObj {files.cast<JSON::JSONArrayNode>()};
-                    return std::accumulate(filesObj.begin(), filesObj.end(), std::uint32_t {}, 
-                        [] (std::uint32_t acc, JSON::JSONHandle file) {
-                            return acc + file.at("length").to<long>();
+                    return std::accumulate(filesObj.begin(), filesObj.end(), std::uint64_t {}, 
+                        [] (std::uint64_t acc, JSON::JSONHandle file) {
+                            return acc + static_cast<std::uint64_t>(file.at("length").to<long>());
                         }
                     );
                 }
@@ -297,9 +300,9 @@ namespace Torrent {
                     throw std::runtime_error("Invalid announce response from tracker");
 
                 // Store the tracker-interval, seeders, leechers
-                std::memcpy(&interval, aResp.data() + 8, 4);
-                std::memcpy(&leechers, aResp.data() + 12, 4);
-                std::memcpy(&seeders, aResp.data() + 16, 4);
+                std::memcpy(&interval, aResp.c_str() + 8, 4);
+                std::memcpy(&leechers, aResp.c_str() + 12, 4);
+                std::memcpy(&seeders, aResp.c_str() + 16, 4);
                 interval = net::utils::bswap(interval);
                 leechers = net::utils::bswap(leechers);
                 seeders = net::utils::bswap(seeders);
@@ -317,8 +320,7 @@ namespace Torrent {
                 return peers;
             }
 
-            [[nodiscard]] std::vector<std::pair<std::string, std::uint16_t>> 
-            getTCPPeers() {
+            [[nodiscard]] std::vector<std::pair<std::string, std::uint16_t>> getTCPPeers() {
                 announceURL.params.clear();
                 announceURL.setParam("info_hash", infoHash);
                 announceURL.setParam("peer_id", peerID);
@@ -328,8 +330,9 @@ namespace Torrent {
                 announceURL.setParam("compact", "1");
                 announceURL.setParam("left", std::to_string(length));
                 net::HttpRequest req {announceURL};
+                req.setHeader("user-agent", "CTorrent");
                 net::HttpResponse resp{req.execute()};
-                std::println("Request: {}, Response: {}", req.toString(), resp.raw);
+                std::println("Request: {}\nResponse: {}", req.toString(), resp.raw);
                 return {};
             }
 
@@ -338,7 +341,8 @@ namespace Torrent {
 
             // Read from torrent file
             net::URL announceURL;
-            std::uint32_t length, pieceLen, interval, seeders, leechers;
+            std::uint32_t pieceLen, interval, seeders, leechers;
+            std::uint64_t length;
             std::string name;
 
             // Process torrent file and store
@@ -373,8 +377,8 @@ namespace Torrent {
                 // Sanity check on blob validity - can be equally split
                 if (pieceBlob.size() % 20) throw std::runtime_error("Piece blob is corrupted");
 
-                // Reencode just the info dict to compute its sha1 hash
-                infoHash = hashutil::sha1(Bencode::encode(info.ptr));
+                // Reencode just the info dict to compute its sha1 hash (raw hash)
+                infoHash = hashutil::sha1(Bencode::encode(info.ptr, true), true);
             }
 
             [[nodiscard]] std::vector<std::pair<std::string, std::uint16_t>> getPeers() {

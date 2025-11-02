@@ -18,7 +18,7 @@ namespace hashutil {
         return (b << shift) | (b >> (T - shift));
     }
 
-    [[nodiscard]] inline std::string sha1(const std::string &raw) {
+    [[nodiscard]] inline std::string sha1(const std::string &raw, bool asBytes = false) {
         // Define constants for SHA1
         std::bitset<32> h0{"01100111010001010010001100000001"};
         std::bitset<32> h1{"11101111110011011010101110001001"};
@@ -118,15 +118,29 @@ namespace hashutil {
             h0 = h0 + a; h1 = h1 + b; h2 = h2 + c; h3 = h3 + d; h4 = h4 + e;
         }
 
-        // Convert h0..h4 to hex
-        std::ostringstream oss;
-        oss << std::hex << std::setfill('0')
-            << std::setw(8) << h0.to_ulong() 
-            << std::setw(8) << h1.to_ulong() 
-            << std::setw(8) << h2.to_ulong() 
-            << std::setw(8) << h3.to_ulong() 
-            << std::setw(8) << h4.to_ulong();
-
-        return oss.str();
+        // Convert h0..h4 to hex string (40 char long ascii)
+        if (!asBytes) {
+            std::ostringstream oss;
+            oss << std::hex << std::setfill('0')
+                << std::setw(8) << h0.to_ulong() 
+                << std::setw(8) << h1.to_ulong() 
+                << std::setw(8) << h2.to_ulong() 
+                << std::setw(8) << h3.to_ulong() 
+                << std::setw(8) << h4.to_ulong();
+            return oss.str();
+        }
+        
+        // Convert h0..h4 to hex string (40 char long ascii)
+        else {
+            std::string digest; digest.reserve(20);
+            std::vector<unsigned long> parts {h0.to_ulong(), h1.to_ulong(), h2.to_ulong(), 
+                h3.to_ulong(), h4.to_ulong()};
+            for (unsigned long part: parts) {
+                for (int i = 3; i >= 0; --i) {
+                    digest.push_back(static_cast<char>((part >> (i * 8)) & 0xFF));
+                }
+            }
+            return digest;
+        }
     }
 };
