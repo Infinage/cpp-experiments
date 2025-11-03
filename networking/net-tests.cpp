@@ -94,4 +94,11 @@ int main() {
         assert(resp.body == "{\"key\":\"val\"}");
         assert(resp.ok());
     }
+
+    // Check if given IP is V4 or V6
+    {
+        assert(net::utils::checkIPType("127.0.0.1").value() == net::IP::V4);
+        assert(net::utils::checkIPType("::1").value() == net::IP::V6);
+        assert(!net::utils::checkIPType("a23123").has_value());
+    }
 }

@@ -6,6 +6,7 @@
 #include "../cryptography/hashlib.hpp"
 
 #include <cassert>
+#include <chrono>
 #include <endian.h>
 #include <fstream>
 #include <iostream>
@@ -266,19 +267,17 @@ namespace Torrent {
                 }
             }
 
-            [[nodiscard]] std::vector<std::pair<std::string, std::uint16_t>> getUDPPeers(long timeout) {
-                std::println("Announce url => {}://{}:{}", announceURL.protocol, announceURL.domain, announceURL.port);
+            std::vector<std::pair<std::string, std::uint16_t>> getUDPPeers(long timeout) {
                 announceURL.resolve();
 
                 // Build & send a connection request (TODO: Implement retry logic)
+                [[maybe_unused]] long sentBytes;
                 std::string cReq {buildConnectionRequest()};
                 net::Socket udpSock {net::SOCKTYPE::UDP};
                 udpSock.setTimeout(timeout, timeout);
                 udpSock.connect(announceURL.ipAddr, announceURL.port);
-                long sentBytes {udpSock.send(cReq)};
-                std::println("Sent {}/16 bytes to tracker server", sentBytes);
+                sentBytes = udpSock.send(cReq);
                 std::string cResp {udpSock.recv()};
-                std::println("Recv {}/16 bytes from tracker server", cResp.size());
 
                 // Validate recv connection response
                 if (!(cResp.size() == 16 &&
@@ -289,9 +288,7 @@ namespace Torrent {
                 // Build & send a announce request (TODO: Implement retry logic)
                 std::string aReq {buildAnnounceRequest(cResp.substr(8, 8))};
                 sentBytes = udpSock.send(aReq);
-                std::println("Sent {}/98 bytes to tracker server", sentBytes);
                 std::string aResp {udpSock.recv()}; // Ensure we read complete IP addrs
-                std::println("Recv {}/* bytes from tracker server", aResp.size());
 
                 // Validate announce response
                 if (!(aResp.size() >= 16 && 
@@ -306,7 +303,6 @@ namespace Torrent {
                 interval = net::utils::bswap(interval);
                 leechers = net::utils::bswap(leechers);
                 seeders = net::utils::bswap(seeders);
-                std::println("Seeders: {}, Leechers: {}", seeders, leechers);
 
                 // Extract the peers
                 std::vector<std::pair<std::string, std::uint16_t>> peers;
@@ -320,7 +316,7 @@ namespace Torrent {
                 return peers;
             }
 
-            [[nodiscard]] std::vector<std::pair<std::string, std::uint16_t>> getTCPPeers(long timeout) {
+            std::vector<std::pair<std::string, std::uint16_t>> getTCPPeers(long timeout) {
                 announceURL.params.clear();
                 announceURL.setParam("info_hash", infoHash);
                 announceURL.setParam("peer_id", peerID);
@@ -341,6 +337,81 @@ namespace Torrent {
                 return peers;
             }
 
+            static std::string buildMessageHelper(
+                std::size_t bufSize, std::uint32_t msgSize, std::uint8_t msgId
+            ) {
+                std::string buffer(bufSize, '\0');
+                msgSize = net::utils::bswap(msgSize);
+                std::memcpy(buffer.data() + 0, &msgSize, 4);
+                std::memcpy(buffer.data() + 4,   &msgId, 1);
+                return buffer;
+            }
+
+            static std::string buildHandshake(const std::string &infoHash, const std::string &peerID) {
+                char buffer[68] {};
+                std::uint8_t pstrlen {19}; const char *pStr {"BitTorrent protocol"};
+                std::memcpy(buffer +  0, &pstrlen, 1);
+                std::memcpy(buffer +  1, pStr, 19);
+                std::memcpy(buffer + 28, infoHash.c_str(), 20);
+                std::memcpy(buffer + 48, peerID.c_str(), 20);
+                return {buffer, 68};
+            }
+
+            static std::string     buildKeepAlive() { return std::string{4, '\0'}; }
+            static std::string         buildChoke() { return buildMessageHelper(5, 1, 0); }
+            static std::string       buildUnchoke() { return buildMessageHelper(5, 1, 1); }
+            static std::string    buildInterested() { return buildMessageHelper(5, 1, 2); }
+            static std::string buildNotinterested() { return buildMessageHelper(5, 1, 3); }
+
+            static std::string buildHave(std::uint32_t pIndex) {
+                std::string buffer {buildMessageHelper(9, 5, 4)};
+                pIndex = net::utils::bswap(pIndex);
+                std::memcpy(buffer.data() + 5, &pIndex, 4);
+                return buffer;
+            }
+
+            static std::string buildBitField(const std::string &bitfield) {
+                std::uint32_t msgSize {static_cast<std::uint32_t>(bitfield.size() + 1)};
+                std::string buffer {buildMessageHelper(msgSize + 4, msgSize, 5)};
+                std::memcpy(buffer.data() + 5, bitfield.data(), msgSize - 1);
+                return buffer;
+            }
+
+            static std::string buildRequest(
+                std::uint32_t pIndex, std::uint32_t pBegin, 
+                std::uint32_t pLength, bool cancel = false
+            ) {
+                std::string buffer {buildMessageHelper(17, 13, !cancel? 6: 8)};
+                pIndex = net::utils::bswap(pIndex);
+                pBegin = net::utils::bswap(pBegin);
+                pLength = net::utils::bswap(pLength);
+                std::memcpy(buffer.data() +  5,  &pIndex, 4);
+                std::memcpy(buffer.data() +  9,  &pBegin, 4);
+                std::memcpy(buffer.data() + 13, &pLength, 4);
+                return buffer;
+            }
+
+            static std::string buildPiece(
+                std::uint32_t pIndex, std::uint32_t pBegin, const std::string &block
+            ) {
+                auto blockSize {static_cast<std::uint32_t>(block.size())};
+                std::string buffer {buildMessageHelper(blockSize + 13, blockSize + 9, 7)};
+                pIndex = net::utils::bswap(pIndex);
+                pBegin = net::utils::bswap(pBegin);
+                std::memcpy(buffer.data() +  5, &pIndex, 4);
+                std::memcpy(buffer.data() +  9, &pBegin, 4);
+                std::memcpy(buffer.data() + 13, block.data(), blockSize);
+                return buffer;
+            }
+
+            static std::string buildPort(std::uint16_t port) {
+                std::string buffer {buildMessageHelper(7, 3, 9)};
+                port = net::utils::bswap(port);
+                std::memcpy(buffer.data() + 5, &port, 2);
+                return buffer;
+            }
+
+        private:
             // Associate a random 20 char long peer id
             std::string peerID;
 
@@ -353,6 +424,35 @@ namespace Torrent {
             // Process torrent file and store
             std::size_t numPieces;
             std::string pieceBlob, infoHash;
+
+            struct PeerContext {
+                int fd;                              // file descriptor, for lookup
+                std::string ip;                      // peer IP (for logging)
+                std::uint16_t port;                  // peer port
+                                                     //
+                bool handshakeCompleted {false};     // whether handshake done
+                bool peerChoking {true};             // they’re choking us by default
+                bool amChoking {true};               // we are choking them by default
+                bool peerInterested {false};         // whether peer is interested in us
+                bool amInterested = {false};         // whether we are interested in them
+
+                // TODO: Initialize per torrent file
+                std::vector<bool> peerBitfield {};   // which pieces the peer has
+                std::vector<bool> ourBitfield {};    // which pieces we have
+
+                std::string recvBuffer {};           // accumulate partial message data
+                std::string sendBuffer {};           // pending outgoing data
+
+                std::chrono::steady_clock::time_point lastActivity;
+
+                static bool IsCompleteMessage(std::string_view buffer) {
+                    if (buffer.size() < 4) return false;
+                    std::uint32_t msgLen;
+                    std::memcpy(&msgLen, buffer.data(), 4);
+                    msgLen = net::utils::bswap(msgLen);
+                    return buffer.size() >= msgLen + 4;
+                }
+            };
 
         public:
             TorrentFile(const std::string_view torrentFP): peerID{"-NJT-" + randString(20 - 5)} {
@@ -389,15 +489,61 @@ namespace Torrent {
             [[nodiscard]] std::vector<std::pair<std::string, std::uint16_t>> getPeers(long timeout = 10) {
                 return announceURL.protocol == "udp"? getUDPPeers(timeout): getTCPPeers(timeout);
             }
+
+            void download(std::string_view directory = ".") {
+                std::vector<std::pair<std::string, std::uint16_t>> peerList {getPeers()};
+                if (peerList.empty()) { std::println(std::cerr, "No peers available"); return; }
+                std::println("Discovered {} peers.", peerList.size());
+
+                // Connect to all available peers
+                std::string handshake {buildHandshake(infoHash, peerID)};
+                net::PollManager manager; std::unordered_map<int, PeerContext> states;
+                for (const auto &[ip, port]: peerList) {
+                    std::optional<net::IP> ipType {net::utils::checkIPType(ip)};
+                    if (!ipType.has_value()) { std::println(std::cerr, "Invalid IP: {}", ip); continue; }
+                    auto peer {net::Socket{net::SOCKTYPE::TCP, ipType.value()}};
+                    peer.setNonBlocking(); peer.connect(ip, port);
+                    states.insert({peer.fd(), {.fd=peer.fd(), .ip=ip, .port=port, .sendBuffer=handshake}});
+                    manager.track(std::move(peer));
+                }
+
+                for (auto &[peer, event]: manager.poll()) {
+                    PeerContext &ctx {states.at(peer.fd())};
+                    ctx.lastActivity = std::chrono::steady_clock::now();
+
+                    if (event & net::PollEventType::Readable) {
+                        std::string recvBytes {peer.recvAll()}; std::size_t iSize {ctx.recvBuffer.size()};
+                        ctx.recvBuffer.resize(iSize + recvBytes.size());
+                        std::memmove(ctx.recvBuffer.data() + iSize, recvBytes.data(), recvBytes.size());
+
+                        if (!ctx.handshakeCompleted && ctx.recvBuffer.size() >= 68) {
+                            ctx.handshakeCompleted = std::memcmp(handshake.data(), ctx.recvBuffer.data(), 48) == 0;
+                            ctx.recvBuffer = ctx.recvBuffer.substr(68);
+                        }
+
+                        else if (ctx.handshakeCompleted && PeerContext::IsCompleteMessage(ctx.recvBuffer)) {
+                            // TODO Handle different message types
+                        }
+                    }
+
+                    else if (event & net::PollEventType::Writable) {
+                        long sentBytes {peer.sendAll(ctx.sendBuffer)};
+                        ctx.sendBuffer = ctx.sendBuffer.substr(static_cast<std::size_t>(sentBytes));
+                    }
+
+                    else {
+                        manager.untrack(ctx.fd);
+                        states.erase(ctx.fd);
+                    }
+                }
+            }
     };
 };
 
 int main(int argc, char **argv) {
     if (argc != 2) std::println(std::cerr, "Usage: ctorrent <torrent-file>");
     else {
-        long timeout {10};
         Torrent::TorrentFile torrent{argv[1]};
-        for (auto &[ip, port]: torrent.getPeers(timeout))
-            std::println("{}:{}", ip, port);
+        torrent.download();
     }
 }

@@ -33,7 +33,7 @@
 #include "../json-parser/json.hpp"
 
 namespace net {
-    // Abstracing SOCK_STREAM, SOCK_DGRAM; PF_INET, PF_INET6
+    // Abstracing SOCK_STREAM, SOCK_DGRAM; AF_INET, AF_INET6
     enum class IP { V4, V6 };
     enum class SOCKTYPE { TCP, UDP };
 
@@ -78,12 +78,25 @@ namespace net {
 
         [[nodiscard]] inline std::string ipBytesToString(std::string_view raw, IP ipType = IP::V4) {
             const unsigned int ipLen {static_cast<unsigned int>(ipType == IP::V4? INET_ADDRSTRLEN: INET6_ADDRSTRLEN)};
-            const int ipFamily {ipType == IP::V4? PF_INET: PF_INET6};
+            const int ipFamily {ipType == IP::V4? AF_INET: AF_INET6};
             std::string ipStr(ipLen, '\0');
             if (!inet_ntop(ipFamily, raw.data(), ipStr.data(), ipLen))
                 throw SocketError{"Failed to convert address to string"};
             ipStr.resize(std::strlen(ipStr.data()));
             return ipStr;
+        }
+
+        // Checks for V4 first then checks for V6. If neither returns empty
+        [[nodiscard]] inline std::optional<IP> checkIPType(std::string_view ipAddr) {
+            sockaddr_storage storage; // Check for IPV4
+            if (inet_pton(AF_INET, ipAddr.data(), reinterpret_cast<sockaddr_in*>(&storage)) == 1)
+                return IP::V4;
+
+            std::memset(&storage, 0, sizeof(storage)); // Check for IPV6
+            if (inet_pton(AF_INET6, ipAddr.data(), reinterpret_cast<sockaddr_in6*>(&storage)) == 1)
+                return IP::V6;
+
+            return {};
         }
 
         [[nodiscard]] constexpr std::string trimStr(std::string_view str) {
@@ -142,7 +155,7 @@ namespace net {
             std::string_view hostname, const char *service = nullptr,
             SOCKTYPE sockType = SOCKTYPE::TCP, IP ipType = IP::V4)
         {
-            int domain {ipType == IP::V4? PF_INET: PF_INET6};
+            int domain {ipType == IP::V4? AF_INET: AF_INET6};
             int type {sockType == SOCKTYPE::TCP? SOCK_STREAM: SOCK_DGRAM};
             addrinfo hints{}, *res {}; hints.ai_family = domain; hints.ai_socktype = type;
             if (int status = getaddrinfo(hostname.data(), service, &hints, &res); status != 0)
@@ -266,7 +279,7 @@ namespace net {
                 _sockSize{static_cast<unsigned int>(ipType == IP::V4? 
                         sizeof(sockaddr_in): sizeof(sockaddr_in6))}
             {
-                int domain {_ipType == IP::V4? PF_INET: PF_INET6};
+                int domain {_ipType == IP::V4? AF_INET: AF_INET6};
                 int type {_sockType == SOCKTYPE::TCP? SOCK_STREAM: SOCK_DGRAM};
                 _fd = socket(domain, type, 0);
                 if (_fd == -1) throw SocketError{"Error creating socket object"};
@@ -973,17 +986,17 @@ namespace net {
                 }
             }
 
-            void track(Socket &&socket, EventType event = EventType::Readable | EventType::Writable) {
+            int track(Socket &&socket, EventType event = EventType::Readable | EventType::Writable) {
                 int eventInt {}, fd {socket.fd()};
                 sockets.emplace(fd, std::move(socket));
                 if (event & EventType::Readable) eventInt |= POLLIN;
                 if (event & EventType::Writable) eventInt |= POLLOUT;
                 pollFds.emplace_back(fd, eventInt, 0);
+                return fd;
             }
 
             void updateTracking(int fd, EventType event = EventType::Readable | EventType::Writable) {
-                if (!sockets.contains(fd)) 
-                    throw std::runtime_error("Socket FD is not tracked: " + std::to_string(fd));
+                if (!hasSocket(fd)) throw std::runtime_error("Socket FD is not tracked: " + std::to_string(fd));
 
                 int eventInt {};
                 if (event & EventType::Readable) eventInt |= POLLIN;
@@ -1033,6 +1046,11 @@ namespace net {
 
                 return result;
             }
+
+            [[nodiscard]] bool empty() const { return sockets.empty(); }
+            [[nodiscard]] std::size_t size() const { return sockets.size(); }
+
+            [[nodiscard]] bool hasSocket(int fd) const { return sockets.contains(fd); }
 
             [[nodiscard]] Socket &getSocket(int fd) {
                 auto it {sockets.find(fd)};
