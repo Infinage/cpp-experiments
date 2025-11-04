@@ -300,9 +300,7 @@ namespace Torrent {
                 std::memcpy(&interval, aResp.c_str() + 8, 4);
                 std::memcpy(&leechers, aResp.c_str() + 12, 4);
                 std::memcpy(&seeders, aResp.c_str() + 16, 4);
-                interval = net::utils::bswap(interval);
-                leechers = net::utils::bswap(leechers);
-                seeders = net::utils::bswap(seeders);
+                net::utils::inplace_bswap(interval, leechers, seeders);
 
                 // Extract the peers
                 std::vector<std::pair<std::string, std::uint16_t>> peers;
@@ -336,9 +334,24 @@ namespace Torrent {
 
                 return peers;
             }
+            
+            enum class MsgType : std::uint8_t {
+                Choke = 0,
+                Unchoke = 1,
+                Interested = 2,
+                NotInterested = 3,
+                Have = 4,
+                Bitfield = 5,
+                Request = 6,
+                Piece = 7,
+                Cancel = 8,
+                Port = 9,
+                KeepAlive = 99,
+                Unknown = 100
+            };
 
             static std::string buildMessageHelper(
-                std::size_t bufSize, std::uint32_t msgSize, std::uint8_t msgId
+                std::size_t bufSize, std::uint32_t msgSize, MsgType msgId
             ) {
                 std::string buffer(bufSize, '\0');
                 msgSize = net::utils::bswap(msgSize);
@@ -358,13 +371,13 @@ namespace Torrent {
             }
 
             static std::string     buildKeepAlive() { return std::string{4, '\0'}; }
-            static std::string         buildChoke() { return buildMessageHelper(5, 1, 0); }
-            static std::string       buildUnchoke() { return buildMessageHelper(5, 1, 1); }
-            static std::string    buildInterested() { return buildMessageHelper(5, 1, 2); }
-            static std::string buildNotinterested() { return buildMessageHelper(5, 1, 3); }
+            static std::string         buildChoke() { return buildMessageHelper(5, 1, MsgType::Choke); }
+            static std::string       buildUnchoke() { return buildMessageHelper(5, 1, MsgType::Unchoke); }
+            static std::string    buildInterested() { return buildMessageHelper(5, 1, MsgType::Interested); }
+            static std::string buildNotinterested() { return buildMessageHelper(5, 1, MsgType::NotInterested); }
 
             static std::string buildHave(std::uint32_t pIndex) {
-                std::string buffer {buildMessageHelper(9, 5, 4)};
+                std::string buffer {buildMessageHelper(9, 5, MsgType::Have)};
                 pIndex = net::utils::bswap(pIndex);
                 std::memcpy(buffer.data() + 5, &pIndex, 4);
                 return buffer;
@@ -372,7 +385,7 @@ namespace Torrent {
 
             static std::string buildBitField(const std::string &bitfield) {
                 std::uint32_t msgSize {static_cast<std::uint32_t>(bitfield.size() + 1)};
-                std::string buffer {buildMessageHelper(msgSize + 4, msgSize, 5)};
+                std::string buffer {buildMessageHelper(msgSize + 4, msgSize, MsgType::Bitfield)};
                 std::memcpy(buffer.data() + 5, bitfield.data(), msgSize - 1);
                 return buffer;
             }
@@ -381,10 +394,8 @@ namespace Torrent {
                 std::uint32_t pIndex, std::uint32_t pBegin, 
                 std::uint32_t pLength, bool cancel = false
             ) {
-                std::string buffer {buildMessageHelper(17, 13, !cancel? 6: 8)};
-                pIndex = net::utils::bswap(pIndex);
-                pBegin = net::utils::bswap(pBegin);
-                pLength = net::utils::bswap(pLength);
+                std::string buffer {buildMessageHelper(17, 13, !cancel? MsgType::Request: MsgType::Cancel)};
+                net::utils::inplace_bswap(pIndex, pBegin, pLength);
                 std::memcpy(buffer.data() +  5,  &pIndex, 4);
                 std::memcpy(buffer.data() +  9,  &pBegin, 4);
                 std::memcpy(buffer.data() + 13, &pLength, 4);
@@ -395,9 +406,8 @@ namespace Torrent {
                 std::uint32_t pIndex, std::uint32_t pBegin, const std::string &block
             ) {
                 auto blockSize {static_cast<std::uint32_t>(block.size())};
-                std::string buffer {buildMessageHelper(blockSize + 13, blockSize + 9, 7)};
-                pIndex = net::utils::bswap(pIndex);
-                pBegin = net::utils::bswap(pBegin);
+                std::string buffer {buildMessageHelper(blockSize + 13, blockSize + 9, MsgType::Piece)};
+                net::utils::inplace_bswap(pIndex, pBegin);
                 std::memcpy(buffer.data() +  5, &pIndex, 4);
                 std::memcpy(buffer.data() +  9, &pBegin, 4);
                 std::memcpy(buffer.data() + 13, block.data(), blockSize);
@@ -405,10 +415,18 @@ namespace Torrent {
             }
 
             static std::string buildPort(std::uint16_t port) {
-                std::string buffer {buildMessageHelper(7, 3, 9)};
+                std::string buffer {buildMessageHelper(7, 3, MsgType::Port)};
                 port = net::utils::bswap(port);
                 std::memcpy(buffer.data() + 5, &port, 2);
                 return buffer;
+            }
+
+            static std::tuple<MsgType, std::string> parseMessage(std::string_view message) {
+                if (message.size() < 4) return {MsgType::Unknown, ""};
+                if (message.size() == 4 && message == "\0\0\0\0") return {MsgType::KeepAlive, ""};
+                std::uint8_t msgId; std::memcpy(&msgId, message.data() + 4, 1);
+                if (msgId > 9) return {MsgType::Unknown, ""};
+                return {static_cast<MsgType>(msgId), std::string{message.substr(5)}};
             }
 
         private:
@@ -429,21 +447,18 @@ namespace Torrent {
                 int fd;                              // file descriptor, for lookup
                 std::string ip;                      // peer IP (for logging)
                 std::uint16_t port;                  // peer port
-                                                     //
-                bool handshakeCompleted {false};     // whether handshake done
-                bool peerChoking {true};             // they’re choking us by default
-                bool amChoking {true};               // we are choking them by default
-                bool peerInterested {false};         // whether peer is interested in us
-                bool amInterested = {false};         // whether we are interested in them
+
+                bool handshaked {false};             // whether handshake done
+                bool choked {true};                  // we are choking them by default
 
                 // TODO: Initialize per torrent file
-                std::vector<bool> peerBitfield {};   // which pieces the peer has
-                std::vector<bool> ourBitfield {};    // which pieces we have
+                short backlog {};                    // # of unfulfilled requests pending
+                std::vector<bool> haves {};          // which pieces the peer has
 
                 std::string recvBuffer {};           // accumulate partial message data
                 std::string sendBuffer {};           // pending outgoing data
 
-                std::chrono::steady_clock::time_point lastActivity;
+                std::chrono::steady_clock::time_point lastActivity {};
 
                 static bool IsCompleteMessage(std::string_view buffer) {
                     if (buffer.size() < 4) return false;
@@ -505,6 +520,7 @@ namespace Torrent {
                     peer.setNonBlocking(); peer.connect(ip, port);
                     states.insert({peer.fd(), {.fd=peer.fd(), .ip=ip, .port=port, .sendBuffer=handshake}});
                     manager.track(std::move(peer));
+                    break; // TODO (Just connect with one for debugging)
                 }
 
                 for (auto &[peer, event]: manager.poll()) {
@@ -516,18 +532,23 @@ namespace Torrent {
                         ctx.recvBuffer.resize(iSize + recvBytes.size());
                         std::memmove(ctx.recvBuffer.data() + iSize, recvBytes.data(), recvBytes.size());
 
-                        if (!ctx.handshakeCompleted && ctx.recvBuffer.size() >= 68) {
-                            ctx.handshakeCompleted = std::memcmp(handshake.data(), ctx.recvBuffer.data(), 48) == 0;
-                            ctx.recvBuffer = ctx.recvBuffer.substr(68);
+                        if (!ctx.handshaked && ctx.recvBuffer.size() >= 68) {
+                            ctx.handshaked = std::memcmp(handshake.data(), ctx.recvBuffer.data(), 48) == 0;
+                            ctx.recvBuffer.clear();
+                            if (ctx.handshaked) {
+                                std::println("Handshake established with client: {}:{}", ctx.ip, ctx.port);
+                                ctx.sendBuffer = buildUnchoke() + buildInterested();
+                            }
                         }
 
-                        else if (ctx.handshakeCompleted && PeerContext::IsCompleteMessage(ctx.recvBuffer)) {
+                        else if (ctx.handshaked && PeerContext::IsCompleteMessage(ctx.recvBuffer)) {
                             // TODO Handle different message types
                         }
                     }
 
                     else if (event & net::PollEventType::Writable) {
                         long sentBytes {peer.sendAll(ctx.sendBuffer)};
+                        std::println("Sent {} bytes to client: {}:{}", sentBytes, ctx.ip, ctx.port);
                         ctx.sendBuffer = ctx.sendBuffer.substr(static_cast<std::size_t>(sentBytes));
                     }
 
