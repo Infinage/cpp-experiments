@@ -63,7 +63,6 @@ int main(int argc, char **argv) try {
                     } else if (event & net::PollEventType::Readable && socket.fd() == serverFD) {
                         net::Socket client {socket.accept()};
                         std::cout << "Connected to Client # " << client.fd() << ".\n";
-                        client.setNonBlocking();
                         manager.track(std::move(client), net::PollEventType::Readable);
                     } else if (event & net::PollEventType::Readable) {
                         std::string message {socket.recvAll()};

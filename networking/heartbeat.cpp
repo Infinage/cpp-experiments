@@ -34,7 +34,6 @@ int main(int argc, char **argv) {
             for (auto &[socket, event]: pm.poll()) {
                 if ((event & net::PollEventType::Readable) && SERVER_RUNNING) {
                     net::Socket clientSocket {socket.accept()};
-                    clientSocket.setNonBlocking();
                     long sentBytes {clientSocket.sendAll(response)};
                     if (static_cast<std::size_t>(sentBytes) < response.size()) 
                         std::cerr << "Partial data was sent to client\n";

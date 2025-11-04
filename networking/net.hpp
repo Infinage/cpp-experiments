@@ -76,6 +76,9 @@ namespace net {
             return val;
         }
 
+        template<typename ...Args>
+        void inplace_bswap(Args &...args) { ((args = bswap(args)), ...); }
+
         [[nodiscard]] inline std::string ipBytesToString(std::string_view raw, IP ipType = IP::V4) {
             const unsigned int ipLen {static_cast<unsigned int>(ipType == IP::V4? INET_ADDRSTRLEN: INET6_ADDRSTRLEN)};
             const int ipFamily {ipType == IP::V4? AF_INET: AF_INET6};
@@ -320,10 +323,15 @@ namespace net {
                 if (listenStatus == -1) throw SocketError{"Error listening on socket"};
             }
 
+            // For non blocking sockets, code will throw if there are non incoming connections.
+            // Need to explicitly poll for READABLE event on serverfd before accept.
+            // Note: Accepted socket inherits blocking mode from server socket
             [[nodiscard]] Socket accept() {
                 int clientSocket {::accept(_fd, nullptr, nullptr)};
                 if (clientSocket == -1) throw SocketError{"Failed to accept an incomming connection"};
-                return Socket{clientSocket, _sockType, _ipType};
+                Socket client{clientSocket, _sockType, _ipType};
+                if (_blocking) client.setNonBlocking();
+                return client;
             }
 
             [[nodiscard]] Socket accept(std::string &host, std::uint16_t &port) {
@@ -337,7 +345,7 @@ namespace net {
             void connect(std::string_view serverIp, std::uint16_t port) {
                 sockaddr_storage serverAddr {Sockaddr(serverIp, port)};
                 int connectStatus {::connect(_fd, reinterpret_cast<sockaddr*>(&serverAddr), _sockSize)};
-                if (connectStatus == -1) throw SocketError{"Error connecting to server"};
+                if (connectStatus == -1 && errno != EINPROGRESS) throw SocketError{"Error connecting to server"};
             }
 
             // Send until all of the message is out, for blocking sockets guaranteed to 
