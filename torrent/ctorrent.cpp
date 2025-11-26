@@ -8,6 +8,7 @@
 #include <cassert>
 #include <chrono>
 #include <endian.h>
+#include <format>
 #include <fstream>
 #include <iostream>
 #include <print>
@@ -16,6 +17,7 @@
 #include <sstream>
 #include <stack>
 #include <stdexcept>
+#include <unordered_set>
 
 namespace Bencode {
     // We will need to sort keys when encoding for creating the info hash (always skip first key)
@@ -195,6 +197,50 @@ namespace Bencode {
 namespace Torrent {
     class TorrentFile {
         private:
+            // Associate a random 20 char long peer id
+            std::string peerID;
+
+            // Read from torrent file
+            net::URL announceURL;
+            std::uint32_t pieceLen, interval, seeders, leechers;
+            std::uint64_t length;
+            std::string name;
+
+            // Pieces that I have completed downloading
+            std::unordered_set<std::uint32_t> haves {};
+
+            // Process torrent file and store
+            std::size_t numPieces;
+            std::string pieceBlob, infoHash;
+
+            struct PeerContext {
+                int fd;                              // file descriptor, for lookup
+                std::string ip;                      // peer IP (for logging)
+                std::uint16_t port;                  // peer port
+
+                bool handshaked {false};             // whether handshake done
+                bool choked {true};                  // we are choking them by default
+
+                short backlog {};                    // # of unfulfilled requests pending
+                std::unordered_set<std::uint32_t> haves {};    // which pieces the peer has
+
+                std::string recvBuffer {};           // accumulate partial message data
+                std::string sendBuffer {};           // pending outgoing data
+
+                std::chrono::steady_clock::time_point lastActivity {};
+
+                std::string str() const { return std::format("[{}:{}]", ip, port); }
+
+                static bool IsCompleteMessage(std::string_view buffer) {
+                    if (buffer.size() < 4) return false;
+                    std::uint32_t msgLen;
+                    std::memcpy(&msgLen, buffer.data(), 4);
+                    msgLen = net::utils::bswap(msgLen);
+                    return buffer.size() >= msgLen + 4;
+                }
+            };
+
+        private:
             static std::string randString(std::size_t length) {
                 static char chars[] { "0123456789"
                     "abcdefghijklmnopqrstuvwxyz"
@@ -350,6 +396,23 @@ namespace Torrent {
                 Unknown = 100
             };
 
+            constexpr std::string_view str(MsgType msg) {
+                switch (msg) {
+                    case MsgType::Choke:         return "Choke";
+                    case MsgType::Unchoke:       return "Unchoke";
+                    case MsgType::Interested:    return "Interested";
+                    case MsgType::NotInterested: return "NotInterested";
+                    case MsgType::Have:          return "Have";
+                    case MsgType::Bitfield:      return "Bitfield";
+                    case MsgType::Request:       return "Request";
+                    case MsgType::Piece:         return "Piece";
+                    case MsgType::Cancel:        return "Cancel";
+                    case MsgType::Port:          return "Port";
+                    case MsgType::KeepAlive:     return "KeepAlive";
+                    default:                     return "Unknown";
+                }
+            }
+
             static std::string buildMessageHelper(
                 std::size_t bufSize, std::uint32_t msgSize, MsgType msgId
             ) {
@@ -370,11 +433,11 @@ namespace Torrent {
                 return {buffer, 68};
             }
 
-            static std::string     buildKeepAlive() { return std::string{4, '\0'}; }
-            static std::string         buildChoke() { return buildMessageHelper(5, 1, MsgType::Choke); }
-            static std::string       buildUnchoke() { return buildMessageHelper(5, 1, MsgType::Unchoke); }
-            static std::string    buildInterested() { return buildMessageHelper(5, 1, MsgType::Interested); }
             static std::string buildNotinterested() { return buildMessageHelper(5, 1, MsgType::NotInterested); }
+            static std::string    buildInterested() { return buildMessageHelper(5, 1, MsgType::Interested); }
+            static std::string     buildKeepAlive() { return std::string{4, '\0'}; }
+            static std::string       buildUnchoke() { return buildMessageHelper(5, 1, MsgType::Unchoke); }
+            static std::string         buildChoke() { return buildMessageHelper(5, 1, MsgType::Choke); }
 
             static std::string buildHave(std::uint32_t pIndex) {
                 std::string buffer {buildMessageHelper(9, 5, MsgType::Have)};
@@ -429,45 +492,21 @@ namespace Torrent {
                 return {static_cast<MsgType>(msgId), std::string{message.substr(5)}};
             }
 
-        private:
-            // Associate a random 20 char long peer id
-            std::string peerID;
+            static void handleHave(PeerContext &ctx, const std::string &payload) {
+                std::uint32_t pieceIdx;
+                std::memcpy(&pieceIdx, payload.c_str(), 4);
+                ctx.haves.insert(net::utils::bswap(pieceIdx));
+            }
 
-            // Read from torrent file
-            net::URL announceURL;
-            std::uint32_t pieceLen, interval, seeders, leechers;
-            std::uint64_t length;
-            std::string name;
-
-            // Process torrent file and store
-            std::size_t numPieces;
-            std::string pieceBlob, infoHash;
-
-            struct PeerContext {
-                int fd;                              // file descriptor, for lookup
-                std::string ip;                      // peer IP (for logging)
-                std::uint16_t port;                  // peer port
-
-                bool handshaked {false};             // whether handshake done
-                bool choked {true};                  // we are choking them by default
-
-                // TODO: Initialize per torrent file
-                short backlog {};                    // # of unfulfilled requests pending
-                std::vector<bool> haves {};          // which pieces the peer has
-
-                std::string recvBuffer {};           // accumulate partial message data
-                std::string sendBuffer {};           // pending outgoing data
-
-                std::chrono::steady_clock::time_point lastActivity {};
-
-                static bool IsCompleteMessage(std::string_view buffer) {
-                    if (buffer.size() < 4) return false;
-                    std::uint32_t msgLen;
-                    std::memcpy(&msgLen, buffer.data(), 4);
-                    msgLen = net::utils::bswap(msgLen);
-                    return buffer.size() >= msgLen + 4;
+            static void handleBitfield(PeerContext &ctx, const std::string &payload) {
+                std::uint32_t bitIdx {};
+                for (std::uint8_t byte: payload) {
+                    for (std::uint8_t bit {8}; bit-- > 0; ++bitIdx) {
+                        if (byte & (std::uint8_t(1) << bit)) 
+                            ctx.haves.insert(bitIdx);
+                    }
                 }
-            };
+            }
 
         public:
             TorrentFile(const std::string_view torrentFP): peerID{"-NJT-" + randString(20 - 5)} {
@@ -520,41 +559,57 @@ namespace Torrent {
                     peer.setNonBlocking(); peer.connect(ip, port);
                     states.insert({peer.fd(), {.fd=peer.fd(), .ip=ip, .port=port, .sendBuffer=handshake}});
                     manager.track(std::move(peer));
-                    break; // TODO (Just connect with one for debugging)
+                    if (manager.size() >= 5) break; // TODO (Just connect with a few now for debugging)
                 }
 
-                for (auto &[peer, event]: manager.poll()) {
-                    PeerContext &ctx {states.at(peer.fd())};
-                    ctx.lastActivity = std::chrono::steady_clock::now();
+                while (haves.size() < numPieces) {
+                    for (auto &[peer, event]: manager.poll()) {
+                        PeerContext &ctx {states.at(peer.fd())};
+                        ctx.lastActivity = std::chrono::steady_clock::now();
 
-                    if (event & net::PollEventType::Readable) {
-                        std::string recvBytes {peer.recvAll()}; std::size_t iSize {ctx.recvBuffer.size()};
-                        ctx.recvBuffer.resize(iSize + recvBytes.size());
-                        std::memmove(ctx.recvBuffer.data() + iSize, recvBytes.data(), recvBytes.size());
+                        if (event & net::PollEventType::Readable) {
+                            std::string recvBytes {peer.recvAll()}; std::size_t iSize {ctx.recvBuffer.size()};
+                            ctx.recvBuffer.resize(iSize + recvBytes.size());
+                            std::memmove(ctx.recvBuffer.data() + iSize, recvBytes.data(), recvBytes.size());
 
-                        if (!ctx.handshaked && ctx.recvBuffer.size() >= 68) {
-                            ctx.handshaked = std::memcmp(handshake.data(), ctx.recvBuffer.data(), 48) == 0;
-                            ctx.recvBuffer.clear();
-                            if (ctx.handshaked) {
-                                std::println("Handshake established with client: {}:{}", ctx.ip, ctx.port);
-                                ctx.sendBuffer = buildUnchoke() + buildInterested();
+                            if (!ctx.handshaked && ctx.recvBuffer.size() >= 68) {
+                                ctx.handshaked = std::memcmp(handshake.data(), ctx.recvBuffer.data(), 20) == 0 
+                                    && std::memcmp(handshake.data() + 28, ctx.recvBuffer.data() + 28, 20) == 0;
+                                if (!ctx.handshaked) { ctx.recvBuffer.clear(); ctx.sendBuffer = handshake; } 
+                                else {
+                                    ctx.recvBuffer = ctx.recvBuffer.substr(68);
+                                    std::println("Handshake established with client: {}", ctx.str());
+                                    ctx.sendBuffer = buildUnchoke() + buildInterested();
+                                }
+                            }
+
+                            else if (ctx.handshaked && PeerContext::IsCompleteMessage(ctx.recvBuffer)) {
+                                auto [msgType, message] {parseMessage(ctx.recvBuffer)};
+                                std::println("Received message of type: {} from client: {}", str(msgType), ctx.str());
+
+                                switch (msgType) {
+                                    case MsgType::Have: handleHave(ctx, message); break;
+                                    case MsgType::Bitfield: 
+                                        if (message.size() != (length + 7) / 8)
+                                            std::println(std::cerr, "Bitfield received from client has invalid length: {}", message.size());
+                                        handleBitfield(ctx, message); 
+                                        break;
+                                }
+
+                                ctx.recvBuffer.clear();
                             }
                         }
 
-                        else if (ctx.handshaked && PeerContext::IsCompleteMessage(ctx.recvBuffer)) {
-                            // TODO Handle different message types
+                        else if (event & net::PollEventType::Writable) {
+                            long sentBytes {peer.sendAll(ctx.sendBuffer)};
+                            std::println("Sent {} bytes to client: {}", sentBytes, ctx.str());
+                            ctx.sendBuffer = ctx.sendBuffer.substr(static_cast<std::size_t>(sentBytes));
                         }
-                    }
 
-                    else if (event & net::PollEventType::Writable) {
-                        long sentBytes {peer.sendAll(ctx.sendBuffer)};
-                        std::println("Sent {} bytes to client: {}:{}", sentBytes, ctx.ip, ctx.port);
-                        ctx.sendBuffer = ctx.sendBuffer.substr(static_cast<std::size_t>(sentBytes));
-                    }
-
-                    else {
-                        manager.untrack(ctx.fd);
-                        states.erase(ctx.fd);
+                        else {
+                            manager.untrack(ctx.fd);
+                            states.erase(ctx.fd);
+                        }
                     }
                 }
             }
