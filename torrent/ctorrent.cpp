@@ -206,26 +206,34 @@ namespace Torrent {
             std::uint64_t length;
             std::string name;
 
-            // Pieces that I have completed downloading
-            std::unordered_set<std::uint32_t> haves {};
+            // User defined constants
+            std::uint16_t BLOCK_SIZE;
+            std::uint8_t MAX_BACKLOG, MAX_UNCHOKE_ATTEMPTS;
+
+            // Pieces that we have completed downloading
+            std::unordered_set<std::uint32_t> haves;
+            std::unordered_map<std::uint32_t, std::unordered_set<std::uint32_t>> pending;
 
             // Process torrent file and store
-            std::size_t numPieces;
+            std::size_t numPieces, numBlocks;
             std::string pieceBlob, infoHash;
 
             struct PeerContext {
-                int fd;                              // file descriptor, for lookup
-                std::string ip;                      // peer IP (for logging)
-                std::uint16_t port;                  // peer port
+                int fd;                      // file descriptor, for lookup
+                std::string ip;              // peer IP (for logging)
+                std::uint16_t port;          // peer port
 
-                bool handshaked {false};             // whether handshake done
-                bool choked {true};                  // we are choking them by default
+                bool handshaked {false};     // whether handshake done
+                bool choked {true};          // we are choking them by default
+                bool valid {true};           // whether to maintain the connection
 
-                short backlog {};                    // # of unfulfilled requests pending
-                std::unordered_set<std::uint32_t> haves {};    // which pieces the peer has
+                int unchokeAttempts {};      // track # of unchoke attempts and drop if needed
+                short backlog {};            // # of unfulfilled requests pending
 
-                std::string recvBuffer {};           // accumulate partial message data
-                std::string sendBuffer {};           // pending outgoing data
+                std::unordered_set<std::uint32_t> haves {};  // which pieces the peer has
+
+                std::string recvBuffer {};   // accumulate partial message data
+                std::string sendBuffer {};   // pending outgoing data
 
                 std::chrono::steady_clock::time_point lastActivity {};
 
@@ -500,16 +508,32 @@ namespace Torrent {
 
             static void handleBitfield(PeerContext &ctx, const std::string &payload) {
                 std::uint32_t bitIdx {};
-                for (std::uint8_t byte: payload) {
+                for (char ch: payload) {
+                    std::uint8_t byte {static_cast<std::uint8_t>(ch)};
                     for (std::uint8_t bit {8}; bit-- > 0; ++bitIdx) {
-                        if (byte & (std::uint8_t(1) << bit)) 
+                        if (byte & (1u << bit)) 
                             ctx.haves.insert(bitIdx);
                     }
                 }
             }
 
+            static void handleChoke(PeerContext &ctx, const std::string&) {
+                ctx.choked = true;
+            }
+
+            static void handleUnchoke(PeerContext &ctx, const std::string&) {
+                ctx.unchokeAttempts = 0; ctx.choked = false;
+            }
+
         public:
-            TorrentFile(const std::string_view torrentFP): peerID{"-NJT-" + randString(20 - 5)} {
+            TorrentFile(
+                const std::string_view torrentFP, const std::uint16_t bSize = 1 << 14, 
+                const std::uint8_t backlog = 8, const std::uint8_t unchokeAttempts = 3
+            ): 
+                peerID{"-NJT-" + randString(20 - 5)}, 
+                BLOCK_SIZE {bSize}, MAX_BACKLOG {backlog},
+                MAX_UNCHOKE_ATTEMPTS {unchokeAttempts}
+            {
                 // Read from file
                 std::ifstream ifs {torrentFP.data(), std::ios::binary | std::ios::ate};
                 auto size {ifs.tellg()};
@@ -532,6 +556,7 @@ namespace Torrent {
                 pieceLen = static_cast<std::uint32_t>(info["piece length"].to<long>()); 
                 pieceBlob = info["pieces"].to<std::string>();
                 numPieces = pieceBlob.size() / 20;
+                numBlocks = (pieceLen + BLOCK_SIZE - 1) / BLOCK_SIZE;
 
                 // Sanity check on blob validity - can be equally split
                 if (pieceBlob.size() % 20) throw std::runtime_error("Piece blob is corrupted");
@@ -587,16 +612,50 @@ namespace Torrent {
                                 auto [msgType, message] {parseMessage(ctx.recvBuffer)};
                                 std::println("Received message of type: {} from client: {}", str(msgType), ctx.str());
 
+                                // Process the message and update the internal context
                                 switch (msgType) {
+                                    case MsgType::Choke: handleChoke(ctx, message); break;
+                                    case MsgType::Unchoke: handleUnchoke(ctx, message); break;
                                     case MsgType::Have: handleHave(ctx, message); break;
                                     case MsgType::Bitfield: 
                                         if (message.size() != (length + 7) / 8)
-                                            std::println(std::cerr, "Bitfield received from client has invalid length: {}", message.size());
+                                            std::println(std::cerr, "Bitfield received from client "
+                                                "has invalid length: {}", message.size());
                                         handleBitfield(ctx, message); 
                                         break;
                                 }
 
+                                // If choked, request for gettin unchoked. We will wait for a 
+                                // maximum of 3 turns before disconnecting from the peer
+                                if (ctx.choked) {
+                                    if (ctx.unchokeAttempts > MAX_UNCHOKE_ATTEMPTS) ctx.valid = false;
+                                    else {
+                                        ctx.sendBuffer = buildUnchoke();
+                                        ctx.backlog = 0;
+                                        ++ctx.unchokeAttempts;
+                                    }
+                                }
+
+                                // If unchoked and peer not throttled, try requesting for a piece from peer
+                                else if (ctx.backlog < MAX_BACKLOG) {
+                                    for (std::uint32_t pHave: ctx.haves) {
+                                        if (haves.count(pHave) == 0) {
+                                            for (std::uint32_t block {}; block < numBlocks; ++block) {
+                                                if (pending[pHave].count(block) == 0) {
+                                                    ctx.sendBuffer += buildRequest(pHave, block, BLOCK_SIZE);
+                                                    ++ctx.backlog;
+                                                    pending[pHave].insert(block);
+                                                    break;
+                                                }
+                                            }
+                                        }
+                                    }
+                                } 
+
                                 ctx.recvBuffer.clear();
+                                if (!ctx.valid) 
+                                    manager.untrack(ctx.fd), 
+                                        states.erase(ctx.fd); 
                             }
                         }
 

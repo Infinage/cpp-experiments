@@ -348,13 +348,16 @@ namespace net {
                 if (connectStatus == -1 && errno != EINPROGRESS) throw SocketError{"Error connecting to server"};
             }
 
-            // Send until all of the message is out, for blocking sockets guaranteed to 
-            // either throw or have entire thing sent. For non blocking sockets we might
-            // have data partially sent, verify againt return bytes
+            // Attempts to send the entire message buffer.
+            // For **blocking sockets**, this will loop until all bytes are sent or an error occurs.
+            // For **non-blocking sockets**, this may return early if the socket cannot accept more data
+            // Partial sends are handled by adjusting the string_view prefix.
+            // Verify partial sends for non blocking sockets against return result
             long sendAll(std::string_view message) {
                 long totalSent {};
                 while (!message.empty()) {
                     long sentBytes {this->send(message)};
+                    if (sentBytes == 0) break;
                     message.remove_prefix(static_cast<std::size_t>(sentBytes));
                     totalSent += sentBytes;
                 }
@@ -363,10 +366,14 @@ namespace net {
 
             // Can send serialized char* messages, provided string_view is explicitly constructed
             // by passing the size. For eg: send({reinterpret_cast<char*>(&obj), sizeof(obj)});
+            // For non-blocking sockets, a return value of 0 means the socket would block
+            // Any other error causes a socketerror exception
             [[nodiscard]] long send(std::string_view message) {
                 long sentBytes {::send(_fd, message.data(), message.size(), MSG_NOSIGNAL)};
-                if (sentBytes <= 0 && errno != EAGAIN && errno != EWOULDBLOCK) 
+                if (sentBytes <= 0) {
+                    if (errno == EAGAIN || errno == EWOULDBLOCK) return 0;
                     throw SocketError{"Failed to send"};
+                }
                 return sentBytes;
             }
 
