@@ -7,7 +7,7 @@
 
 #include <cassert>
 #include <chrono>
-#include <endian.h>
+#include <filesystem>
 #include <format>
 #include <fstream>
 #include <iostream>
@@ -197,26 +197,44 @@ namespace Bencode {
 namespace Torrent {
     class TorrentFile {
         private:
+            using PieceBlock = std::pair<std::uint32_t, std::uint32_t>;
+
+            struct HashPair {
+                std::size_t operator()(const PieceBlock &pb) const {
+                    std::hash<std::uint32_t> hasher;
+                    std::size_t h1 {hasher(pb.first)}, h2 {hasher(pb.second)};
+                    return h1 ^ (h2 + 0x9e3779b9 + (h1 << 6) + (h1 >> 2));
+                }
+            };
+
+        private:
             // Associate a random 20 char long peer id
             std::string peerID;
 
             // Read from torrent file
             net::URL announceURL;
-            std::uint32_t pieceLen, interval, seeders, leechers;
+            std::uint32_t pieceSize, interval, seeders, leechers;
             std::uint64_t length;
             std::string name;
 
-            // User defined constants
-            std::uint16_t BLOCK_SIZE;
-            std::uint8_t MAX_BACKLOG, MAX_UNCHOKE_ATTEMPTS;
-
             // Pieces that we have completed downloading
             std::unordered_set<std::uint32_t> haves;
-            std::unordered_map<std::uint32_t, std::unordered_set<std::uint32_t>> pending;
+
+            // Piece requests in transit (global 'mutex')
+            // Accumulate all blocks of a piece until we can write to disk
+            std::unordered_map<std::uint32_t, std::unordered_map<
+                std::uint32_t, std::string>> pending;
+
+            // User defined constants
+            const std::uint16_t blockSize;
+            const std::uint8_t MAX_BACKLOG, MAX_UNCHOKE_ATTEMPTS;
 
             // Process torrent file and store
             std::size_t numPieces, numBlocks;
             std::string pieceBlob, infoHash;
+
+            // Torrent download directory path
+            std::filesystem::path DownloadDir;
 
             struct PeerContext {
                 int fd;                      // file descriptor, for lookup
@@ -225,12 +243,15 @@ namespace Torrent {
 
                 bool handshaked {false};     // whether handshake done
                 bool choked {true};          // we are choking them by default
-                bool valid {true};           // whether to maintain the connection
+                bool closed {false};         // whether to maintain the connection
 
                 int unchokeAttempts {};      // track # of unchoke attempts and drop if needed
                 short backlog {};            // # of unfulfilled requests pending
 
                 std::unordered_set<std::uint32_t> haves {};  // which pieces the peer has
+
+                // Blocks requested from this peer
+                std::unordered_set<PieceBlock, HashPair> pending {};
 
                 std::string recvBuffer {};   // accumulate partial message data
                 std::string sendBuffer {};   // pending outgoing data
@@ -253,7 +274,7 @@ namespace Torrent {
                 static char chars[] { "0123456789"
                     "abcdefghijklmnopqrstuvwxyz"
                     "ABCDEFGHIJKLMNOPQRSTUVWXYZ"};
-                std::mt19937 rng {std::random_device{}()};
+                static std::mt19937 rng {std::random_device{}()};
                 std::uniform_int_distribution<std::size_t> gen{0, sizeof(chars) - 2};
                 std::string str; str.reserve(length);
                 while (length--) str.push_back(chars[gen(rng)]);
@@ -262,7 +283,7 @@ namespace Torrent {
 
             template<std::integral T> 
             static T randInteger() {
-                std::mt19937 rng {std::random_device{}()};
+                static std::mt19937 rng {std::random_device{}()};
                 std::uniform_int_distribution<T> gen{
                     std::numeric_limits<T>::min(), 
                     std::numeric_limits<T>::max()
@@ -500,13 +521,17 @@ namespace Torrent {
                 return {static_cast<MsgType>(msgId), std::string{message.substr(5)}};
             }
 
-            static void handleHave(PeerContext &ctx, const std::string &payload) {
+            static void handleHave(const std::string &payload, PeerContext &ctx, TorrentFile&) {
                 std::uint32_t pieceIdx;
                 std::memcpy(&pieceIdx, payload.c_str(), 4);
                 ctx.haves.insert(net::utils::bswap(pieceIdx));
             }
 
-            static void handleBitfield(PeerContext &ctx, const std::string &payload) {
+            static void handleBitfield(const std::string &payload, PeerContext &ctx, TorrentFile &torrent) {
+                if (payload.size() != (torrent.numPieces + 7) / 8)
+                    std::println(std::cerr, "Bitfield received from client "
+                        "has invalid length: {}", payload.size());
+
                 std::uint32_t bitIdx {};
                 for (char ch: payload) {
                     std::uint8_t byte {static_cast<std::uint8_t>(ch)};
@@ -517,22 +542,76 @@ namespace Torrent {
                 }
             }
 
-            static void handleChoke(PeerContext &ctx, const std::string&) {
-                ctx.choked = true;
+            static void handlePiece(const std::string &payload, PeerContext &ctx, TorrentFile &torrent) {
+                // Payload: {index: int32, begin: int32, block: char*}
+                std::uint32_t pIndex, pBegin;
+
+                // TODO: Assert that torrent.blockSize == payload's block size?
+                std::string buffer(torrent.blockSize, '\0');
+                std::memcpy(&pIndex, payload.c_str() + 0, 4);
+                std::memcpy(&pBegin, payload.c_str() + 4, 4);
+                std::memcpy(buffer.data(), payload.c_str() + 8, payload.size() - 8);
+                net::utils::inplace_bswap(pIndex, pBegin);
+
+                // TODO: Can we get a piece that is not requested? Should we drop those?
+                // Maybe we sent a request and got choked and cleared requests from our side
+                torrent.pending[pIndex][pBegin] = std::move(buffer);
+                ctx.pending.erase({pIndex, pBegin});
+                --ctx.backlog;
+
+                // If all blocks of a piece are done, write to file and add to haves
+                if (torrent.pending[pIndex].size() == torrent.numBlocks) {
+                    // Gather all the blocks into same buffer
+                    std::string piece(torrent.pieceSize, '\0');
+                    for (std::uint32_t blockIdx {}; blockIdx < torrent.numBlocks; ++blockIdx) {
+                        const std::string &block {torrent.pending[pIndex][blockIdx]};
+                        std::memcpy(piece.data() + (blockIdx * torrent.blockSize), block.c_str(), block.size());
+                    }
+
+                    // Validate that the piece is valid against the hash
+                    if (hashutil::sha1(piece) != torrent.getPieceHash(pIndex)) {
+                        std::println("Mismatching hash for piece# {} will be dropped", pIndex);
+                    } else {
+                        // TODO: reuse file handle and ensure file is appended
+                        // When creating handle create a sparse file for the pieceSize
+                        std::filesystem::path downloadFile {torrent.DownloadDir / torrent.name};
+                        std::ofstream ofs {downloadFile, std::ios::binary};
+                        ofs.seekp(pIndex * torrent.pieceSize, std::ios::beg);
+                        ofs.write(piece.c_str(), torrent.pieceSize);
+                        torrent.haves.insert(pIndex);
+                        std::println("Piece# {} has completed downloading", pIndex);
+                    }
+
+                    torrent.pending.erase(pIndex);
+                }
             }
 
-            static void handleUnchoke(PeerContext &ctx, const std::string&) {
+            static void handleChoke(const std::string&, PeerContext &ctx, TorrentFile &torrent) {
+                // Reset any download pending from this peer
+                for (const auto &pb: ctx.pending) {
+                    torrent.pending[pb.first].erase(pb.second);
+                    if (torrent.pending[pb.first].empty()) 
+                        torrent.pending.erase(pb.first);
+                }
+                // Reset the peer context
+                ctx.choked = true; ctx.backlog = 0; 
+                ctx.pending.clear();
+            }
+
+            static void handleUnchoke(const std::string&, PeerContext &ctx, TorrentFile&) {
                 ctx.unchokeAttempts = 0; ctx.choked = false;
             }
 
         public:
             TorrentFile(
-                const std::string_view torrentFP, const std::uint16_t bSize = 1 << 14, 
-                const std::uint8_t backlog = 8, const std::uint8_t unchokeAttempts = 3
+                const std::string_view torrentFP, const std::string_view downloadDir, 
+                const std::uint16_t bSize = 1 << 14, const std::uint8_t backlog = 8,
+                const std::uint8_t unchokeAttempts = 3
             ): 
                 peerID{"-NJT-" + randString(20 - 5)}, 
-                BLOCK_SIZE {bSize}, MAX_BACKLOG {backlog},
-                MAX_UNCHOKE_ATTEMPTS {unchokeAttempts}
+                blockSize {bSize}, MAX_BACKLOG {backlog},
+                MAX_UNCHOKE_ATTEMPTS {unchokeAttempts},
+                DownloadDir {downloadDir}
             {
                 // Read from file
                 std::ifstream ifs {torrentFP.data(), std::ios::binary | std::ios::ate};
@@ -553,23 +632,29 @@ namespace Torrent {
                 auto info {root.at("info")};
                 name = info["name"].to<std::string>();
                 length = calculateTotalLength(info);
-                pieceLen = static_cast<std::uint32_t>(info["piece length"].to<long>()); 
+                pieceSize = static_cast<std::uint32_t>(info["piece length"].to<long>()); 
                 pieceBlob = info["pieces"].to<std::string>();
                 numPieces = pieceBlob.size() / 20;
-                numBlocks = (pieceLen + BLOCK_SIZE - 1) / BLOCK_SIZE;
+                numBlocks = (pieceSize + blockSize - 1) / blockSize;
 
                 // Sanity check on blob validity - can be equally split
                 if (pieceBlob.size() % 20) throw std::runtime_error("Piece blob is corrupted");
 
                 // Reencode just the info dict to compute its sha1 hash (raw hash)
                 infoHash = hashutil::sha1(Bencode::encode(info.ptr, true), true);
+
+                // Create download directory if it doesn't already exist
+                if (!std::filesystem::exists(DownloadDir))
+                    std::filesystem::create_directory(DownloadDir);
+                if (!std::filesystem::is_directory(DownloadDir))
+                    throw std::runtime_error("Download directory provided is not a valid folder path");
             }
 
             [[nodiscard]] std::vector<std::pair<std::string, std::uint16_t>> getPeers(long timeout = 10) {
                 return announceURL.protocol == "udp"? getUDPPeers(timeout): getTCPPeers(timeout);
             }
 
-            void download(std::string_view directory = ".") {
+            void download() {
                 std::vector<std::pair<std::string, std::uint16_t>> peerList {getPeers()};
                 if (peerList.empty()) { std::println(std::cerr, "No peers available"); return; }
                 std::println("Discovered {} peers.", peerList.size());
@@ -600,8 +685,10 @@ namespace Torrent {
                             if (!ctx.handshaked && ctx.recvBuffer.size() >= 68) {
                                 ctx.handshaked = std::memcmp(handshake.data(), ctx.recvBuffer.data(), 20) == 0 
                                     && std::memcmp(handshake.data() + 28, ctx.recvBuffer.data() + 28, 20) == 0;
-                                if (!ctx.handshaked) { ctx.recvBuffer.clear(); ctx.sendBuffer = handshake; } 
-                                else {
+                                if (!ctx.handshaked) {
+                                    std::println("Failed handshake with {}, client will be dropped", ctx.str());
+                                    ctx.closed = true;
+                                } else {
                                     ctx.recvBuffer = ctx.recvBuffer.substr(68);
                                     std::println("Handshake established with client: {}", ctx.str());
                                     ctx.sendBuffer = buildUnchoke() + buildInterested();
@@ -614,46 +701,44 @@ namespace Torrent {
 
                                 // Process the message and update the internal context
                                 switch (msgType) {
-                                    case MsgType::Choke: handleChoke(ctx, message); break;
-                                    case MsgType::Unchoke: handleUnchoke(ctx, message); break;
-                                    case MsgType::Have: handleHave(ctx, message); break;
-                                    case MsgType::Bitfield: 
-                                        if (message.size() != (length + 7) / 8)
-                                            std::println(std::cerr, "Bitfield received from client "
-                                                "has invalid length: {}", message.size());
-                                        handleBitfield(ctx, message); 
-                                        break;
+                                    case MsgType::Choke:       handleChoke(message, ctx, *this); break;
+                                    case MsgType::Unchoke:   handleUnchoke(message, ctx, *this); break;
+                                    case MsgType::Have:         handleHave(message, ctx, *this); break;
+                                    case MsgType::Piece:       handlePiece(message, ctx, *this); break;
+                                    case MsgType::Bitfield: handleBitfield(message, ctx, *this); break;
                                 }
 
                                 // If choked, request for gettin unchoked. We will wait for a 
                                 // maximum of 3 turns before disconnecting from the peer
                                 if (ctx.choked) {
-                                    if (ctx.unchokeAttempts > MAX_UNCHOKE_ATTEMPTS) ctx.valid = false;
+                                    if (ctx.unchokeAttempts > MAX_UNCHOKE_ATTEMPTS) ctx.closed = true;
                                     else {
                                         ctx.sendBuffer = buildUnchoke();
-                                        ctx.backlog = 0;
                                         ++ctx.unchokeAttempts;
                                     }
                                 }
 
-                                // If unchoked and peer not throttled, try requesting for a piece from peer
+                                // If unchoked & peer not throttled, try requesting for block(s) available from peer
                                 else if (ctx.backlog < MAX_BACKLOG) {
                                     for (std::uint32_t pHave: ctx.haves) {
+                                        if (ctx.backlog >= MAX_BACKLOG) break;
                                         if (haves.count(pHave) == 0) {
                                             for (std::uint32_t block {}; block < numBlocks; ++block) {
                                                 if (pending[pHave].count(block) == 0) {
-                                                    ctx.sendBuffer += buildRequest(pHave, block, BLOCK_SIZE);
+                                                    ctx.sendBuffer += buildRequest(pHave, block, this->blockSize);
                                                     ++ctx.backlog;
-                                                    pending[pHave].insert(block);
-                                                    break;
+                                                    ctx.pending.insert({pHave, block});
+                                                    pending[pHave].insert({block, ""});
+                                                    if (ctx.backlog >= MAX_BACKLOG) break;
                                                 }
                                             }
                                         }
                                     }
-                                } 
+                                }
 
+                                // TODO: Fix for cases where we got multiple messages in one shot
                                 ctx.recvBuffer.clear();
-                                if (!ctx.valid) 
+                                if (ctx.closed) 
                                     manager.untrack(ctx.fd), 
                                         states.erase(ctx.fd); 
                             }
@@ -676,9 +761,10 @@ namespace Torrent {
 };
 
 int main(int argc, char **argv) {
-    if (argc != 2) std::println(std::cerr, "Usage: ctorrent <torrent-file>");
+    if (argc != 2 && argc != 3) 
+        std::println(std::cerr, "Usage: ctorrent <torrent-file> [<download-directory>]");
     else {
-        Torrent::TorrentFile torrent{argv[1]};
+        Torrent::TorrentFile torrent{argv[1], argc == 3? argv[2]: "."};
         torrent.download();
     }
 }
