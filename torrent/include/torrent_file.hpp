@@ -1,6 +1,10 @@
 #pragma once
 
-#include "../../json-parser/json.hpp"
+#include <cstdint>
+#include <string>
+
+// Forward declare to speed up compilation
+namespace JSON { struct JSONHandle; }
 
 namespace Torrent {
     class TorrentFile {
@@ -14,15 +18,9 @@ namespace Torrent {
             std::uint64_t length;
             std::string name, pieceBlob, infoHash;
             std::size_t numPieces;
-            std::optional<JSON::JSONHandle> root;
 
         public:
             TorrentFile(const std::string_view torrentFP);
-
-            inline std::string_view getPieceHash(std::size_t idx) const {
-                if (idx >= numPieces) throw std::runtime_error("Piece Hash idx requested out of range");
-                return std::string_view{pieceBlob}.substr(idx * 20, 20);
-            }
-
+            std::string_view getPieceHash(std::size_t idx) const;
     };
 }

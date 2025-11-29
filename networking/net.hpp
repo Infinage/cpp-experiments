@@ -332,7 +332,7 @@ namespace net {
                 int clientSocket {::accept(_fd, nullptr, nullptr)};
                 if (clientSocket == -1) throw SocketError{"Failed to accept an incomming connection"};
                 Socket client{clientSocket, _sockType, _ipType};
-                if (_blocking) client.setNonBlocking();
+                if (!_blocking) client.setNonBlocking();
                 return client;
             }
 
@@ -391,13 +391,19 @@ namespace net {
             // Recv until connection is closed or non blocking errcode is hit
             // Use with caution for blocking sockets, it will hang until con is closed
             [[nodiscard]] std::string recvAll(std::size_t recvBatchSize = 2048) {
-                long recvBytes {}, totalRecv {}; std::vector<char> buffer(recvBatchSize);
-                while ((recvBytes = ::recv(_fd, buffer.data() + totalRecv, recvBatchSize, 0)) > 0) {
-                    totalRecv += recvBytes;
-                    if (recvBytes > 0) buffer.resize(static_cast<std::size_t>(totalRecv) + recvBatchSize);
-                    else if (recvBytes == 0 || (recvBytes < 0 && errno == ECONNRESET)) close();
-                    else if (recvBytes < 0 && errno != EAGAIN && errno != EWOULDBLOCK)
-                        throw SocketError{"Failed to recv"};
+                long totalRecv {}; std::vector<char> buffer(recvBatchSize);
+                while (_fd != -1) {
+                    long recvBytes {::recv(_fd, buffer.data() + totalRecv, recvBatchSize, 0)};
+                    if (recvBytes > 0) {
+                        totalRecv += recvBytes;
+                        buffer.resize(static_cast<std::size_t>(totalRecv) + recvBatchSize);
+                    } else {
+                        // recvBytes 0 implies client closed regardless of socket blocking type
+                        if (recvBytes == 0 || (recvBytes < 0 && errno == ECONNRESET)) close();
+                        // exit loop without closing socket
+                        else if (errno == EAGAIN || errno == EWOULDBLOCK) break; 
+                        else throw SocketError{"Failed to recv"};
+                    }
                 }
                 return {buffer.data(), static_cast<std::size_t>(std::max(0l, totalRecv))};
             }
@@ -986,9 +992,6 @@ namespace net {
                 return static_cast<EventType>(static_cast<T>(e1) | static_cast<T>(e2)); 
             }
 
-            // User almost certainly wanted to use '&' operator
-            friend bool operator==(EventType, EventType) = delete;
-
             friend bool operator&(EventType e1, EventType e2) {
                 using T = std::underlying_type_t<EventType>;
                 return (static_cast<T>(e1) & static_cast<T>(e2)) != 0; 
@@ -1053,7 +1056,7 @@ namespace net {
                             event |= EventType::Closed;
                         if (pollFd.revents & POLLERR || pollFd.revents & POLLNVAL)
                             event |= EventType::Error;
-                        if (!(event & EventType::Unknown))
+                        if (event != EventType::Unknown)
                             result.emplace_back(getSocket(pollFd.fd), event);
                     }
                 }

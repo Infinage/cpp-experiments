@@ -1,4 +1,7 @@
 #include "../include/protocol.hpp"
+#include "../include/torrent_tracker.hpp"
+
+#include "../../networking/net.hpp"
 
 #include <cstdint>
 #include <cstring>

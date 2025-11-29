@@ -1,9 +1,11 @@
 #pragma once
 
 #include "common.hpp"
-#include "torrent_tracker.hpp"
 
 namespace Torrent {
+    // Forward declaration for faster compilation times
+    class TorrentTracker;
+
     // Helpers to construct the messages
     std::string buildConnectionRequest();
     std::string buildAnnounceRequest(const TorrentTracker &tracker, const std::string &connectionId);

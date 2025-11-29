@@ -3,7 +3,9 @@
 #include "../include/protocol.hpp"
 
 #include "../../cryptography/hashlib.hpp"
+#include "../../networking/net.hpp"
 
+#include <cstring>
 #include <iostream>
 #include <print>
 
@@ -14,6 +16,7 @@ namespace Torrent {
         ctx.haves.insert(net::utils::bswap(pieceIdx));
     }
 
+    // TODO: If peer sends extra bit at the end at rounded of portion, this can corrupt things
     void TorrentDownloader::handleBitfield(const std::string &payload, PeerContext &ctx) {
         if (payload.size() != (torrentFile.numPieces + 7) / 8)
             std::println(std::cerr, "Bitfield received from client "
@@ -34,7 +37,7 @@ namespace Torrent {
         std::uint32_t pIndex, pBegin;
 
         // Check torrent.blockSize == payload's block size
-        bool validBlock {payload.size() - 8 != blockSize};
+        bool validBlock {payload.size() - 8 == blockSize};
         std::string buffer(blockSize, '\0');
         std::memcpy(&pIndex, payload.c_str() + 0, 4);
         std::memcpy(&pBegin, payload.c_str() + 4, 4);
@@ -129,95 +132,149 @@ namespace Torrent {
             auto peer {net::Socket{net::SOCKTYPE::TCP, ipType.value()}};
             peer.setNonBlocking(); peer.connect(ip, port);
             states.insert({peer.fd(), {.fd=peer.fd(), .ip=ip, .port=port, .sendBuffer=handshake}});
-            manager.track(std::move(peer));
+            manager.track(std::move(peer), net::PollEventType::Writable);
+
+            // TODO: Pick a random client
+            if (manager.size() >= 3) break;
         }
 
-        while (haves.size() < torrentFile.numPieces) {
-            for (auto &[peer, event]: manager.poll()) {
+        while (haves.size() < torrentFile.numPieces && !manager.empty()) {
+            for (auto &[peer, event]: manager.poll(5)) {
                 PeerContext &ctx {states.at(peer.fd())};
                 ctx.lastActivity = std::chrono::steady_clock::now();
 
                 if (event & net::PollEventType::Readable) {
-                    std::string recvBytes {peer.recvAll()}; std::size_t iSize {ctx.recvBuffer.size()};
-                    ctx.recvBuffer.resize(iSize + recvBytes.size());
-                    std::memmove(ctx.recvBuffer.data() + iSize, recvBytes.data(), recvBytes.size());
-
-                    if (!ctx.handshaked && ctx.recvBuffer.size() >= 68) {
-                        ctx.handshaked = std::memcmp(handshake.data(), ctx.recvBuffer.data(), 20) == 0 
-                            && std::memcmp(handshake.data() + 28, ctx.recvBuffer.data() + 28, 20) == 0;
-                        if (!ctx.handshaked) {
-                            std::println("Failed handshake with {}, client will be dropped", ctx.str());
-                            ctx.closed = true;
-                        } else {
-                            ctx.recvBuffer = ctx.recvBuffer.substr(68);
-                            std::println("Handshake established with client: {}", ctx.str());
-                            ctx.sendBuffer = buildUnchoke() + buildInterested();
-                        }
+                    std::string recvBytes;
+                    try { recvBytes = peer.recvAll(); } 
+                    catch (net::SocketError &err) { 
+                        std::println("Recv failed for {}, reason: {}", ctx.str(), err.what()); 
+                        peer.close(); 
                     }
 
-                    else if (ctx.handshaked) {
-                        while (std::uint32_t msgLen = IsCompleteMessage(ctx.recvBuffer)) {
-                            auto [msgType, message] {parseMessage(std::string_view{ctx.recvBuffer.data(), msgLen})};
-                            std::println("Received message of type: {} from client: {}", str(msgType), ctx.str());
+                    if (!recvBytes.empty()) {
+                        std::println("Recv {} bytes from client: {}", recvBytes.size(), ctx.str());
+                        std::size_t iSize {ctx.recvBuffer.size()}; // Get existing buffer size to expand recvBuffer
+                        ctx.recvBuffer.resize(iSize + recvBytes.size());
+                        std::memmove(ctx.recvBuffer.data() + iSize, recvBytes.data(), recvBytes.size());
 
-                            // Process the message and update the internal context
-                            switch (msgType) {
-                                case MsgType::Choke:       handleChoke(message, ctx); break;
-                                case MsgType::Unchoke:   handleUnchoke(message, ctx); break;
-                                case MsgType::Have:         handleHave(message, ctx); break;
-                                case MsgType::Piece:       handlePiece(message, ctx); break;
-                                case MsgType::Bitfield: handleBitfield(message, ctx); break;
+                        if (!ctx.handshaked && ctx.recvBuffer.size() >= 68) {
+                            ctx.handshaked = std::memcmp(handshake.data(), ctx.recvBuffer.data(), 20) == 0 
+                                && std::memcmp(handshake.data() + 28, ctx.recvBuffer.data() + 28, 20) == 0;
+                            if (!ctx.handshaked) {
+                                std::println("Failed handshake with {}, client will be dropped", ctx.str());
+                                ctx.closed = true;
+                            } else {
+                                ctx.recvBuffer = ctx.recvBuffer.substr(68);
+                                std::println("Handshake established with client: {}", ctx.str());
+                                ctx.sendBuffer = buildInterested();
                             }
+                        }
 
-                            // If choked, request for gettin unchoked. We will wait for a 
-                            // maximum of 3 turns before disconnecting from the peer
-                            if (ctx.choked) {
-                                if (ctx.unchokeAttempts > MAX_UNCHOKE_ATTEMPTS) ctx.closed = true;
-                                else {
-                                    ctx.sendBuffer = buildUnchoke();
-                                    ++ctx.unchokeAttempts;
+                        else if (ctx.handshaked) {
+                            while (std::uint32_t msgLen = IsCompleteMessage(ctx.recvBuffer)) {
+                                auto [msgType, message] {parseMessage(std::string_view{ctx.recvBuffer.data(), msgLen + 4})};
+                                std::println("Parsed message of type: {} from client: {}", str(msgType), ctx.str());
+
+                                // Process the message and update the internal context
+                                switch (msgType) {
+                                    case MsgType::Choke:       handleChoke(message, ctx); break;
+                                    case MsgType::Unchoke:   handleUnchoke(message, ctx); break;
+                                    case MsgType::Have:         handleHave(message, ctx); break;
+                                    case MsgType::Piece:       handlePiece(message, ctx); break;
+                                    case MsgType::Bitfield: handleBitfield(message, ctx); break;
                                 }
-                            }
 
-                            // If unchoked & peer not throttled, try requesting for block(s) available from peer
-                            else if (ctx.backlog < MAX_BACKLOG) {
-                                for (std::uint32_t pHave: ctx.haves) {
-                                    if (ctx.backlog >= MAX_BACKLOG) break;
-                                    if (haves.count(pHave) == 0) {
-                                        for (std::uint32_t block {}; block < numBlocks; ++block) {
-                                            if (pending[pHave].count(block) == 0) {
-                                                ctx.sendBuffer += buildRequest(pHave, block, this->blockSize);
-                                                ++ctx.backlog;
-                                                ctx.pending.insert({pHave, block});
-                                                pending[pHave].insert({block, ""});
-                                                if (ctx.backlog >= MAX_BACKLOG) break;
+                                // If choked, request for gettin unchoked. We will wait for a 
+                                // maximum of 3 turns before disconnecting from the peer
+                                if (ctx.choked) {
+                                    std::string unchokeMsg {buildUnchoke()};
+                                    if (ctx.unchokeAttempts > MAX_UNCHOKE_ATTEMPTS) {
+                                        ctx.closed = true;
+                                        std::println("Exceeded max unchoke attempts, disconnecting {}", ctx.str());
+                                    }
+
+                                    // If buffer already has unchoke, we haven't had
+                                    // a chance to send to client yet, don't increase attempts
+                                    else if (ctx.sendBuffer != unchokeMsg) {
+                                        std::println("Building unchoke for {}", ctx.str());
+                                        ctx.sendBuffer = unchokeMsg;
+                                        ++ctx.unchokeAttempts;
+                                    }
+                                }
+
+                                // If unchoked & peer not throttled, try requesting for block(s) available from peer
+                                else if (ctx.backlog < MAX_BACKLOG) {
+                                    for (std::uint32_t pHave: ctx.haves) {
+                                        if (ctx.backlog >= MAX_BACKLOG) break;
+                                        if (haves.count(pHave) == 0) {
+                                            for (std::uint32_t block {}; block < numBlocks; ++block) {
+                                                if (pending[pHave].count(block) == 0) {
+                                                    std::println("Building request for piece# {}, block# {} from {}", 
+                                                            pHave, block, ctx.str());
+                                                    ctx.sendBuffer += buildRequest(pHave, block, this->blockSize);
+                                                    ++ctx.backlog;
+                                                    ctx.pending.insert({pHave, block});
+                                                    pending[pHave].insert({block, ""});
+                                                    if (ctx.backlog >= MAX_BACKLOG) break;
+                                                }
                                             }
                                         }
                                     }
                                 }
-                            }
 
-                            ctx.recvBuffer = ctx.recvBuffer.substr(msgLen);
-                            if (ctx.closed) {
-                                manager.untrack(ctx.fd), 
-                                    states.erase(ctx.fd); 
-                                break;
-                            }
+                                ctx.recvBuffer = ctx.recvBuffer.substr(msgLen + 4);
+                                if (ctx.closed) {
+                                    std::println("Dropping client {}", ctx.str());
+                                    manager.untrack(ctx.fd), 
+                                        states.erase(ctx.fd); 
+                                    break;
+                                }
+                            } // while IsCompleteMessage
+
+                        } // else if ctx.handshaked
+
+                    } // if iSize
+
+                } // if event is readable
+
+                if (event & net::PollEventType::Writable) {
+                    try {
+                        long sentBytes {ctx.sendBuffer.empty()? 0: peer.sendAll(ctx.sendBuffer)};
+                        if (sentBytes) {
+                            std::println("Sent {} bytes to client: {}", sentBytes, ctx.str());
+                            ctx.sendBuffer = ctx.sendBuffer.substr(static_cast<std::size_t>(sentBytes));
                         }
+                    } catch (net::SocketError &err) { 
+                        std::println("Send failed for {}, reason: {}", ctx.str(), err.what()); 
+                        peer.close(); 
                     }
                 }
 
-                else if (event & net::PollEventType::Writable) {
-                    long sentBytes {peer.sendAll(ctx.sendBuffer)};
-                    std::println("Sent {} bytes to client: {}", sentBytes, ctx.str());
-                    ctx.sendBuffer = ctx.sendBuffer.substr(static_cast<std::size_t>(sentBytes));
+                // Drop client on closed or err event
+                if (event & net::PollEventType::Error || event & net::PollEventType::Closed) { 
+                    std::println("Got an closed/err poll event from {}", ctx.str());
+                    peer.close();
                 }
 
-                else {
+                // Close the connection if already dropped
+                if (peer.fd() == -1) {
+                    std::println("Dropping client {}", ctx.str());
                     manager.untrack(ctx.fd);
                     states.erase(ctx.fd);
                 }
+
+                // Only track for events we are interested in
+                else {
+                    if (ctx.sendBuffer.empty())
+                        manager.updateTracking(peer.fd(), net::PollEventType::Readable);
+                    else if (ctx.handshaked)
+                        manager.updateTracking(peer.fd(), net::PollEventType::Readable | net::PollEventType::Writable);
+                }
+
             }
         }
+
+        // Display status to user
+        std::println("Download status: {}", (haves.size() == torrentFile.numPieces? "Completed": "Failed"));
     }
 };

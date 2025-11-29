@@ -1,6 +1,10 @@
 #pragma once
 
-#include "../../json-parser/json.hpp"
+#include <memory>
+namespace JSON { 
+    struct JSONHandle; class JSONNode;
+    using JSONNodePtr = std::shared_ptr<JSONNode>;
+}
 
 namespace Bencode {
     [[nodiscard]] std::string encode(JSON::JSONNodePtr root, bool sortKeys = false, bool _skipKey = true);

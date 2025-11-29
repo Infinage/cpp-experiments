@@ -51,10 +51,9 @@ namespace Torrent {
         return gen(rng);
     }
 
-    template<typename T>
     struct HashPair {
-        std::size_t operator()(const PieceBlock &pb) const {
-            std::hash<T> hasher;
+        inline std::size_t operator()(const PieceBlock &pb) const {
+            std::hash<std::uint32_t> hasher;
             std::size_t h1 {hasher(pb.first)}, h2 {hasher(pb.second)};
             return h1 ^ (h2 + 0x9e3779b9 + (h1 << 6) + (h1 >> 2));
         }

@@ -1,6 +1,8 @@
-#include "../../cryptography/hashlib.hpp"
 #include "../include/bencode.hpp"
 #include "../include/torrent_file.hpp"
+
+#include "../../cryptography/hashlib.hpp"
+#include "../../json-parser/json.hpp"
 
 #include <fstream>
 
@@ -26,13 +28,13 @@ namespace Torrent {
         ifs.read(buffer.data(), size);
 
         // Read the bencoded torrent file
-        root = Bencode::decode(buffer);
+        JSON::JSONHandle root = Bencode::decode(buffer);
 
         // Extract the announce URL from torrent file
-        announceURL = root->at("announce").to<std::string>();
+        announceURL = root.at("announce").to<std::string>();
 
         // Extract other required fields
-        auto info {root->at("info")};
+        auto info {root.at("info")};
         name = info["name"].to<std::string>();
         length = calculateTotalLength(info);
         pieceSize = static_cast<std::uint32_t>(info["piece length"].to<long>()); 
@@ -44,5 +46,10 @@ namespace Torrent {
 
         // Reencode just the info dict to compute its sha1 hash (raw hash)
         infoHash = hashutil::sha1(Bencode::encode(info.ptr, true), true);
+    }
+
+    std::string_view TorrentFile::getPieceHash(std::size_t idx) const {
+        if (idx >= numPieces) throw std::runtime_error("Piece Hash idx requested out of range");
+        return std::string_view{pieceBlob}.substr(idx * 20, 20);
     }
 }
