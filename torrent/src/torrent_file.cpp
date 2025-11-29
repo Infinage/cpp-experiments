@@ -1,0 +1,48 @@
+#include "../../cryptography/hashlib.hpp"
+#include "../include/bencode.hpp"
+#include "../include/torrent_file.hpp"
+
+#include <fstream>
+
+namespace Torrent {
+    std::uint64_t TorrentFile::calculateTotalLength(JSON::JSONHandle info) {
+        auto files {info["files"]};
+        if (!files.ptr) return static_cast<std::uint64_t>(info.at("length").to<long>());
+        else {
+            auto filesObj {files.cast<JSON::JSONArrayNode>()};
+            return std::accumulate(filesObj.begin(), filesObj.end(), std::uint64_t {}, 
+                [] (std::uint64_t acc, JSON::JSONHandle file) {
+                    return acc + static_cast<std::uint64_t>(file.at("length").to<long>());
+                }
+            );
+        }
+    }
+    
+    TorrentFile::TorrentFile(const std::string_view torrentFP) {
+        std::ifstream ifs {torrentFP.data(), std::ios::binary | std::ios::ate};
+        auto size {ifs.tellg()};
+        std::string buffer(static_cast<std::size_t>(size), 0);
+        ifs.seekg(0, std::ios::beg);
+        ifs.read(buffer.data(), size);
+
+        // Read the bencoded torrent file
+        root = Bencode::decode(buffer);
+
+        // Extract the announce URL from torrent file
+        announceURL = root->at("announce").to<std::string>();
+
+        // Extract other required fields
+        auto info {root->at("info")};
+        name = info["name"].to<std::string>();
+        length = calculateTotalLength(info);
+        pieceSize = static_cast<std::uint32_t>(info["piece length"].to<long>()); 
+        pieceBlob = info["pieces"].to<std::string>();
+        numPieces = pieceBlob.size() / 20;
+
+        // Sanity check on blob validity - can be equally split
+        if (pieceBlob.size() % 20) throw std::runtime_error("Piece blob is corrupted");
+
+        // Reencode just the info dict to compute its sha1 hash (raw hash)
+        infoHash = hashutil::sha1(Bencode::encode(info.ptr, true), true);
+    }
+}
