@@ -46,10 +46,9 @@ namespace Torrent {
         // Convert the offset into a valid block index
         std::uint32_t bIndex {pBegin / blockSize};
         ctx.pending.erase({pIndex, bIndex}); --ctx.backlog;
-        if (!validBlock)
-            std::println(std::cerr, "Block# {} size received from {} for piece# {}, "
-                "is invalid, will be dropped", bIndex, ctx.str(), pIndex);
-        else {
+        std::println("{} Piece: {}, Block# {} parsed from client {}", 
+            validBlock? "Valid": "Invalid", pIndex, bIndex, ctx.str());
+        if (validBlock) {
             std::memcpy(buffer.data(), payload.c_str() + 8, blockSize);
             pending[pIndex][bIndex] = std::move(buffer);
         }
@@ -66,8 +65,8 @@ namespace Torrent {
             }
 
             // Validate that the piece is valid against the hash
-            if (hashutil::sha1(piece) != torrentFile.getPieceHash(pIndex)) {
-                std::println("Mismatching hash for piece# {} will be dropped", pIndex);
+            if (hashutil::sha1(piece, true) != torrentFile.getPieceHash(pIndex)) {
+                std::println("Mismatching hash for piece# {} will be dropped and rerequested", pIndex);
             } else {
                 DownloadTempFile.seekp(pIndex * torrentFile.pieceSize, std::ios::beg);
                 DownloadTempFile.write(piece.c_str(), torrentFile.pieceSize);
@@ -80,19 +79,23 @@ namespace Torrent {
     }
 
     void TorrentDownloader::handleChoke(const std::string&, PeerContext &ctx) {
-        // Reset any download pending from this peer
-        for (const auto &pb: ctx.pending) {
-            pending[pb.first].erase(pb.second);
-            if (pending[pb.first].empty()) 
-                pending.erase(pb.first);
-        }
         // Reset the peer context
+        clearPendingFromPeer(ctx);
         ctx.choked = true; ctx.backlog = 0; 
         ctx.pending.clear();
     }
 
     void TorrentDownloader::handleUnchoke(const std::string&, PeerContext &ctx) {
         ctx.unchokeAttempts = 0; ctx.choked = false;
+    }
+
+    void TorrentDownloader::clearPendingFromPeer(const PeerContext &ctx) {
+        // Reset any download pending from this peer
+        for (const auto &pb: ctx.pending) {
+            pending[pb.first].erase(pb.second);
+            if (pending[pb.first].empty()) 
+                pending.erase(pb.first);
+        }
     }
 
     TorrentDownloader::TorrentDownloader(
@@ -133,9 +136,6 @@ namespace Torrent {
             peer.setNonBlocking(); peer.connect(ip, port);
             states.insert({peer.fd(), {.fd=peer.fd(), .ip=ip, .port=port, .sendBuffer=handshake}});
             manager.track(std::move(peer), net::PollEventType::Writable);
-
-            // TODO: Pick a random client
-            if (manager.size() >= 3) break;
         }
 
         while (haves.size() < torrentFile.numPieces && !manager.empty()) {
@@ -143,12 +143,12 @@ namespace Torrent {
                 PeerContext &ctx {states.at(peer.fd())};
                 ctx.lastActivity = std::chrono::steady_clock::now();
 
-                if (event & net::PollEventType::Readable) {
+                if (!ctx.closed && event & net::PollEventType::Readable) {
                     std::string recvBytes;
                     try { recvBytes = peer.recvAll(); } 
                     catch (net::SocketError &err) { 
                         std::println("Recv failed for {}, reason: {}", ctx.str(), err.what()); 
-                        peer.close(); 
+                        ctx.closed = true;
                     }
 
                     if (!recvBytes.empty()) {
@@ -170,8 +170,9 @@ namespace Torrent {
                             }
                         }
 
-                        else if (ctx.handshaked) {
-                            while (std::uint32_t msgLen = IsCompleteMessage(ctx.recvBuffer)) {
+                        if (ctx.handshaked) {
+                            std::uint32_t msgLen;
+                            while ((msgLen = IsCompleteMessage(ctx.recvBuffer)) > 0 && !ctx.closed) {
                                 auto [msgType, message] {parseMessage(std::string_view{ctx.recvBuffer.data(), msgLen + 4})};
                                 std::println("Parsed message of type: {} from client: {}", str(msgType), ctx.str());
 
@@ -189,8 +190,8 @@ namespace Torrent {
                                 if (ctx.choked) {
                                     std::string unchokeMsg {buildUnchoke()};
                                     if (ctx.unchokeAttempts > MAX_UNCHOKE_ATTEMPTS) {
-                                        ctx.closed = true;
                                         std::println("Exceeded max unchoke attempts, disconnecting {}", ctx.str());
+                                        ctx.closed = true;
                                     }
 
                                     // If buffer already has unchoke, we haven't had
@@ -211,7 +212,7 @@ namespace Torrent {
                                                 if (pending[pHave].count(block) == 0) {
                                                     std::println("Building request for piece# {}, block# {} from {}", 
                                                             pHave, block, ctx.str());
-                                                    ctx.sendBuffer += buildRequest(pHave, block, this->blockSize);
+                                                    ctx.sendBuffer += buildRequest(pHave, block * this->blockSize, this->blockSize);
                                                     ++ctx.backlog;
                                                     ctx.pending.insert({pHave, block});
                                                     pending[pHave].insert({block, ""});
@@ -223,21 +224,15 @@ namespace Torrent {
                                 }
 
                                 ctx.recvBuffer = ctx.recvBuffer.substr(msgLen + 4);
-                                if (ctx.closed) {
-                                    std::println("Dropping client {}", ctx.str());
-                                    manager.untrack(ctx.fd), 
-                                        states.erase(ctx.fd); 
-                                    break;
-                                }
-                            } // while IsCompleteMessage
+                            } // while IsCompleteMessage && !ctx.closed
 
-                        } // else if ctx.handshaked
+                        } // if ctx.handshaked
 
                     } // if iSize
 
-                } // if event is readable
+                } // if !ctx.closed && event is readable
 
-                if (event & net::PollEventType::Writable) {
+                if (!ctx.closed && event & net::PollEventType::Writable) {
                     try {
                         long sentBytes {ctx.sendBuffer.empty()? 0: peer.sendAll(ctx.sendBuffer)};
                         if (sentBytes) {
@@ -246,19 +241,20 @@ namespace Torrent {
                         }
                     } catch (net::SocketError &err) { 
                         std::println("Send failed for {}, reason: {}", ctx.str(), err.what()); 
-                        peer.close(); 
+                        ctx.closed = true;
                     }
                 }
 
                 // Drop client on closed or err event
                 if (event & net::PollEventType::Error || event & net::PollEventType::Closed) { 
                     std::println("Got an closed/err poll event from {}", ctx.str());
-                    peer.close();
+                    ctx.closed = true;
                 }
 
-                // Close the connection if already dropped
-                if (peer.fd() == -1) {
+                // Close the connection if already dropped, erase all pending states
+                if (ctx.closed || peer.fd() == -1) {
                     std::println("Dropping client {}", ctx.str());
+                    clearPendingFromPeer(ctx);
                     manager.untrack(ctx.fd);
                     states.erase(ctx.fd);
                 }

@@ -51,5 +51,6 @@ namespace Torrent {
             void handlePiece(const std::string &payload, PeerContext &ctx);
             void handleChoke(const std::string&, PeerContext &ctx);
             void handleUnchoke(const std::string&, PeerContext &ctx);
+            void clearPendingFromPeer(const PeerContext &ctx);
     };
 };

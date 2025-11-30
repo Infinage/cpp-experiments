@@ -39,7 +39,7 @@ namespace Torrent {
         length = calculateTotalLength(info);
         pieceSize = static_cast<std::uint32_t>(info["piece length"].to<long>()); 
         pieceBlob = info["pieces"].to<std::string>();
-        numPieces = pieceBlob.size() / 20;
+        numPieces = length / pieceSize;
 
         // Sanity check on blob validity - can be equally split
         if (pieceBlob.size() % 20) throw std::runtime_error("Piece blob is corrupted");
