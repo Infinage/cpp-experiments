@@ -1,4 +1,5 @@
 #include "../include/piece_manager.hpp"
+
 #include "../../cryptography/hashlib.hpp"
 
 #include <algorithm>
@@ -17,12 +18,12 @@ namespace Torrent {
         --requestedBlocks; ++completedBlocks;
     }
 
-    std::uint16_t PieceManager::Piece::requestBlockNum(std::uint16_t blockIdx) {
+    std::uint32_t PieceManager::Piece::requestBlockNum(std::uint16_t blockIdx) {
         states[blockIdx] = Piece::State::REQUESTED; ++requestedBlocks;
         return blockIdx < actualNumBlocks - 1? outer.blockSize: lastBlockSize;
     }
 
-    PieceManager::Piece::Piece(const PieceManager &outer, std::uint32_t pieceIdx): 
+    PieceManager::Piece::Piece(const PieceManager &outer, const std::uint32_t pieceIdx): 
         outer {outer}, buffer {std::string(outer.pieceSize, '\0')},
         actualPieceSize {pieceIdx < outer.numPieces - 1 || outer.totalSize % outer.pieceSize == 0? 
             outer.pieceSize: static_cast<uint32_t>(outer.totalSize % outer.pieceSize)},
@@ -57,9 +58,9 @@ namespace Torrent {
             partialPieces.erase(pieceIdx);
     }
 
-    void PieceManager::onPeerReset(const std::vector<std::pair<std::uint32_t, std::uint32_t>> &pendingRequests) {
+    void PieceManager::onPeerReset(const std::vector<PieceBlock> &pendingRequests) {
         for (const auto &request: pendingRequests) {
-            clearInTransitBlock(request.first, request.second);
+            clearInTransitBlock(request.pieceIdx, request.blockOffset);
         }
     }
 
@@ -71,11 +72,12 @@ namespace Torrent {
 
         bool pieceCompleted {false}; std::string retBuffer;
         if (partialPiece.completedBlocks == partialPiece.actualNumBlocks) {
-            if (hashutil::sha1(partialPiece.buffer, true) != getPieceHash(pieceIdx)) {
+            retBuffer = std::string {partialPiece.buffer.c_str(), partialPiece.actualPieceSize};
+            if (hashutil::sha1(retBuffer, true) != getPieceHash(pieceIdx)) {
                 std::println("Mismatching hash for piece# {} will be dropped and rerequested", pieceIdx);
+                retBuffer.clear();
             } else {
                 std::println("Hash for piece# {} is valid, scheduling write to disk", pieceIdx);
-                retBuffer = std::string {partialPiece.buffer.c_str(), partialPiece.actualPieceSize};
                 pieceCompleted = true; haves.insert(pieceIdx);
             }
             partialPieces.erase(pieceIdx);
@@ -94,7 +96,7 @@ namespace Torrent {
                 std::uint16_t blockIdx {};
                 while (blockIdx < piece.actualNumBlocks && result.size() < count) {
                     if (piece.states[blockIdx] == Piece::State::PENDING) {
-                        std::uint16_t actualBlockSize {piece.requestBlockNum(blockIdx)};
+                        auto actualBlockSize {piece.requestBlockNum(blockIdx)};
                         result.emplace_back(pieceIdx, static_cast<std::uint32_t>(blockIdx) * blockSize, actualBlockSize);        
                     }
                     ++blockIdx;
@@ -104,13 +106,14 @@ namespace Torrent {
 
         // Pick the pieces that we haven't downloaded or requested yet
         for (auto peerHavesIt {peerHaves.begin()}; peerHavesIt != peerHaves.end() && result.size() < count; ++peerHavesIt) {
-            auto pieceIdx {*peerHavesIt};
+            const std::uint32_t pieceIdx {*peerHavesIt};
             if (!haves.contains(pieceIdx) && !partialPieces.contains(pieceIdx)) {
-                auto inserted {partialPieces.emplace(pieceIdx, Piece{*this, pieceIdx})};
+                auto inserted {partialPieces.try_emplace(pieceIdx, *this, pieceIdx)};
                 Piece &piece {inserted.first->second}; std::uint16_t blockIdx {};
                 while (blockIdx < piece.actualNumBlocks && result.size() < count) {
-                    std::uint16_t actualBlockSize {piece.requestBlockNum(blockIdx)};
-                    result.emplace_back(pieceIdx, static_cast<std::uint32_t>(blockIdx++) * blockSize, actualBlockSize);
+                    auto actualBlockSize {piece.requestBlockNum(blockIdx)};
+                    result.emplace_back(pieceIdx, static_cast<std::uint32_t>(blockIdx) * blockSize, actualBlockSize);
+                    ++blockIdx;
                 }
             }
         }

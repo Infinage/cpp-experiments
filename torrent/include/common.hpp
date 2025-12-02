@@ -4,11 +4,8 @@
 #include <functional>
 #include <random>
 #include <unordered_set>
-#include <utility>
 
 namespace Torrent {
-    using PieceBlock = std::pair<std::uint32_t, std::uint32_t>;
-
     enum class MsgType : std::uint8_t {
         Choke = 0,
         Unchoke = 1,
@@ -52,10 +49,21 @@ namespace Torrent {
         return gen(rng);
     }
 
-    struct HashPair {
+    struct PieceBlock { 
+        std::uint32_t pieceIdx {}, blockOffset {}, blockSize {}; 
+
+        PieceBlock(std::uint32_t pi, std::uint32_t bo, std::uint32_t bs):
+            pieceIdx {pi}, blockOffset {bo}, blockSize {bs} {}
+
+        bool operator==(const PieceBlock &other) const {
+            return pieceIdx == other.pieceIdx && blockOffset == other.blockOffset;
+        }
+    };
+
+    struct HashPieceBlock {
         inline std::size_t operator()(const PieceBlock &pb) const {
             std::hash<std::uint32_t> hasher;
-            std::size_t h1 {hasher(pb.first)}, h2 {hasher(pb.second)};
+            std::size_t h1 {hasher(pb.pieceIdx)}, h2 {hasher(pb.blockOffset)};
             return h1 ^ (h2 + 0x9e3779b9 + (h1 << 6) + (h1 >> 2));
         }
     };

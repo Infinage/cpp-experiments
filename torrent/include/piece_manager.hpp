@@ -1,5 +1,7 @@
 #pragma once
 
+#include "../include/common.hpp"
+
 #include <cstdint>
 #include <string>
 #include <unordered_map>
@@ -22,10 +24,12 @@ namespace Torrent {
                 // Track the current status count
                 std::uint16_t requestedBlocks {}, completedBlocks {};
 
+                // Marks the block as requested and returns the block size
+                std::uint32_t requestBlockNum(std::uint16_t blockOffset);
+
                 bool finished() const;
                 void writeBlock(std::uint32_t blockOffset, std::string payload);
-                std::uint16_t requestBlockNum(std::uint16_t blockOffset);
-                Piece(const PieceManager &outer, std::uint32_t pieceIdx);
+                Piece(const PieceManager &outer, const std::uint32_t pieceIdx);
             };
 
         private:
@@ -56,7 +60,7 @@ namespace Torrent {
 
             bool finished() const;
 
-            void onPeerReset(const std::vector<std::pair<std::uint32_t, std::uint32_t>> &pendingRequests);
+            void onPeerReset(const std::vector<PieceBlock> &pendingRequests);
 
             // Input payload from peer request must be passed as it is
             // Returns a pair denoting if we are good to schedule writing to disk

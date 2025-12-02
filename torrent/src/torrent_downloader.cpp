@@ -31,15 +31,16 @@ namespace Torrent {
         std::memcpy(&pBegin, payload.c_str() + 4, 4);
         net::utils::inplace_bswap(pIndex, pBegin);
 
-        if (!ctx.pending.contains({pIndex, pBegin})) {
+        auto pendingIt {ctx.pending.find({pIndex, pBegin, 0})};
+        if (pendingIt == ctx.pending.end()) {
             std::println("Piece# {}, Block Offset {} was not requested yet or has already "
                 "been downloaded, dropping.", pIndex, pBegin);
             return;
         }
 
         // Convert the offset into a valid block index
-        ctx.pending.erase({pIndex, pBegin}); --ctx.backlog;
-        bool validBlock {payload.size() - 8 == blockSize};
+        bool validBlock {payload.size() - 8 == pendingIt->blockSize};
+        ctx.pending.erase(pendingIt); --ctx.backlog;
         std::println("{} Piece: {}, Block Offset: {} parsed from client {}", 
             validBlock? "Valid": "Invalid", pIndex, pBegin, ctx.str());
 
@@ -135,7 +136,6 @@ namespace Torrent {
             peer.setNonBlocking(); peer.connect(ip, port);
             states.insert({peer.fd(), {.fd=peer.fd(), .ip=ip, .port=port, .sendBuffer=handshake}});
             pollManager.track(std::move(peer), net::PollEventType::Writable);
-            if (pollManager.size() == 3) break; // TODO: debug easier
         }
 
         while (!pieceManager.finished() && !pollManager.empty()) {
@@ -207,10 +207,10 @@ namespace Torrent {
                                 else if (ctx.backlog < MAX_BACKLOG) {
                                     auto pendingBlocks {pieceManager.getPendingBlocks(ctx.haves, MAX_BACKLOG - ctx.backlog)};
                                     for (auto [pieceIdx, blockOffset, blockSize]: pendingBlocks) {
-                                        std::println("Building request for piece# {}, block Offset {} from {}", 
-                                                pieceIdx, blockOffset, ctx.str());
+                                        std::println("Building request for piece# {}, block Offset {}, Block size {} from {}", 
+                                                pieceIdx, blockOffset, blockSize, ctx.str());
                                         ctx.sendBuffer += buildRequest(pieceIdx, blockOffset, blockSize);
-                                        ctx.pending.emplace(pieceIdx, blockOffset);
+                                        ctx.pending.emplace(pieceIdx, blockOffset, blockSize);
                                         ++ctx.backlog;
                                     }
                                 }

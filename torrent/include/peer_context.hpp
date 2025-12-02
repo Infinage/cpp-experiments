@@ -21,7 +21,7 @@ namespace Torrent {
         std::unordered_set<std::uint32_t> haves {};  // which pieces the peer has
 
         // Blocks requested from this peer
-        std::unordered_set<PieceBlock, HashPair> pending {};
+        std::unordered_set<PieceBlock, HashPieceBlock> pending {};
 
         std::string recvBuffer {};   // accumulate partial message data
         std::string sendBuffer {};   // pending outgoing data
