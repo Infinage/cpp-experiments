@@ -48,11 +48,11 @@ namespace Bencode {
             if (!key.empty() && !_skipKey) oss << key.size() << ':' << key;
             switch (root->getType()) {
                 case JSON::NodeType::value: {
-                    // Only allow string / long
+                    // Only allow string / integer
                     auto &val {static_cast<JSON::JSONValueNode&>(*root).getValue()};
                     bool isValid {std::visit([](auto &&arg) {
                         using T = std::decay_t<decltype(arg)>;
-                        return std::is_same_v<T, std::string> || std::is_same_v<T, long>;
+                        return std::is_same_v<T, std::string> || std::is_same_v<T, std::int64_t>;
                     }, val)};
 
                     if (!isValid) 
@@ -60,7 +60,7 @@ namespace Bencode {
                     else if (auto *ptr {std::get_if<std::string>(&val)})
                         oss << ptr->size() << ':' << *ptr;
                     else
-                        oss << 'i' << std::get<long>(val) << 'e';
+                        oss << 'i' << std::get<std::int64_t>(val) << 'e';
                     break;
                 }
 
@@ -110,7 +110,7 @@ namespace Bencode {
                 if (endP == std::string::npos || (!stk.empty() && stk.top()->getType() == JSON::NodeType::object))
                     throw std::runtime_error("Invalid bencoded string");
 
-                long val {std::stol(encoded.substr(idx + 1, endP))};
+                std::int64_t val {std::stoll(encoded.substr(idx + 1, endP))};
                 if (stk.empty())
                     stk.push(JSON::helper::createNode(val));
                 else if (stk.top()->getType() == JSON::NodeType::array)

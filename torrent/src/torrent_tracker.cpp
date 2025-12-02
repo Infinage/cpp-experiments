@@ -65,7 +65,7 @@ namespace Torrent {
         JSON::JSONHandle respBody {Bencode::decode(respBodyStr)};
         std::vector<std::pair<std::string, std::uint16_t>> peers;
         for (JSON::JSONHandle ipObj: respBody["peers"])
-            peers.push_back({ipObj["ip"].to<std::string>(), ipObj["port"].to<long>()});     
+            peers.push_back({ipObj["ip"].to<std::string>(), ipObj["port"].to<std::int64_t>()});     
 
         return peers;
     }

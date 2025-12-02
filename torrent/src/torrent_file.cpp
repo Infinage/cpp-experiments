@@ -9,12 +9,12 @@
 namespace Torrent {
     std::uint64_t TorrentFile::calculateTotalLength(JSON::JSONHandle info) {
         auto files {info["files"]};
-        if (!files.ptr) return static_cast<std::uint64_t>(info.at("length").to<long>());
+        if (!files.ptr) return static_cast<std::uint64_t>(info.at("length").to<std::int64_t>());
         else {
             auto filesObj {files.cast<JSON::JSONArrayNode>()};
             return std::accumulate(filesObj.begin(), filesObj.end(), std::uint64_t {}, 
                 [] (std::uint64_t acc, JSON::JSONHandle file) {
-                    return acc + static_cast<std::uint64_t>(file.at("length").to<long>());
+                    return acc + static_cast<std::uint64_t>(file.at("length").to<std::int64_t>());
                 }
             );
         }
@@ -37,7 +37,7 @@ namespace Torrent {
         auto info {root.at("info")};
         name = info["name"].to<std::string>();
         length = calculateTotalLength(info);
-        pieceSize = static_cast<std::uint32_t>(info["piece length"].to<long>()); 
+        pieceSize = static_cast<std::uint32_t>(info["piece length"].to<std::int64_t>()); 
         pieceBlob = info["pieces"].to<std::string>();
         numPieces = (length + pieceSize - 1) / pieceSize;
 

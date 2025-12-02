@@ -37,7 +37,7 @@ namespace JSON {
     class JSONNode;
 
     // Types of JSON Simple values
-    using JSONSimpleType = std::variant<std::string, std::nullptr_t, long, double, bool>;
+    using JSONSimpleType = std::variant<std::string, std::nullptr_t, std::int64_t, double, bool>;
 
     // Concept to constrain input type to lie within above types
     template<typename T> concept JSONSimple = is_in_variant<T, JSONSimpleType>::value;
@@ -351,9 +351,9 @@ namespace JSON {
             else if (std::holds_alternative<std::nullptr_t>(v))
                 return "null";
             
-            // LONG
-            else if (std::holds_alternative<long>(v))
-                return std::to_string(std::get<long>(v));
+            // INTEGER
+            else if (std::holds_alternative<std::int64_t>(v))
+                return std::to_string(std::get<std::int64_t>(v));
 
             // DOUBLE
             else if (std::holds_alternative<double>(v))
@@ -405,7 +405,7 @@ namespace JSON {
             // LONG - Digit count should be same as token size or one less (for negative sign)
             // Ensure there aren't leading zeros - '001' or '-01'
             else if (digitCount == token.size() || (digitCount == token.size() - 1 && token[0] == '-')) {
-                if (!leadingZeros(token)) return std::stol(token);
+                if (!leadingZeros(token)) return std::stoll(token);
                 else throw error;
             }
 

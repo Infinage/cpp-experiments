@@ -27,7 +27,10 @@ bool validateFile(const std::string &fname) {
         bool status {true};
         try { JSON::Parser::loads(jsonStr); } 
         catch (...) { status = false; }
-        return status != std::filesystem::path{fname}.filename().string().starts_with("fail");
+
+        auto path {std::filesystem::path{fname}.filename().string()};
+        bool expected {path.starts_with("pass") || path.starts_with("y_")};
+        return status == expected;
     }
 }
 
