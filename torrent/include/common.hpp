@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <functional>
 #include <random>
+#include <unordered_set>
 #include <utility>
 
 namespace Torrent {
@@ -61,4 +62,7 @@ namespace Torrent {
 
     std::string randString(std::size_t length);
     std::string generatePeerID();
+
+    std::unordered_set<std::uint32_t> readBitField(std::string_view payload);
+    std::string writeBitField(const std::unordered_set<std::uint32_t>&);
 }

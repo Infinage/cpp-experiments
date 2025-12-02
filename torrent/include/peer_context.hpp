@@ -15,8 +15,8 @@ namespace Torrent {
         bool choked {true};          // we are choking them by default
         bool closed {false};         // whether to maintain the connection
 
-        int unchokeAttempts {};      // track # of unchoke attempts and drop if needed
-        short backlog {};            // # of unfulfilled requests pending
+        std::uint8_t unchokeAttempts {}; // track # of unchoke attempts and drop if needed
+        std::uint8_t backlog {};         // # of unfulfilled requests pending
 
         std::unordered_set<std::uint32_t> haves {};  // which pieces the peer has
 

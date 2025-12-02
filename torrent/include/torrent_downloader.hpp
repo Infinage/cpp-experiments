@@ -2,17 +2,18 @@
 
 #include "torrent_file.hpp"
 #include "peer_context.hpp"
+#include "piece_manager.hpp"
 
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <string>
-#include <unordered_map>
-#include <unordered_set>
 
 namespace Torrent {
     class TorrentDownloader {
         public:
+            ~TorrentDownloader();
+
             TorrentDownloader(
                 const TorrentFile &torrentFile, const std::string_view downloadDir, 
                 const std::uint16_t bSize = 1 << 14, const std::uint8_t backlog = 8,
@@ -30,20 +31,17 @@ namespace Torrent {
 
             // User defined constants
             const std::uint16_t blockSize;
-            const std::size_t numBlocks;
             const std::uint8_t MAX_BACKLOG, MAX_UNCHOKE_ATTEMPTS;
+
+            // Piece Manager to determine which piece to download next
+            PieceManager pieceManager;
 
             // Torrent download directory path
             const std::filesystem::path DownloadDir;
             std::ofstream DownloadTempFile;
 
-            // Pieces that we have completed downloading
-            std::unordered_set<std::uint32_t> haves;
-
-            // Piece requests in transit (global 'mutex')
-            // Accumulate all blocks of a piece until we can write to disk
-            std::unordered_map<std::uint32_t, std::unordered_map<
-                std::uint32_t, std::string>> pending;
+            // Save torrent state
+            const std::filesystem::path StateSavePath;
 
         private:
             void handleHave(const std::string &payload, PeerContext &ctx);
@@ -51,6 +49,6 @@ namespace Torrent {
             void handlePiece(const std::string &payload, PeerContext &ctx);
             void handleChoke(const std::string&, PeerContext &ctx);
             void handleUnchoke(const std::string&, PeerContext &ctx);
-            void clearPendingFromPeer(const PeerContext &ctx);
+            void clearPendingFromPeer(PeerContext &ctx);
     };
 };

@@ -39,17 +39,12 @@ namespace Torrent {
         length = calculateTotalLength(info);
         pieceSize = static_cast<std::uint32_t>(info["piece length"].to<long>()); 
         pieceBlob = info["pieces"].to<std::string>();
-        numPieces = length / pieceSize;
+        numPieces = (length + pieceSize - 1) / pieceSize;
 
         // Sanity check on blob validity - can be equally split
         if (pieceBlob.size() % 20) throw std::runtime_error("Piece blob is corrupted");
 
         // Reencode just the info dict to compute its sha1 hash (raw hash)
         infoHash = hashutil::sha1(Bencode::encode(info.ptr, true), true);
-    }
-
-    std::string_view TorrentFile::getPieceHash(std::size_t idx) const {
-        if (idx >= numPieces) throw std::runtime_error("Piece Hash idx requested out of range");
-        return std::string_view{pieceBlob}.substr(idx * 20, 20);
     }
 }

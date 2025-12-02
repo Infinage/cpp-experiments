@@ -21,6 +21,5 @@ namespace Torrent {
 
         public:
             TorrentFile(const std::string_view torrentFP);
-            std::string_view getPieceHash(std::size_t idx) const;
     };
 }

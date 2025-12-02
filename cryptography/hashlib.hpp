@@ -30,9 +30,10 @@ namespace hashutil {
         std::vector<bool> bitString;
 
         // Convert each char to 8 bit binary and append to a bool vector
-        for (int _ch: raw) {
-            for (int i = 7; i >= 0; i--) {
-                bitString.push_back((_ch >> i) & 1);
+        for (char ch: raw) {
+            std::uint8_t byte {static_cast<std::uint8_t>(ch)};
+            for (int bit = 7; bit >= 0; bit--) {
+                bitString.push_back((byte >> bit) & 1);
             }
         }
 
