@@ -69,7 +69,7 @@ namespace CSVUtil {
     }
 
     // Helper to output a single CSV field as a string
-    inline std::string writeCSVField(const std::string& field, const char delim = ',') {
+    inline std::string writeCSVField(const std::string_view field, const char delim = ',') {
         std::string result;
         bool splChars {false};
         for (const char &ch: field) {
