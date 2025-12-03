@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <filesystem>
 #include <functional>
 #include <random>
 #include <unordered_set>
@@ -67,6 +68,8 @@ namespace Torrent {
             return h1 ^ (h2 + 0x9e3779b9 + (h1 << 6) + (h1 >> 2));
         }
     };
+
+    struct FileStruct { std::filesystem::path path; std::uint64_t size; };
 
     std::string randString(std::size_t length);
     std::string generatePeerID();

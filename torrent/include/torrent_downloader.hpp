@@ -1,12 +1,12 @@
 #pragma once
 
+#include "disk_writer.hpp"
 #include "torrent_file.hpp"
 #include "peer_context.hpp"
 #include "piece_manager.hpp"
 
 #include <cstdint>
 #include <filesystem>
-#include <fstream>
 #include <string>
 
 namespace Torrent {
@@ -15,7 +15,7 @@ namespace Torrent {
             ~TorrentDownloader();
 
             TorrentDownloader(
-                const TorrentFile &torrentFile, const std::string_view downloadDir, 
+                const TorrentFile &torrentFile, const std::filesystem::path downloadDir, 
                 const std::uint16_t bSize = 1 << 14, const std::uint8_t backlog = 8,
                 const std::uint8_t unchokeAttempts = 3
             );
@@ -33,15 +33,14 @@ namespace Torrent {
             const std::uint16_t blockSize;
             const std::uint8_t MAX_BACKLOG, MAX_UNCHOKE_ATTEMPTS;
 
+            // Save torrent state
+            const std::filesystem::path StateSavePath;
+
             // Piece Manager to determine which piece to download next
             PieceManager pieceManager;
 
-            // Torrent download directory path
-            const std::filesystem::path DownloadDir;
-            std::ofstream DownloadTempFile;
-
-            // Save torrent state
-            const std::filesystem::path StateSavePath;
+            // Disk writer manages to actual file writes
+            DiskWriter diskWriter;
 
         private:
             void handleHave(const std::string &payload, PeerContext &ctx);

@@ -19,6 +19,25 @@ namespace Torrent {
             );
         }
     }
+
+    std::vector<FileStruct> TorrentFile::parseFileStructure(JSON::JSONHandle info) {
+        auto files {info["files"]};
+        if (!files.ptr) return {{
+            info.at("name").to<std::string>(), 
+            static_cast<std::uint64_t>(info.at("length").to<std::int64_t>())
+        }};
+
+        else {
+            std::vector<FileStruct> result;
+            for (JSON::JSONHandle file: files) {
+                auto filePath = std::ranges::fold_left(file.at("path"), std::filesystem::path {}, 
+                [] (auto acc, JSON::JSONHandle curr) { return acc / curr.to<std::string>(); });
+                auto fileSize {static_cast<std::uint64_t>(file.at("length").to<std::int64_t>())};
+                result.emplace_back(filePath, fileSize);
+            }
+            return result;
+        }
+    }
     
     TorrentFile::TorrentFile(const std::string_view torrentFP) {
         std::ifstream ifs {torrentFP.data(), std::ios::binary | std::ios::ate};
@@ -34,12 +53,15 @@ namespace Torrent {
         announceURL = root.at("announce").to<std::string>();
 
         // Extract other required fields
-        auto info {root.at("info")};
-        name = info["name"].to<std::string>();
+        JSON::JSONHandle info {root.at("info")};
+        name = info.at("name").to<std::string>();
         length = calculateTotalLength(info);
         pieceSize = static_cast<std::uint32_t>(info["piece length"].to<std::int64_t>()); 
         pieceBlob = info["pieces"].to<std::string>();
         numPieces = (length + pieceSize - 1) / pieceSize;
+
+        // Parse the 'files' meta to replicate it post download if applicable
+        files = parseFileStructure(info);
 
         // Sanity check on blob validity - can be equally split
         if (pieceBlob.size() % 20) throw std::runtime_error("Piece blob is corrupted");

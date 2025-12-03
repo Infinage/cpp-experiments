@@ -13,7 +13,7 @@ int main(int argc, char **argv) {
         Torrent::TorrentFile torrent{argv[1]};
         Torrent::TorrentTracker tTracker {torrent};
         auto peers {tTracker.getPeers()};
-        Torrent::TorrentDownloader tDownloader {torrent, argc == 3? argv[2]: "."};
+        Torrent::TorrentDownloader tDownloader {torrent, argc == 3? argv[2]: "downloads"};
         tDownloader.download(peers);
     }
 }

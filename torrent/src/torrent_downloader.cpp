@@ -46,12 +46,9 @@ namespace Torrent {
 
         // Notify piece manager that we have received a block
         if (validBlock) {
-            auto [pieceDone, piece] {pieceManager.onBlockReceived(pIndex, pBegin, payload)};
-            if (pieceDone) {
-                DownloadTempFile.seekp(pIndex * torrentFile.pieceSize, std::ios::beg);
-                DownloadTempFile.write(piece.c_str(), torrentFile.pieceSize);
-                std::println("Piece# {} has completed downloading", pIndex);
-            }
+            auto [pieceReady, piece] {pieceManager.onBlockReceived(pIndex, pBegin, payload)};
+            if (pieceReady) 
+                diskWriter.schedule(pIndex * torrentFile.pieceSize, std::move(piece));
         }
     }
 
@@ -80,7 +77,7 @@ namespace Torrent {
     }
 
     TorrentDownloader::TorrentDownloader(
-        const TorrentFile &torrentFile, const std::string_view downloadDir, 
+        const TorrentFile &torrentFile, const std::filesystem::path downloadDir, 
         const std::uint16_t bSize, const std::uint8_t backlog, 
         const std::uint8_t unchokeAttempts
     ): 
@@ -89,21 +86,10 @@ namespace Torrent {
         blockSize {bSize},
         MAX_BACKLOG {backlog}, 
         MAX_UNCHOKE_ATTEMPTS {unchokeAttempts},
+        StateSavePath {downloadDir / ("." + torrentFile.name + ".ctorrent")},
         pieceManager {torrentFile.length, torrentFile.pieceSize, bSize, torrentFile.pieceBlob},
-        DownloadDir {downloadDir},
-        StateSavePath {DownloadDir / ("." + torrentFile.name + ".ctorrent")}
+        diskWriter {torrentFile.name, torrentFile.length, torrentFile.pieceSize, downloadDir}
     {
-        // Create download directory if it doesn't already exist
-        if (!std::filesystem::exists(DownloadDir))
-            std::filesystem::create_directory(DownloadDir);
-        if (!std::filesystem::is_directory(DownloadDir))
-            throw std::runtime_error("Download directory provided is not a valid folder path");
-
-        // Create a temp sparse file for saving the pieces
-        DownloadTempFile = std::ofstream {DownloadDir / torrentFile.name, std::ios::binary};
-        DownloadTempFile.seekp(static_cast<long long>(torrentFile.length - 1)); 
-        DownloadTempFile.put('\0');
-
         // If save found reload the state
         if (std::filesystem::exists(StateSavePath)) {
             if (!std::filesystem::is_regular_file(StateSavePath))
@@ -263,6 +249,7 @@ namespace Torrent {
         }
 
         // Display status to user
-        std::println("Download status: {}", (pieceManager.finished()? "Completed": "Failed"));
+        bool status {diskWriter.finish(torrentFile.files, pieceManager.finished())};
+        std::println("Download status: {}", (status? "Completed": "Failed"));
     }
 };
