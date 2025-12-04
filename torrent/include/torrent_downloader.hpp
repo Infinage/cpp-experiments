@@ -17,7 +17,7 @@ namespace Torrent {
             TorrentDownloader(
                 const TorrentFile &torrentFile, const std::filesystem::path downloadDir, 
                 const std::uint16_t bSize = 1 << 14, const std::uint8_t backlog = 8,
-                const std::uint8_t unchokeAttempts = 3
+                const std::uint8_t unchokeAttempts = 3, const std::uint8_t maxWaitTime = 3
             );
 
             void download(std::vector<std::pair<std::string, std::uint16_t>> &peers);
@@ -31,7 +31,7 @@ namespace Torrent {
 
             // User defined constants
             const std::uint16_t blockSize;
-            const std::uint8_t MAX_BACKLOG, MAX_UNCHOKE_ATTEMPTS;
+            const std::uint8_t MAX_BACKLOG, MAX_UNCHOKE_ATTEMPTS, MAX_WAIT_TIME;
 
             // Save torrent state
             const std::filesystem::path StateSavePath;

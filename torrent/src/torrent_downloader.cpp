@@ -55,10 +55,9 @@ namespace Torrent {
         }
     }
 
+    // Reset the peer context
     void TorrentDownloader::handleChoke(const std::string&, PeerContext &ctx) {
-        // Reset the peer context
-        clearPendingFromPeer(ctx);
-        ctx.choked = true; ctx.backlog = 0; 
+        clearPendingFromPeer(ctx); ctx.choked = true;
     }
 
     void TorrentDownloader::handleUnchoke(const std::string&, PeerContext &ctx) {
@@ -68,7 +67,7 @@ namespace Torrent {
     void TorrentDownloader::clearPendingFromPeer(PeerContext &ctx) {
         // Reset any download pending from this peer
         pieceManager.onPeerReset({ctx.pending.begin(), ctx.pending.end()});
-        ctx.pending.clear();
+        ctx.pending.clear(); ctx.backlog = 0;
     }
 
     TorrentDownloader::~TorrentDownloader() {
@@ -83,13 +82,14 @@ namespace Torrent {
     TorrentDownloader::TorrentDownloader(
         const TorrentFile &torrentFile, const std::filesystem::path downloadDir, 
         const std::uint16_t bSize, const std::uint8_t backlog, 
-        const std::uint8_t unchokeAttempts
+        const std::uint8_t unchokeAttempts, const std::uint8_t maxWaitTime
     ): 
         torrentFile {torrentFile},
         peerID{generatePeerID()},
         blockSize {bSize},
         MAX_BACKLOG {backlog}, 
         MAX_UNCHOKE_ATTEMPTS {unchokeAttempts},
+        MAX_WAIT_TIME {maxWaitTime},
         StateSavePath {downloadDir / ("." + torrentFile.name + ".ctorrent")},
         coldStart {!std::filesystem::exists(StateSavePath)},
         pieceManager {torrentFile.length, torrentFile.pieceSize, bSize, torrentFile.pieceBlob},
@@ -135,7 +135,6 @@ namespace Torrent {
         while (!interrupted && !pieceManager.finished() && !pollManager.empty()) {
             for (auto &[peer, event]: pollManager.poll(5)) {
                 PeerContext &ctx {states.at(peer.fd())};
-                ctx.lastActivity = std::chrono::steady_clock::now();
 
                 if (!ctx.closed && event & net::PollEventType::Readable) {
                     std::string recvBytes;
@@ -147,6 +146,8 @@ namespace Torrent {
 
                     if (!recvBytes.empty()) {
                         std::println("Recv {} bytes from client: {}", recvBytes.size(), ctx.str());
+                        ctx.lastReadTimeStamp = std::chrono::steady_clock::now();
+
                         std::size_t iSize {ctx.recvBuffer.size()}; // Get existing buffer size to expand recvBuffer
                         ctx.recvBuffer.resize(iSize + recvBytes.size());
                         std::memmove(ctx.recvBuffer.data() + iSize, recvBytes.data(), recvBytes.size());
@@ -201,7 +202,7 @@ namespace Torrent {
                                 else if (ctx.backlog < MAX_BACKLOG) {
                                     auto pendingBlocks {pieceManager.getPendingBlocks(ctx.haves, MAX_BACKLOG - ctx.backlog)};
                                     for (auto [pieceIdx, blockOffset, blockSize]: pendingBlocks) {
-                                        std::println("Building request for piece# {}, block Offset {}, Block size {} from {}", 
+                                        std::println("Building request for piece# {}, block Offset {}, Block size {} for {}", 
                                                 pieceIdx, blockOffset, blockSize, ctx.str());
                                         ctx.sendBuffer += buildRequest(pieceIdx, blockOffset, blockSize);
                                         ctx.pending.emplace(pieceIdx, blockOffset, blockSize);
@@ -252,9 +253,28 @@ namespace Torrent {
                     else if (ctx.handshaked)
                         pollManager.updateTracking(peer.fd(), net::PollEventType::Readable | net::PollEventType::Writable);
                 }
+            } // for poll loop
 
+            // Process the clients that didn't send us anything, simply clear any pending requests
+            for (auto &[fd, ctx]: states) {
+                auto timeDiff {std::chrono::steady_clock::now() - ctx.lastReadTimeStamp};
+                auto diffInSec {std::chrono::duration_cast<std::chrono::seconds>(timeDiff).count()};
+                if (diffInSec >= MAX_WAIT_TIME) {
+                    ctx.sendBuffer = "";
+                    // If !handshaked or choked just close the conn
+                    if (ctx.choked) ctx.closed = true;
+                    else {
+                        for (auto [pieceIdx, blockOffset, blockSize]: ctx.pending) {
+                            std::println("Building cancel request for piece# {}, block Offset {}, "
+                                "Block size {} for {}", pieceIdx, blockOffset, blockSize, ctx.str());
+                            ctx.sendBuffer += buildRequest(pieceIdx, blockOffset, blockSize, false);
+                        }
+                    }
+                    clearPendingFromPeer(ctx);
+                }
             }
-        }
+
+        } // while not interrupted && pieceManager not empty && poll manager has tracking sockets
 
         // Display status to user
         if (interrupted) std::println("Interupt received, states will be saved before exit");
