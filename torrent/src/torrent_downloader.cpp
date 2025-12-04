@@ -73,6 +73,7 @@ namespace Torrent {
 
     TorrentDownloader::~TorrentDownloader() {
         const auto &haves {pieceManager.getHaves()};
+        if (haves.empty()) return;
         std::string bitField {writeBitField(haves)}; 
         std::ofstream ofs {StateSavePath, std::ios::binary};
         ofs.write(bitField.c_str(), static_cast<long>(bitField.size()));
@@ -90,11 +91,12 @@ namespace Torrent {
         MAX_BACKLOG {backlog}, 
         MAX_UNCHOKE_ATTEMPTS {unchokeAttempts},
         StateSavePath {downloadDir / ("." + torrentFile.name + ".ctorrent")},
+        coldStart {!std::filesystem::exists(StateSavePath)},
         pieceManager {torrentFile.length, torrentFile.pieceSize, bSize, torrentFile.pieceBlob},
-        diskWriter {torrentFile.name, torrentFile.length, torrentFile.pieceSize, downloadDir}
+        diskWriter {torrentFile.name, torrentFile.length, torrentFile.pieceSize, downloadDir, coldStart}
     {
         // If save found reload the state
-        if (std::filesystem::exists(StateSavePath) && std::filesystem::exists(diskWriter.getTempDownloadFilePath())) {
+        if (!coldStart) {
             if (!std::filesystem::is_regular_file(StateSavePath))
                 throw std::runtime_error("Download state save path is invalid");
 
@@ -102,7 +104,7 @@ namespace Torrent {
             std::string bitFieldString {std::istreambuf_iterator<char>(saveFile), 
                 std::istreambuf_iterator<char>()};
             auto _haves {readBitField(bitFieldString)};
-            if (*std::ranges::max_element(_haves) >= torrentFile.numPieces)
+            if (_haves.empty() || *std::ranges::max_element(_haves) >= torrentFile.numPieces)
                 std::println("Download state save is corrupted, will be overwritten");
             else {
                 std::println("Download state reloaded, {}/{} no of pieces have been completed", 

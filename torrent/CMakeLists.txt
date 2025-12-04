@@ -23,5 +23,5 @@ target_compile_options(ctorrent PRIVATE
 )
 
 target_compile_options(ctorrent PRIVATE
-    -Wall -Wextra -Wpedantic -Wconversion -ggdb3
+    -Wall -Wextra -Wpedantic -Wconversion
 )

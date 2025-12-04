@@ -8,12 +8,13 @@
 #include <filesystem>
 #include <fstream>
 #include <mutex>
+#include <openssl/ssl.h>
 #include <queue>
 
 namespace Torrent {
     class DiskWriter {
         private:
-            static constexpr std::size_t MAX_QUEUE {1000};
+            static constexpr std::size_t MAX_QUEUE {5000};
             const std::string name;
             const std::uint64_t totalSize; 
             const std::uint32_t pieceSize;
@@ -33,10 +34,12 @@ namespace Torrent {
 
         public:
             ~DiskWriter();
-            DiskWriter(const std::string name, const std::uint64_t totalSize, 
-                const std::uint32_t pieceSize, const std::filesystem::path downloadDir);
-            bool schedule(std::uint64_t offset, std::string &&piece);
+            DiskWriter(const std::string name, const std::uint64_t totalSize, const std::uint32_t pieceSize, 
+                    const std::filesystem::path downloadDir, bool coldStart);
+            void schedule(std::uint64_t offset, std::string &&piece);
             [[nodiscard]] bool finish(const std::vector<FileStruct> &files, bool status);
-            inline const std::filesystem::path &getTempDownloadFilePath() const { return DownloadTempFilePath; }
+
+            [[deprecated("Do not mix sync and async writes, this writes without locking")]] 
+            void scheduleSync(std::uint64_t offset, std::string &&piece);
     };
 }

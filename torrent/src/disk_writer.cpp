@@ -4,8 +4,8 @@
 
 namespace Torrent {
     DiskWriter::DiskWriter(
-        const std::string name, const std::uint64_t totalSize, 
-        const std::uint32_t pieceSize, const std::filesystem::path downloadDir
+        const std::string name, const std::uint64_t totalSize, const std::uint32_t pieceSize, 
+        const std::filesystem::path downloadDir, bool coldStart
     ): 
         name {name}, totalSize {totalSize},
         pieceSize {pieceSize}, DownloadDir {downloadDir}
@@ -23,6 +23,8 @@ namespace Torrent {
         // Create a temp sparse file for saving the pieces
         DownloadTempFilePath = DownloadDir / ("." + std::string{name});
         if (!std::filesystem::exists(DownloadTempFilePath)) {
+            if (!coldStart) throw std::runtime_error{"Temp download file is missing, delete "
+                "the `.ctorrent` file and restart"};
             std::ofstream tempFile {DownloadTempFilePath, std::ios::binary};
             tempFile.seekp(static_cast<std::int64_t>(totalSize - 1)); 
             tempFile.put('\0');
@@ -46,7 +48,7 @@ namespace Torrent {
                         DownloadTempFile.seekp(static_cast<std::int64_t>(offset), std::ios::beg);
                         DownloadTempFile.write(piece.c_str(), static_cast<std::streamsize>(piece.size()));
                         if (!DownloadTempFile.good()) throw std::runtime_error("Write to temp file failed");
-                        else if (++piecesWritten % 1000 == 0) DownloadTempFile.flush();
+                        else if (++piecesWritten % MAX_QUEUE == 0) DownloadTempFile.flush();
                     }
                 }
             } catch (std::exception &ex) { 
@@ -56,13 +58,18 @@ namespace Torrent {
         }};
     }
 
-    bool DiskWriter::schedule(std::uint64_t offset, std::string &&piece) {
+    void DiskWriter::scheduleSync(std::uint64_t offset, std::string &&piece) {
+        DownloadTempFile.seekp(static_cast<std::int64_t>(offset), std::ios::beg);
+        DownloadTempFile.write(piece.c_str(), static_cast<std::streamsize>(piece.size()));
+        if (!DownloadTempFile.good()) throw std::runtime_error("Write to temp file failed");
+    }
+
+    void DiskWriter::schedule(std::uint64_t offset, std::string &&piece) {
         std::unique_lock lock{taskMutex};
         tasksCV.wait(lock, [this]{ return exitCondition || tasks.size() < MAX_QUEUE; });
-        if (exitCondition) return false;
+        if (exitCondition) throw std::runtime_error("Scheduled after exit called, state may be corrupt");
         tasks.emplace(offset, std::move(piece));
         tasksCV.notify_one();
-        return true;
     }
 
     bool DiskWriter::chunkCopy(std::ifstream &source, std::ofstream &destination, std::uint64_t size, std::uint64_t chunkSize) {

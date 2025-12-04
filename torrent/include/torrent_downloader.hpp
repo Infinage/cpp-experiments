@@ -36,6 +36,10 @@ namespace Torrent {
             // Save torrent state
             const std::filesystem::path StateSavePath;
 
+            // Whether to download from scratch
+            // Decided based on whether we have the StateSavePath on disk
+            const bool coldStart {true};
+
             // Piece Manager to determine which piece to download next
             PieceManager pieceManager;
 
