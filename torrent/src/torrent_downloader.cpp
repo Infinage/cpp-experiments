@@ -4,6 +4,7 @@
 
 #include "../../networking/net.hpp"
 
+#include <csignal>
 #include <cstring>
 #include <iostream>
 #include <print>
@@ -47,8 +48,10 @@ namespace Torrent {
         // Notify piece manager that we have received a block
         if (validBlock) {
             auto [pieceReady, piece] {pieceManager.onBlockReceived(pIndex, pBegin, payload)};
-            if (pieceReady) 
+            if (pieceReady) {
+                std::println("Scheduling piece #{} write to disk", pIndex);
                 diskWriter.schedule(pIndex * torrentFile.pieceSize, std::move(piece));
+            }
         }
     }
 
@@ -73,7 +76,7 @@ namespace Torrent {
         std::string bitField {writeBitField(haves)}; 
         std::ofstream ofs {StateSavePath, std::ios::binary};
         ofs.write(bitField.c_str(), static_cast<long>(bitField.size()));
-        std::println("Download state saved to disk, {} pieces were completed", haves.size());
+        std::println("Download state saved to disk, {}/{} pieces were completed", haves.size(), torrentFile.numPieces);
     }
 
     TorrentDownloader::TorrentDownloader(
@@ -91,7 +94,7 @@ namespace Torrent {
         diskWriter {torrentFile.name, torrentFile.length, torrentFile.pieceSize, downloadDir}
     {
         // If save found reload the state
-        if (std::filesystem::exists(StateSavePath)) {
+        if (std::filesystem::exists(StateSavePath) && std::filesystem::exists(diskWriter.getTempDownloadFilePath())) {
             if (!std::filesystem::is_regular_file(StateSavePath))
                 throw std::runtime_error("Download state save path is invalid");
 
@@ -102,7 +105,8 @@ namespace Torrent {
             if (*std::ranges::max_element(_haves) >= torrentFile.numPieces)
                 std::println("Download state save is corrupted, will be overwritten");
             else {
-                std::println("Download state reloaded, {} no of pieces have been completed", _haves.size());
+                std::println("Download state reloaded, {}/{} no of pieces have been completed", 
+                        _haves.size(), torrentFile.numPieces);
                 pieceManager.getHaves() = std::move(_haves);
             }
         }
@@ -124,7 +128,9 @@ namespace Torrent {
             pollManager.track(std::move(peer), net::PollEventType::Writable);
         }
 
-        while (!pieceManager.finished() && !pollManager.empty()) {
+        static bool interrupted {false};
+        std::signal(SIGINT, [](int) { interrupted = true; });
+        while (!interrupted && !pieceManager.finished() && !pollManager.empty()) {
             for (auto &[peer, event]: pollManager.poll(5)) {
                 PeerContext &ctx {states.at(peer.fd())};
                 ctx.lastActivity = std::chrono::steady_clock::now();
@@ -249,6 +255,7 @@ namespace Torrent {
         }
 
         // Display status to user
+        if (interrupted) std::println("Interupt received, states will be saved before exit");
         bool status {diskWriter.finish(torrentFile.files, pieceManager.finished())};
         std::println("Download status: {}", (status? "Completed": "Failed"));
     }

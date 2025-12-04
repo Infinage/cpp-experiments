@@ -37,5 +37,6 @@ namespace Torrent {
                 const std::uint32_t pieceSize, const std::filesystem::path downloadDir);
             bool schedule(std::uint64_t offset, std::string &&piece);
             [[nodiscard]] bool finish(const std::vector<FileStruct> &files, bool status);
+            inline const std::filesystem::path &getTempDownloadFilePath() const { return DownloadTempFilePath; }
     };
 }
