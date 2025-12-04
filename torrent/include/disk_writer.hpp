@@ -2,27 +2,40 @@
 
 #include "common.hpp"
 
+#include <atomic>
+#include <condition_variable>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <mutex>
+#include <queue>
 
 namespace Torrent {
     class DiskWriter {
         private:
+            static constexpr std::size_t MAX_QUEUE {1000};
             const std::string name;
             const std::uint64_t totalSize; 
             const std::uint32_t pieceSize;
             const std::filesystem::path DownloadDir;
             std::filesystem::path DownloadTempFilePath;
-            std::ofstream DownloadTempFile;
+            std::fstream DownloadTempFile;
+
+            // Threading related stuff
+            std::queue<std::pair<std::uint64_t, std::string>> tasks;
+            std::atomic<bool> exitCondition {false};
+            std::condition_variable tasksCV;
+            std::mutex taskMutex;
+            std::thread writer;
 
         private:
             bool chunkCopy(std::ifstream &source, std::ofstream &destination, std::uint64_t size, std::uint64_t chunkSize = 5 * 1024 * 1024);
 
         public:
-            DiskWriter(const std::string_view name, const std::uint64_t totalSize, 
+            ~DiskWriter();
+            DiskWriter(const std::string name, const std::uint64_t totalSize, 
                 const std::uint32_t pieceSize, const std::filesystem::path downloadDir);
-            void schedule(std::uint64_t offset, std::string piece);
+            bool schedule(std::uint64_t offset, std::string &&piece);
             [[nodiscard]] bool finish(const std::vector<FileStruct> &files, bool status);
     };
 }
