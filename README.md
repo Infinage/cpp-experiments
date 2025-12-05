@@ -1,6 +1,6 @@
 # C++ Experiments
 
-A collection of hands-on C++ projects exploring everything from system tools and design patterns to games and networking.
+A growing collection of practical C++ projects — from system tools and network programming to games, design patterns, and real-world protocol implementations.
 
 ## Project Overview
 
@@ -13,10 +13,11 @@ A collection of hands-on C++ projects exploring everything from system tools and
 | `finance`      | A moving average crossover backtester for basic quantitative trading strategies. |
 | `json-parser`  | A simple C++ JSON library for creating, manipulating, and validating JSON with test scaffolding. |
 | `misc`         | Miscellaneous utilities like a Brainfuck interpreter, ASCII art generator, CSV/XML tools, and Mandelbrot visualizer. |
-| `networking`   | Low-level socket programming examples including a hello-world socket and HTTP server in C++. |
+| `networking`   | Low-level socket programming examples, a tiny HTTP server, and my awesome `net.hpp` library with tests. |
 | `pacman`       | A partial implementation of a Pacman clone using SFML for rendering sprites and animations. |
 | `puzzles`      | Solvers for logic puzzles like N-Queens (with Dockerfile), Sudoku, Skyscrapers, and Wordsearch. |
 | `redis-server` | Redis clone with single-threaded async processing, persistence (`dump.rdb`), and support for common commands (`GET`, `SET`, `LPUSH`, `KEYS`, etc.). |
+| `torrent`      | BitTorrent client with custom bencode, tracker I/O, poll-based peer messaging, piece hashing, async disk writes, and resume support. |
 | `url-shortner` | An in-memory, async C++ URL shortener deployed on AWS with a minimalist HTML/CSS/JS UI. |
 | `webdriverxx`  | Header-only C++ Selenium WebDriver client with support for Chrome, Firefox, Edge and features like RAII sessions and detailed logging. |
 
@@ -26,7 +27,6 @@ A collection of hands-on C++ projects exploring everything from system tools and
 
 | Header                 | Description                                                                                                   |
 | ---------------------- | ------------------------------------------------------------------------------------------------------------- |
-| `webdriverxx/`         | Header-only Selenium WebDriver client with RAII sessions, logging, and support for major browsers.            |
 | `cli/argparse.hpp`     | Lightweight single-header argument parser, inspired by Python’s argparse.                                     |
 | `misc/CSVUtil.hpp`     | CSV reader/writer mimicking Python’s `csv` module.                                                            |
 | `misc/zhelper.hpp`     | Simplified zlib wrapper for compression/decompression with file I/O support.                                  |
@@ -38,3 +38,10 @@ A collection of hands-on C++ projects exploring everything from system tools and
 | `misc/fnmatch.hpp`     | Filename matching utility similar to Python’s `fnmatch`.                                                      |
 | `misc/iniparser.hpp`   | INI config parser with an interface similar to Python’s `configparser`.                                       |
 | `json-parser/json.hpp` | Standalone JSON parser with object manipulation and validation support. First project; may be messy.          |
+| `networking/net.hpp`   | TCP/SSL sockets, serialization helpers, safer wrappers, and other goodies                                     |
+
+---
+
+### License
+
+This collection of projects is licensed under the MIT License. See the LICENSE file for details.
