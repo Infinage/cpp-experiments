@@ -4,7 +4,7 @@
 #include "../include/protocol.hpp"
 
 namespace Torrent {
-    std::vector<std::pair<std::string, std::uint16_t>> TorrentTracker::getUDPPeers(long timeout) {
+    std::vector<std::pair<std::string, std::uint16_t>> TorrentTracker::getUDPPeers(int timeout) {
         // Build & send a connection request (TODO: Implement retry logic)
         [[maybe_unused]] long sentBytes;
         std::string cReq {buildConnectionRequest()};
@@ -49,7 +49,7 @@ namespace Torrent {
         return peers;
     }
 
-    std::vector<std::pair<std::string, std::uint16_t>> TorrentTracker::getTCPPeers(long timeout) {
+    std::vector<std::pair<std::string, std::uint16_t>> TorrentTracker::getTCPPeers(int timeout) {
         announceURL.params.clear();
         announceURL.setParam("info_hash", torrentFile.infoHash);
         announceURL.setParam("peer_id", peerID);
@@ -70,7 +70,7 @@ namespace Torrent {
         return peers;
     }
 
-    std::vector<std::pair<std::string, std::uint16_t>> TorrentTracker::getPeers(long timeout) {
+    std::vector<std::pair<std::string, std::uint16_t>> TorrentTracker::getPeers(int timeout) {
         return announceURL.protocol == "udp"? getUDPPeers(timeout): getTCPPeers(timeout);
     }
 

@@ -14,6 +14,19 @@
 #include "../misc/ordered_map.hpp"
 
 namespace argparse {
+    namespace validators {
+        template<typename T> requires std::is_arithmetic_v<T>
+        decltype(auto) between(T start, T end) {
+            return [start, end](T n) { return start <= n && n <= end; };
+        }
+
+        template<typename T>
+        decltype(auto) isIn(std::initializer_list<T> options) {
+            std::vector<T> copy {options};
+            return [copy](T val) { return std::ranges::find(copy, val) != copy.end(); };
+        }
+    }
+
     enum ARGTYPE { POSITIONAL, NAMED, BOTH };
 
     using VALUE_TYPE = std::variant<
@@ -337,6 +350,98 @@ namespace argparse {
                 }
             }
 
+            // Bread and butter, recursively call subcommands if found
+            // Skip parsing parent and validating parent if subcommand has been found
+            void _parseArgs(int argc, char** argv, std::size_t parseStartIdx = 0) {
+                // Update references if not already done
+                updateReferences();
+
+                // If this func was called, set touched as true
+                touched = true;
+
+                // Convert to strings for ease of parsing
+                const std::vector<std::string> argVec {argv, argv+argc};
+
+                // Parse the args
+                std::size_t position {0}; bool explicitPositionalArgMarker {false};
+                for (std::size_t i {parseStartIdx + 1}; i < argVec.size(); i++) {
+                    std::string arg {argVec[i]};
+
+                    // Marks the start of positional argument start (optional)
+                    if (arg == "--") {
+                        explicitPositionalArgMarker = true;
+                    }
+
+                    // Named arg, eg: "--age=12" (or) "--age 12"
+                    else if (!explicitPositionalArgMarker && arg.starts_with("--")) {
+                        arg = arg.substr(2); std::string value;
+                        std::tie(arg, value) = splitArg(arg);
+
+                        auto it {namedArgs.find(arg)};
+                        std::optional<std::string> ip1 {i == argVec.size() - 1? std::nullopt: std::optional{argVec[i + 1]}};
+                        if (it == namedArgs.end())
+                            throw std::runtime_error("Argparse Error: Unknown named argument passed: " + arg);
+                        else if (!value.empty())
+                            it->second.set(value);
+                        else if (!ip1 || ip1->starts_with("--") || (ip1->starts_with('-') && ip1->size() == 2 && !std::isdigit(ip1->at(1))))
+                            it->second.set();
+                        else
+                            it->second.set(argVec[++i]);
+                    }
+
+                    // Aliased arg, eg: "-a 20"
+                    else if (!explicitPositionalArgMarker && arg.starts_with('-')) {
+                        arg = arg.substr(1);
+                        auto it {aliasedArgs.find(arg)};
+                        if (it == aliasedArgs.end())
+                            throw std::runtime_error("Argparse Error: Unknown aliased argument passed: " + arg);
+
+                        std::optional<std::string> ip1 {i == argVec.size() - 1? std::nullopt: std::optional{argVec[i + 1]}};
+                        if (!ip1 || ip1->starts_with("--") || (ip1->starts_with('-') && ip1->size() == 2 && !std::isdigit(ip1->at(1))))
+                            it->second.set();
+                        else
+                            it->second.set(argVec[++i]);
+                    }
+
+                    // Check if the arg is command, doing this check here allows us to processes
+                    // no subcommands uptil this point if we wanted to
+                    // Recursive call - skip validating the parent parser; hence the return
+                    else if (!explicitPositionalArgMarker && subcommands.find(arg) != subcommands.end()) {
+                        subcommands.at(arg)._parseArgs(argc, argv, i);
+                        return;
+                    }
+
+                    // None of the options suit us, maybe this is a positional argument
+                    else {
+                        // Once positional arg starts, no turning back
+                        explicitPositionalArgMarker = true;
+
+                        // If already set, move on
+                        while (position < positionalArgs.size() && positionalArgs.at(position).isValueSet()) 
+                            position++;
+
+                        // If no positional args, left throw error
+                        if (position >= positionalArgs.size())
+                            throw std::runtime_error("Argparse Error: Unknown positional argument passed: " + arg);
+
+                        positionalArgs.at(position++).set(arg);
+                    }
+
+                    // Check if help parameter has been set
+                    // If yes, stop the parsing & exit early
+                    if (allArgs.at(helpArgName).get<bool>()) {
+                        std::cout << getHelp() << '\n';
+                        std::exit(1);
+                    }
+                }
+
+                // Check if all args are satisified
+                const std::string missingArg {check()};
+                if (!missingArg.empty())
+                    throw std::runtime_error("Argparse Error: Missing value for argument: " + missingArg);
+            }
+
+
         public:
             ArgumentParser(
                 const std::string &name, 
@@ -406,96 +511,9 @@ namespace argparse {
                 else return it->second.isValueSet() || it->second.isDefaultSet();
             }
 
-            // Bread and butter, recursively call subcommands if found
-            // Skip parsing parent and validating parent if subcommand has been found
-            void parseArgs(int argc, char** argv, std::size_t parseStartIdx = 0) {
-                // Update references if not already done
-                updateReferences();
-
-                // If this func was called, set touched as true
-                touched = true;
-
-                // Convert to strings for ease of parsing
-                const std::vector<std::string> argVec {argv, argv+argc};
-
-                // Parse the args
-                std::size_t position {0}; bool explicitPositionalArgMarker {false};
-                for (std::size_t i {parseStartIdx + 1}; i < argVec.size(); i++) {
-                    std::string arg {argVec[i]};
-
-                    // Marks the start of positional argument start (optional)
-                    if (arg == "--") {
-                        explicitPositionalArgMarker = true;
-                    }
-
-                    // Named arg, eg: "--age=12" (or) "--age 12"
-                    else if (!explicitPositionalArgMarker && arg.starts_with("--")) {
-                        arg = arg.substr(2); std::string value;
-                        std::tie(arg, value) = splitArg(arg);
-
-                        auto it {namedArgs.find(arg)};
-                        std::optional<std::string> ip1 {i == argVec.size() - 1? std::nullopt: std::optional{argVec[i + 1]}};
-                        if (it == namedArgs.end())
-                            throw std::runtime_error("Argparse Error: Unknown named argument passed: " + arg);
-                        else if (!value.empty())
-                            it->second.set(value);
-                        else if (!ip1 || ip1->starts_with("--") || (ip1->starts_with('-') && ip1->size() == 2 && !std::isdigit(ip1->at(1))))
-                            it->second.set();
-                        else
-                            it->second.set(argVec[++i]);
-                    }
-
-                    // Aliased arg, eg: "-a 20"
-                    else if (!explicitPositionalArgMarker && arg.starts_with('-')) {
-                        arg = arg.substr(1);
-                        auto it {aliasedArgs.find(arg)};
-                        if (it == aliasedArgs.end())
-                            throw std::runtime_error("Argparse Error: Unknown aliased argument passed: " + arg);
-
-                        std::optional<std::string> ip1 {i == argVec.size() - 1? std::nullopt: std::optional{argVec[i + 1]}};
-                        if (!ip1 || ip1->starts_with("--") || (ip1->starts_with('-') && ip1->size() == 2 && !std::isdigit(ip1->at(1))))
-                            it->second.set();
-                        else
-                            it->second.set(argVec[++i]);
-                    }
-
-                    // Check if the arg is command, doing this check here allows us to processes
-                    // no subcommands uptil this point if we wanted to
-                    // Recursive call - skip validating the parent parser; hence the return
-                    else if (!explicitPositionalArgMarker && subcommands.find(arg) != subcommands.end()) {
-                        subcommands.at(arg).parseArgs(argc, argv, i);
-                        return;
-                    }
-
-                    // None of the options suit us, maybe this is a positional argument
-                    else {
-                        // Once positional arg starts, no turning back
-                        explicitPositionalArgMarker = true;
-
-                        // If already set, move on
-                        while (position < positionalArgs.size() && positionalArgs.at(position).isValueSet()) 
-                            position++;
-
-                        // If no positional args, left throw error
-                        if (position >= positionalArgs.size())
-                            throw std::runtime_error("Argparse Error: Unknown positional argument passed: " + arg);
-
-                        positionalArgs.at(position++).set(arg);
-                    }
-
-                    // Check if help parameter has been set
-                    // If yes, stop the parsing & exit early
-                    if (allArgs.at(helpArgName).get<bool>()) {
-                        std::cout << getHelp() << '\n';
-                        std::exit(1);
-                    }
-                }
-
-                // Check if all args are satisified
-                const std::string missingArg {check()};
-                if (!missingArg.empty())
-                    throw std::runtime_error("Argparse Error: Missing value for argument: " + missingArg);
-            }
+            // Mandatory to call this post defining the arguments, may throw 
+            // if any of the internal checks fail such as missing required args
+            void parseArgs(int argc, char** argv) { _parseArgs(argc, argv); }
 
             // Add a new argument for the parser, no duplicates
             ArgumentParser &addArgument(const Argument& arg) {

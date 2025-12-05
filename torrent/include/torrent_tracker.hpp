@@ -7,8 +7,8 @@
 namespace Torrent {
     class TorrentTracker {
             private:
-                std::vector<std::pair<std::string, std::uint16_t>> getUDPPeers(long timeout);
-                std::vector<std::pair<std::string, std::uint16_t>> getTCPPeers(long timeout);
+                std::vector<std::pair<std::string, std::uint16_t>> getUDPPeers(int timeout);
+                std::vector<std::pair<std::string, std::uint16_t>> getTCPPeers(int timeout);
 
             public:
                 const std::string peerID;
@@ -18,6 +18,6 @@ namespace Torrent {
 
             public:
                 TorrentTracker(const TorrentFile &torrentFile);
-                [[nodiscard]] std::vector<std::pair<std::string, std::uint16_t>> getPeers(long timeout = 10);
+                [[nodiscard]] std::vector<std::pair<std::string, std::uint16_t>> getPeers(int timeout);
         };
 }

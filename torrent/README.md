@@ -44,6 +44,7 @@ Only OpenSSL is used (for HTTPS trackers). Everything else is handcrafted:
 * `json.hpp` → JSON support
 * `hashlib.hpp` → SHA1 implementation
 * `net.hpp` → sockets, DNS, URL and many more
+* `argparse.hpp` → CLI argment parsing
 
 ---
 
@@ -115,18 +116,17 @@ TorrentFile tf{"ubuntu.torrent"};
 
 Parses bencode → extracts metadata → computes info_hash → loads piece hashes.
 
-### 2. **Ask Trackers for Peers**
+### 2. **Initalize torrent tracker to fetch peers**
 
 ```
 TorrentTracker tt{tf};
-auto peers = tt.getPeers();
 ```
 
 ### 3. **Start Downloading**
 
 ```
-TorrentDownloader dl{tf, "downloads/"};
-dl.download(peers);
+TorrentDownloader dl{tt, "./downloads"};
+dl.download();
 ```
 
 Manages all peers concurrently using poll().
@@ -139,7 +139,6 @@ When you hit Ctrl+C or an exception occurs, `TorrentDownloader`'s destructor col
 
 ## 📌 Roadmap
 
-* [ ] Better command line interface
 * [ ] Add docker snapshot to freeze the environment (my libraries evolve fast :)
 * [ ] Cleaner logs, implement logging with verbose/terse modes
 * [ ] Add retry logic with incremental/exponential backoff for tracker failures

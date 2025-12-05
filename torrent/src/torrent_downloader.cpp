@@ -80,16 +80,17 @@ namespace Torrent {
     }
 
     TorrentDownloader::TorrentDownloader(
-        const TorrentFile &torrentFile, const std::filesystem::path downloadDir, 
+        TorrentTracker &tTracker, const std::filesystem::path downloadDir, 
         const std::uint16_t bSize, const std::uint8_t backlog, 
-        const std::uint8_t unchokeAttempts, const std::uint8_t maxWaitTime
+        const std::uint8_t unchokeAttempts, const std::uint16_t maxWaitTime
     ): 
-        torrentFile {torrentFile},
+        torrentFile {tTracker.torrentFile},
+        torrentTracker {tTracker},
         peerID{generatePeerID()},
         blockSize {bSize},
+        MAX_WAIT_TIME {maxWaitTime},
         MAX_BACKLOG {backlog}, 
         MAX_UNCHOKE_ATTEMPTS {unchokeAttempts},
-        MAX_WAIT_TIME {maxWaitTime},
         StateSavePath {downloadDir / ("." + torrentFile.name + ".ctorrent")},
         coldStart {!std::filesystem::exists(StateSavePath)},
         pieceManager {torrentFile.length, torrentFile.pieceSize, bSize, torrentFile.pieceBlob},
@@ -114,7 +115,10 @@ namespace Torrent {
         }
     }
 
-    void TorrentDownloader::download(std::vector<std::pair<std::string, std::uint16_t>> &peerList) {
+    void TorrentDownloader::download(int timeout) {
+        // Get the peers from the tracker object
+        std::vector<std::pair<std::string, std::uint16_t>> peerList {torrentTracker.getPeers(timeout)};
+
         if (peerList.empty()) { std::println(std::cerr, "No peers available"); return; }
         std::println("Discovered {} peers.", peerList.size());
 

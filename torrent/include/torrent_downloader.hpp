@@ -1,7 +1,7 @@
 #pragma once
 
 #include "disk_writer.hpp"
-#include "torrent_file.hpp"
+#include "torrent_tracker.hpp"
 #include "peer_context.hpp"
 #include "piece_manager.hpp"
 
@@ -15,23 +15,26 @@ namespace Torrent {
             ~TorrentDownloader();
 
             TorrentDownloader(
-                const TorrentFile &torrentFile, const std::filesystem::path downloadDir, 
+                TorrentTracker &tTracker, const std::filesystem::path downloadDir, 
                 const std::uint16_t bSize = 1 << 14, const std::uint8_t backlog = 8,
-                const std::uint8_t unchokeAttempts = 3, const std::uint8_t maxWaitTime = 3
+                const std::uint8_t unchokeAttempts = 3, const std::uint16_t maxWaitTime = 5
             );
 
-            void download(std::vector<std::pair<std::string, std::uint16_t>> &peers);
+            void download(int timeout = 10);
 
         private:
             // Const reference to torrent file meta data
             const TorrentFile &torrentFile;
 
+            // Non const reference to torrent tracker
+            TorrentTracker &torrentTracker;
+
             // Random peer ID to identify ctorrent client
             const std::string peerID;
 
             // User defined constants
-            const std::uint16_t blockSize;
-            const std::uint8_t MAX_BACKLOG, MAX_UNCHOKE_ATTEMPTS, MAX_WAIT_TIME;
+            const std::uint16_t blockSize, MAX_WAIT_TIME;
+            const std::uint8_t MAX_BACKLOG, MAX_UNCHOKE_ATTEMPTS;
 
             // Save torrent state
             const std::filesystem::path StateSavePath;

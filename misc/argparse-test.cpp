@@ -1,20 +1,14 @@
 #include "../cli/argparse.hpp"
 
-// Helper that returns a function that checks that the value is between range
-template<typename T> requires std::is_arithmetic_v<T>
-std::function<bool(T)> between(T start, T end) {
-    return [start, end](T n) { return start <= n && n <= end; };
-}
-
 int main(int argc, char **argv) {
     try {
         // Main argument parser
         argparse::ArgumentParser program{"fittrack"};
         program.addArgument("user").help("User's name").alias("u").required();
         program.addArgument("age").help("User's age").defaultValue(18).alias("a")
-            .validate<int>(between(0, 100));
+            .validate<int>(argparse::validators::between(0, 100));
         program.addArgument("weight").help("Current weight (kg)").alias("w").required().scan<double>()
-            .validate<double>(between(0, 800));
+            .validate<double>(argparse::validators::between(0, 800));
         program.addArgument("goal").help("Fitness goal (e.g., weight loss, muscle gain)")
             .alias("g").implicitValue(std::string{"weight loss"});
 

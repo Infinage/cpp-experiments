@@ -5,10 +5,10 @@
 namespace Torrent {
     DiskWriter::DiskWriter(
         const std::string name, const std::uint64_t totalSize, const std::uint32_t pieceSize, 
-        const std::filesystem::path downloadDir, bool coldStart
+        const std::filesystem::path downloadDir, bool coldStart, const std::size_t maxQueueSize
     ): 
-        name {name}, totalSize {totalSize},
-        pieceSize {pieceSize}, DownloadDir {downloadDir}
+        name {name}, totalSize {totalSize}, pieceSize {pieceSize}, 
+        DownloadDir {downloadDir}, MAX_QUEUE {maxQueueSize}
     {
         // Create download directory if it doesn't already exist
         if (!std::filesystem::exists(DownloadDir))

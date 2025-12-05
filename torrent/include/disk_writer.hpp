@@ -14,11 +14,12 @@
 namespace Torrent {
     class DiskWriter {
         private:
-            static constexpr std::size_t MAX_QUEUE {5000};
             const std::string name;
             const std::uint64_t totalSize; 
             const std::uint32_t pieceSize;
             const std::filesystem::path DownloadDir;
+            const std::size_t MAX_QUEUE;
+
             std::filesystem::path DownloadTempFilePath;
             std::fstream DownloadTempFile;
 
@@ -35,7 +36,7 @@ namespace Torrent {
         public:
             ~DiskWriter();
             DiskWriter(const std::string name, const std::uint64_t totalSize, const std::uint32_t pieceSize, 
-                    const std::filesystem::path downloadDir, bool coldStart);
+                    const std::filesystem::path downloadDir, bool coldStart, const std::size_t maxQueueSize = 5000);
             void schedule(std::uint64_t offset, std::string &&piece);
             [[nodiscard]] bool finish(const std::vector<FileStruct> &files, bool status);
 
