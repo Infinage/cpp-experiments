@@ -27,9 +27,8 @@ namespace Torrent {
         std::string sendBuffer {};   // pending outgoing data
 
         // Last read event we received from the client
-        std::chrono::steady_clock::time_point lastReadTimeStamp {
-            std::chrono::steady_clock::now()};
+        std::chrono::steady_clock::time_point lastReadTimeStamp;
 
-        inline std::string str() const { return std::format("[{}:{}]", ip, port); }
+        inline std::string str() const { return std::format("{}:{}", ip, port); }
     };
 }

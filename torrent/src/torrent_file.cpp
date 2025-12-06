@@ -3,6 +3,7 @@
 
 #include "../../cryptography/hashlib.hpp"
 #include "../../json-parser/json.hpp"
+#include "../../misc/logger.hpp"
 
 #include <fstream>
 
@@ -68,5 +69,22 @@ namespace Torrent {
 
         // Reencode just the info dict to compute its sha1 hash (raw hash)
         infoHash = hashutil::sha1(Bencode::encode(info.ptr, true), true);
+
+        // Print out the meta
+        Logging::Dynamic::Debug(
+            "Loaded torrent metadata\n"
+            "  {:<12} {}\n"
+            "  {:<12} {}\n"
+            "  {:<12} {}\n"
+            "  {:<12} {}\n"
+            "  {:<12} {}\n"
+            "  {:<12} {}",
+            "Name:",       name,
+            "Length:",     length,
+            "Piece Size:", pieceSize,
+            "Num Pieces:", numPieces,
+            "Announce:",   announceURL,
+            "File Count:", files.size()
+        );
     }
 }

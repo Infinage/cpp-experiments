@@ -28,7 +28,7 @@ namespace Torrent {
                 std::uint32_t requestBlockNum(std::uint16_t blockOffset);
 
                 bool finished() const;
-                void writeBlock(std::uint32_t blockOffset, std::string payload);
+                void writeBlock(std::uint32_t blockOffset, std::string &&payload);
                 Piece(const PieceManager &outer, const std::uint32_t pieceIdx);
             };
 

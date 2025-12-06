@@ -3,24 +3,29 @@
 #include "../include/protocol.hpp"
 
 #include "../../networking/net.hpp"
+#include "../../misc/logger.hpp"
 
 #include <csignal>
 #include <cstring>
 #include <iostream>
-#include <print>
 
 namespace Torrent {
     void TorrentDownloader::handleHave(const std::string &payload, PeerContext &ctx) {
         std::uint32_t pieceIdx;
         std::memcpy(&pieceIdx, payload.c_str(), 4);
-        ctx.haves.insert(net::utils::bswap(pieceIdx));
+        pieceIdx = net::utils::bswap(pieceIdx);
+        ctx.haves.insert(pieceIdx);
+        Logging::Dynamic::Trace("[{}] Client has Piece #{}", ctx.str(), pieceIdx);
     }
 
     void TorrentDownloader::handleBitfield(const std::string &payload, PeerContext &ctx) {
-        if (payload.size() != (torrentFile.numPieces + 7) / 8)
-            std::println(std::cerr, "Bitfield received from client "
-                "has invalid length: {}", payload.size());
+        if (payload.size() != (torrentFile.numPieces + 7) / 8) {
+            Logging::Dynamic::Debug("[{}] Bitfield received has invalid length: {}, "
+                    "will be dropped", ctx.str(), payload.size());
+            return;
+        }
         ctx.haves = readBitField(payload);
+        Logging::Dynamic::Trace("[{}] Client has Pieces #{}", ctx.str(), ctx.haves.size());
     }
 
     void TorrentDownloader::handlePiece(const std::string &payload, PeerContext &ctx) {
@@ -34,22 +39,21 @@ namespace Torrent {
 
         auto pendingIt {ctx.pending.find({pIndex, pBegin, 0})};
         if (pendingIt == ctx.pending.end()) {
-            std::println("Piece# {}, Block Offset {} was not requested yet or has already "
-                "been downloaded, dropping.", pIndex, pBegin);
+            Logging::Dynamic::Debug("[{}] Piece# {}, Block Offset {} was not requested "
+                "yet or has already been downloaded, dropping.", ctx.str(), pIndex, pBegin);
             return;
         }
 
         // Convert the offset into a valid block index
         bool validBlock {payload.size() - 8 == pendingIt->blockSize};
         ctx.pending.erase(pendingIt); --ctx.backlog;
-        std::println("{} Piece: {}, Block Offset: {} parsed from client {}", 
-            validBlock? "Valid": "Invalid", pIndex, pBegin, ctx.str());
+        Logging::Dynamic::Debug("[{}] Piece: {}, Block Offset {} => {}", ctx.str(), 
+            pIndex, pBegin, validBlock? "Valid": "Invalid");
 
         // Notify piece manager that we have received a block
         if (validBlock) {
             auto [pieceReady, piece] {pieceManager.onBlockReceived(pIndex, pBegin, payload)};
             if (pieceReady) {
-                std::println("Scheduling piece #{} write to disk", pIndex);
                 diskWriter.schedule(pIndex * torrentFile.pieceSize, std::move(piece));
             }
         }
@@ -76,13 +80,15 @@ namespace Torrent {
         std::string bitField {writeBitField(haves)}; 
         std::ofstream ofs {StateSavePath, std::ios::binary};
         ofs.write(bitField.c_str(), static_cast<long>(bitField.size()));
-        std::println("Download state saved to disk, {}/{} pieces were completed", haves.size(), torrentFile.numPieces);
+        Logging::Dynamic::Info("Download state saved to disk, {}/{} pieces "
+            "were completed", haves.size(), torrentFile.numPieces);
     }
 
     TorrentDownloader::TorrentDownloader(
         TorrentTracker &tTracker, const std::filesystem::path downloadDir, 
         const std::uint16_t bSize, const std::uint8_t backlog, 
-        const std::uint8_t unchokeAttempts, const std::uint16_t maxWaitTime
+        const std::uint8_t unchokeAttempts, const std::uint16_t maxWaitTime,
+        const std::size_t maxDiskQueue
     ): 
         torrentFile {tTracker.torrentFile},
         torrentTracker {tTracker},
@@ -94,7 +100,8 @@ namespace Torrent {
         StateSavePath {downloadDir / ("." + torrentFile.name + ".ctorrent")},
         coldStart {!std::filesystem::exists(StateSavePath)},
         pieceManager {torrentFile.length, torrentFile.pieceSize, bSize, torrentFile.pieceBlob},
-        diskWriter {torrentFile.name, torrentFile.length, torrentFile.pieceSize, downloadDir, coldStart}
+        diskWriter {torrentFile.name, torrentFile.length, torrentFile.pieceSize, 
+            downloadDir, coldStart, maxDiskQueue}
     {
         // If save found reload the state
         if (!coldStart) {
@@ -106,10 +113,10 @@ namespace Torrent {
                 std::istreambuf_iterator<char>()};
             auto _haves {readBitField(bitFieldString)};
             if (_haves.empty() || *std::ranges::max_element(_haves) >= torrentFile.numPieces)
-                std::println("Download state save is corrupted, will be overwritten");
+                Logging::Dynamic::Warn("Download state save is corrupted, will be overwritten");
             else {
-                std::println("Download state reloaded, {}/{} no of pieces have been completed", 
-                        _haves.size(), torrentFile.numPieces);
+                Logging::Dynamic::Info("Download state reloaded, {}/{} pieces "
+                    "have been completed", _haves.size(), torrentFile.numPieces);
                 pieceManager.getHaves() = std::move(_haves);
             }
         }
@@ -118,20 +125,21 @@ namespace Torrent {
     void TorrentDownloader::download(int timeout) {
         // Get the peers from the tracker object
         std::vector<std::pair<std::string, std::uint16_t>> peerList {torrentTracker.getPeers(timeout)};
-
-        if (peerList.empty()) { std::println(std::cerr, "No peers available"); return; }
-        std::println("Discovered {} peers.", peerList.size());
+        if (peerList.empty()) { Logging::Dynamic::Error("No peers available"); return; }
 
         // Connect to all available peers
+        Logging::Dynamic::Info("Discovered {} peers.", peerList.size());
         std::string handshake {buildHandshake(torrentFile.infoHash, peerID)};
         net::PollManager pollManager; std::unordered_map<int, PeerContext> states;
         for (const auto &[ip, port]: peerList) {
             std::optional<net::IP> ipType {net::utils::checkIPType(ip)};
-            if (!ipType.has_value()) { std::println(std::cerr, "Invalid IP: {}", ip); continue; }
+            if (!ipType.has_value()) { Logging::Dynamic::Debug("Invalid IP: {}", ip); continue; }
             auto peer {net::Socket{net::SOCKTYPE::TCP, ipType.value()}};
             peer.setNonBlocking(); peer.connect(ip, port);
-            states.insert({peer.fd(), {.fd=peer.fd(), .ip=ip, .port=port, .sendBuffer=handshake}});
+            states.insert({peer.fd(), {.fd=peer.fd(), .ip=ip, .port=port, .sendBuffer=handshake, 
+                .lastReadTimeStamp=std::chrono::steady_clock::now()}});
             pollManager.track(std::move(peer), net::PollEventType::Writable);
+            Logging::Dynamic::Debug("Intiating connection with {}:{}", ip, port);
         }
 
         static bool interrupted {false};
@@ -143,28 +151,31 @@ namespace Torrent {
                 if (!ctx.closed && event & net::PollEventType::Readable) {
                     std::string recvBytes;
                     try { recvBytes = peer.recvAll(); } 
-                    catch (net::SocketError &err) { 
-                        std::println("Recv failed for {}, reason: {}", ctx.str(), err.what()); 
+                    catch (net::SocketError &err) {
+                        Logging::Dynamic::Debug("[{}] Recv from client failed: {}", ctx.str(), err.what());
                         ctx.closed = true;
                     }
 
                     if (!recvBytes.empty()) {
-                        std::println("Recv {} bytes from client: {}", recvBytes.size(), ctx.str());
+                        Logging::Dynamic::Debug("[{}] Recv {} bytes from client", ctx.str(), recvBytes.size());
                         ctx.lastReadTimeStamp = std::chrono::steady_clock::now();
 
-                        std::size_t iSize {ctx.recvBuffer.size()}; // Get existing buffer size to expand recvBuffer
+                        // Get existing buffer size to expand recvBuffer
+                        std::size_t iSize {ctx.recvBuffer.size()};
                         ctx.recvBuffer.resize(iSize + recvBytes.size());
                         std::memmove(ctx.recvBuffer.data() + iSize, recvBytes.data(), recvBytes.size());
+
+                        Logging::Dynamic::Trace("[{}] Current recv buffer size: {}", ctx.str(), ctx.recvBuffer.size());
 
                         if (!ctx.handshaked && ctx.recvBuffer.size() >= 68) {
                             ctx.handshaked = std::memcmp(handshake.data(), ctx.recvBuffer.data(), 20) == 0 
                                 && std::memcmp(handshake.data() + 28, ctx.recvBuffer.data() + 28, 20) == 0;
                             if (!ctx.handshaked) {
-                                std::println("Failed handshake with {}, client will be dropped", ctx.str());
+                                Logging::Dynamic::Debug("[{}] Handshake failed, will be dropped", ctx.str());
                                 ctx.closed = true;
                             } else {
                                 ctx.recvBuffer = ctx.recvBuffer.substr(68);
-                                std::println("Handshake established with client: {}", ctx.str());
+                                Logging::Dynamic::Debug("[{}] Handshake established", ctx.str());
                                 ctx.sendBuffer = buildInterested();
                             }
                         }
@@ -173,7 +184,7 @@ namespace Torrent {
                             std::uint32_t msgLen;
                             while ((msgLen = IsCompleteMessage(ctx.recvBuffer)) > 0 && !ctx.closed) {
                                 auto [msgType, message] {parseMessage(std::string_view{ctx.recvBuffer.data(), msgLen + 4})};
-                                std::println("Parsed message of type: {} from client: {}", str(msgType), ctx.str());
+                                Logging::Dynamic::Debug("[{}] Received {} from client", ctx.str(), str(msgType));
 
                                 // Process the message and update the internal context
                                 switch (msgType) {
@@ -189,14 +200,14 @@ namespace Torrent {
                                 if (ctx.choked) {
                                     std::string unchokeMsg {buildUnchoke()};
                                     if (ctx.unchokeAttempts > MAX_UNCHOKE_ATTEMPTS) {
-                                        std::println("Exceeded max unchoke attempts, disconnecting {}", ctx.str());
+                                        Logging::Dynamic::Debug("[{}] Exceeded max unchoke attempts, disconnecting", ctx.str());
                                         ctx.closed = true;
                                     }
 
                                     // If buffer already has unchoke, we haven't had
                                     // a chance to send to client yet, don't increase attempts
                                     else if (ctx.sendBuffer != unchokeMsg) {
-                                        std::println("Building unchoke for {}", ctx.str());
+                                        Logging::Dynamic::Debug("[{}] Building unchoke for client", ctx.str());
                                         ctx.sendBuffer = unchokeMsg;
                                         ++ctx.unchokeAttempts;
                                     }
@@ -205,9 +216,10 @@ namespace Torrent {
                                 // If unchoked & peer not throttled, try requesting for block(s) available from peer
                                 else if (ctx.backlog < MAX_BACKLOG) {
                                     auto pendingBlocks {pieceManager.getPendingBlocks(ctx.haves, MAX_BACKLOG - ctx.backlog)};
+                                    Logging::Dynamic::Debug("[{}] Building request for {} pieces", ctx.str(), pendingBlocks.size());
                                     for (auto [pieceIdx, blockOffset, blockSize]: pendingBlocks) {
-                                        std::println("Building request for piece# {}, block Offset {}, Block size {} for {}", 
-                                                pieceIdx, blockOffset, blockSize, ctx.str());
+                                        Logging::Dynamic::Trace("[{}] Building request for piece (pIdx={}, bOffset={}, bSize={})", 
+                                                ctx.str(), pieceIdx, blockOffset, blockSize);
                                         ctx.sendBuffer += buildRequest(pieceIdx, blockOffset, blockSize);
                                         ctx.pending.emplace(pieceIdx, blockOffset, blockSize);
                                         ++ctx.backlog;
@@ -227,62 +239,75 @@ namespace Torrent {
                     try {
                         long sentBytes {ctx.sendBuffer.empty()? 0: peer.sendAll(ctx.sendBuffer)};
                         if (sentBytes) {
-                            std::println("Sent {} bytes to client: {}", sentBytes, ctx.str());
+                            Logging::Dynamic::Debug("[{}] Sent {} bytes to client", ctx.str(), sentBytes);
                             ctx.sendBuffer = ctx.sendBuffer.substr(static_cast<std::size_t>(sentBytes));
                         }
                     } catch (net::SocketError &err) { 
-                        std::println("Send failed for {}, reason: {}", ctx.str(), err.what()); 
+                        Logging::Dynamic::Debug("[{}] Send to client failed: {}", ctx.str(), err.what());
                         ctx.closed = true;
                     }
                 }
 
                 // Drop client on closed or err event
-                if (event & net::PollEventType::Error || event & net::PollEventType::Closed) { 
-                    std::println("Got an closed/err poll event from {}", ctx.str());
+                if (event & net::PollEventType::Error || event & net::PollEventType::Closed || peer.fd() == -1) { 
+                    Logging::Dynamic::Debug("[{}] Got closed/err event", ctx.str());
                     ctx.closed = true;
                 }
 
-                // Close the connection if already dropped, erase all pending states
-                if (ctx.closed || peer.fd() == -1) {
-                    std::println("Dropping client {}", ctx.str());
-                    clearPendingFromPeer(ctx);
-                    pollManager.untrack(ctx.fd);
-                    states.erase(ctx.fd);
-                }
-
                 // Only track for events we are interested in
-                else {
-                    if (ctx.sendBuffer.empty())
+                if (!ctx.closed) {
+                    if (ctx.sendBuffer.empty()) {
                         pollManager.updateTracking(peer.fd(), net::PollEventType::Readable);
-                    else if (ctx.handshaked)
+                        Logging::Dynamic::Trace("[{}] Send buffer empty, listening only for READABLE events", ctx.str());
+                    } else if (ctx.handshaked) {
                         pollManager.updateTracking(peer.fd(), net::PollEventType::Readable | net::PollEventType::Writable);
+                        Logging::Dynamic::Trace("[{}] Send buffer not empty, listening for READABLE & WRITABLE events", ctx.str());
+                    }
                 }
             } // for poll loop
 
-            // Process the clients that didn't send us anything, simply clear any pending requests
+            // Process the clients that didn't send us anything or were closed inside our poll loop
             for (auto &[fd, ctx]: states) {
                 auto timeDiff {std::chrono::steady_clock::now() - ctx.lastReadTimeStamp};
                 auto diffInSec {std::chrono::duration_cast<std::chrono::seconds>(timeDiff).count()};
-                if (diffInSec >= MAX_WAIT_TIME) {
-                    ctx.sendBuffer = "";
-                    // If !handshaked or choked just close the conn
-                    if (ctx.choked) ctx.closed = true;
-                    else {
+                // Good peers
+                if (!ctx.closed && diffInSec < MAX_WAIT_TIME) continue;
+
+                // Untracked peers
+                else if (!pollManager.hasSocket(ctx.fd)) continue;
+
+                // Timed out peers (handshaked or not handshaked)
+                else if (!ctx.closed) {
+                    Logging::Dynamic::Trace("[{}] Client idled out, no message received for {}s", ctx.str(), diffInSec);
+                    if (ctx.choked) {
+                        Logging::Dynamic::Debug("[{}] Not handshaked or choked for too long, dropping", ctx.str(), diffInSec);
+                        ctx.closed = true;
+                    } else if (ctx.backlog) {
+                        Logging::Dynamic::Debug("[{}] Building cancel request for {} pieces", ctx.str(), ctx.pending.size());
+                        ctx.sendBuffer = "";
                         for (auto [pieceIdx, blockOffset, blockSize]: ctx.pending) {
-                            std::println("Building cancel request for piece# {}, block Offset {}, "
-                                "Block size {} for {}", pieceIdx, blockOffset, blockSize, ctx.str());
+                            Logging::Dynamic::Trace("[{}] Building cancel request for piece (pIdx={}, bOffset={}, bSize={})", 
+                                ctx.str(), pieceIdx, blockOffset, blockSize);
                             ctx.sendBuffer += buildRequest(pieceIdx, blockOffset, blockSize, false);
                         }
+                        clearPendingFromPeer(ctx);
                     }
+                }
+
+                // Close the connection if dropped, erase all its pending states
+                if (ctx.closed) {
                     clearPendingFromPeer(ctx);
+                    pollManager.untrack(ctx.fd);
+                    Logging::Dynamic::Debug("[{}] Dropped client, still connected to {} clients", 
+                        ctx.str(), pollManager.size());
                 }
             }
 
         } // while not interrupted && pieceManager not empty && poll manager has tracking sockets
 
         // Display status to user
-        if (interrupted) std::println("Interupt received, states will be saved before exit");
+        if (interrupted) Logging::Dynamic::Warn("Interupt received, states will be saved before exit");
         bool status {diskWriter.finish(torrentFile.files, pieceManager.finished())};
-        std::println("Download status: {}", (status? "Completed": "Failed"));
+        Logging::Dynamic::Info("Download status: {}", (status? "DONE": "PENDING"));
     }
 };

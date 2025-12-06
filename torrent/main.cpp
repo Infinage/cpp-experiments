@@ -26,12 +26,12 @@ int main(int argc, char **argv) try {
     cli.addArgument("timeout", argparse::NAMED).alias("t").defaultValue(10)
         .validate<int>(argparse::validators::between(1, 120))
         .help("Timeout (in seconds) for network operations");
-    cli.addArgument("max-queue", argparse::NAMED).alias("Q").defaultValue(5000)
+    cli.addArgument("max-dqueue", argparse::NAMED).alias("Q").defaultValue(5000)
         .validate<int>(argparse::validators::between(1000, 20000))
         .help("Max pending validated pieces before disk writer blocks the main thread");
-    cli.addArgument("verbose", argparse::NAMED).alias("v").defaultValue(3)
-        .implicitValue(4).validate<int>(argparse::validators::between(1, 4))
-        .help("Controls logging verbosity (1=ERROR, 2=WARN, 3=INFO, 4=DEBUG)");
+    cli.addArgument("verbose", argparse::NAMED).alias("v").defaultValue<short>(3)
+        .implicitValue<short>(4).validate<short>(argparse::validators::between<short>(1, 5))
+        .help("Controls logging verbosity (1=ERROR, 2=WARN, 3=INFO, 4=DEBUG, 5=TRACE)");
     cli.description("A minimal BitTorrent client written in C++");
     cli.epilog("Most options are tuned to sane defaults. Adjust them only if you know what you’re optimizing.");
 
@@ -44,16 +44,19 @@ int main(int argc, char **argv) try {
     auto unchokeAttempts {static_cast<std::uint8_t>(cli.get<int>("unchoke-attempts"))};
     auto waitTime {static_cast<std::uint16_t>(cli.get<int>("max-wait"))};
     auto timeout {cli.get<int>("timeout")};
+    auto maxDiskQueue {static_cast<std::size_t>(cli.get<int>("max-dqueue"))};
+    auto verbose {cli.get<short>("verbose")};
+
+    // Verbosity of logger set by the verbosity cli arg (validated b/w 1-4)
+    Logging::Dynamic::setLogLevel(static_cast<Logging::Level>(verbose));
 
     // Actual torrent stuff
     Torrent::TorrentFile torrent{torrentFilePath};
     Torrent::TorrentTracker tTracker {torrent};
     Torrent::TorrentDownloader tDownloader {tTracker, downloadDirectory, blockSize, 
-        backlog, unchokeAttempts, waitTime};
+        backlog, unchokeAttempts, waitTime, maxDiskQueue};
     tDownloader.download(timeout);
 } 
 
 // Catch exceptions & just print the message, ensures RAII cleanup can happen
-catch (std::exception &ex) { 
-    Logging::Dynamic::Log(Logging::Level::ERROR, "{}", ex.what());
-}
+catch (std::exception &ex) { Logging::Dynamic::Error("{}", ex.what()); }

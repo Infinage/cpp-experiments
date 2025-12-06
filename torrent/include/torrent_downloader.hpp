@@ -17,7 +17,8 @@ namespace Torrent {
             TorrentDownloader(
                 TorrentTracker &tTracker, const std::filesystem::path downloadDir, 
                 const std::uint16_t bSize = 1 << 14, const std::uint8_t backlog = 8,
-                const std::uint8_t unchokeAttempts = 3, const std::uint16_t maxWaitTime = 5
+                const std::uint8_t unchokeAttempts = 3, const std::uint16_t maxWaitTime = 5,
+                const std::size_t maxDiskQueue = 5000
             );
 
             void download(int timeout = 10);

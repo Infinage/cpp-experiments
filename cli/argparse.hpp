@@ -182,6 +182,9 @@ namespace argparse {
                 _typeSet = true; _valueSet = true; return *this;
             }
 
+            // Will reset any default values set, used as first in the builder 
+            // pattern to set the argument's type. Useful when arg does not 
+            // take a default or an implicit value to explicitly mention its type
             template <ValidValueType T>
             Argument &scan() { 
                 if (_typeSet && !std::holds_alternative<T>(_value))
@@ -201,7 +204,8 @@ namespace argparse {
             Argument &implicitValue(const T &val) {
                 if (_typeSet && !std::holds_alternative<T>(_value))
                     throw std::runtime_error("Argparse Error: Type mismatch (implicit): " + _name);
-                _typeSet = true; _implicit = val;  _value = T{};
+                _typeSet = true; _implicit = val;  
+                if (!_defaultValueSet) _value = T{};
                 return *this;
             }
 
@@ -446,7 +450,7 @@ namespace argparse {
             ArgumentParser(
                 const std::string &name, 
                 const std::string &helpArgName = "help", 
-                const std::string &helpAliasName = ""
+                const std::string &helpAliasName = "h"
             ): 
                 name(name), 
                 helpArgName(helpArgName), 

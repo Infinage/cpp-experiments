@@ -1,6 +1,6 @@
 #include "../include/disk_writer.hpp"
 
-#include <print>
+#include "../../misc/logger.hpp"
 
 namespace Torrent {
     DiskWriter::DiskWriter(
@@ -49,10 +49,11 @@ namespace Torrent {
                         DownloadTempFile.write(piece.c_str(), static_cast<std::streamsize>(piece.size()));
                         if (!DownloadTempFile.good()) throw std::runtime_error("Write to temp file failed");
                         else if (++piecesWritten % MAX_QUEUE == 0) DownloadTempFile.flush();
+                        Logging::Dynamic::Debug("Piece #{} written to disk (ASYNC)", offset / this->pieceSize);
                     }
                 }
             } catch (std::exception &ex) { 
-                std::println("An exception occured inside writer thread: {}", ex.what());
+                Logging::Dynamic::Error("An exception occured inside writer thread: {}", ex.what());
                 exitCondition = true; tasksCV.notify_all();
             }
         }};
@@ -62,14 +63,19 @@ namespace Torrent {
         DownloadTempFile.seekp(static_cast<std::int64_t>(offset), std::ios::beg);
         DownloadTempFile.write(piece.c_str(), static_cast<std::streamsize>(piece.size()));
         if (!DownloadTempFile.good()) throw std::runtime_error("Write to temp file failed");
+        Logging::Dynamic::Debug("Piece #{} written to disk (SYNC)", offset / this->pieceSize);
     }
 
     void DiskWriter::schedule(std::uint64_t offset, std::string &&piece) {
+        std::size_t currPieceLen {piece.size()};
         std::unique_lock lock{taskMutex};
         tasksCV.wait(lock, [this]{ return exitCondition || tasks.size() < MAX_QUEUE; });
         if (exitCondition) throw std::runtime_error("Scheduled after exit called, state may be corrupt");
         tasks.emplace(offset, std::move(piece));
-        tasksCV.notify_one();
+        std::size_t queueItemCount {tasks.size()}; 
+        lock.unlock(); tasksCV.notify_one();
+        Logging::Dynamic::Debug("Piece (idx={}, offset={}, size={}) scheduled, total queue size: {}", 
+            offset / this->pieceSize, currPieceLen, offset, queueItemCount);
     }
 
     bool DiskWriter::chunkCopy(std::ifstream &source, std::ofstream &destination, std::uint64_t size, std::uint64_t chunkSize) {
@@ -88,6 +94,7 @@ namespace Torrent {
 
     DiskWriter::~DiskWriter() {
         if (!exitCondition) {
+            Logging::Dynamic::Warn("Disk writer cleanup called abnormally");
             exitCondition = true;
             tasksCV.notify_all();
             writer.join();
@@ -100,6 +107,9 @@ namespace Torrent {
         tasksCV.notify_all();
         if (writer.joinable()) writer.join();
 
+        Logging::Dynamic::Info("Stopping disk writer, download completion status: {}", 
+            status? "DONE": "PENDING");
+
         if (!status) return false;
 
         std::ifstream ifs {DownloadTempFilePath, std::ios::binary};
@@ -111,8 +121,10 @@ namespace Torrent {
             std::ofstream ofs {filePath, std::ios::binary};
             if (!ofs || !chunkCopy(ifs, ofs, fileSize)) 
                 return false;
+            Logging::Dynamic::Info("File split created on disk: {}", filePath.string());
         }
 
+        Logging::Dynamic::Info("Clearing temp download file"); 
         std::filesystem::remove(DownloadTempFilePath);
         return true;
     }

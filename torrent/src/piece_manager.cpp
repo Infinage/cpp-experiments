@@ -1,16 +1,16 @@
 #include "../include/piece_manager.hpp"
 
 #include "../../cryptography/hashlib.hpp"
+#include "../../misc/logger.hpp"
 
 #include <algorithm>
 #include <cstring>
-#include <print>
 #include <stdexcept>
 
 namespace Torrent {
     bool PieceManager::Piece::finished() const { return completedBlocks == actualNumBlocks; }
 
-    void PieceManager::Piece::writeBlock(std::uint32_t blockOffset, std::string piecePayload) {
+    void PieceManager::Piece::writeBlock(std::uint32_t blockOffset, std::string &&piecePayload) {
         if (blockOffset >= actualPieceSize) throw std::runtime_error("Writing out of bounds");
         auto writeSize {std::min(static_cast<std::uint32_t>(outer.blockSize), actualPieceSize - blockOffset)};
         std::memcpy(buffer.data() + blockOffset, piecePayload.c_str() + 8, writeSize);
@@ -19,6 +19,7 @@ namespace Torrent {
     }
 
     std::uint32_t PieceManager::Piece::requestBlockNum(std::uint16_t blockIdx) {
+        if (states[blockIdx] != State::PENDING) throw std::runtime_error{"Block requested twice"};
         states[blockIdx] = Piece::State::REQUESTED; ++requestedBlocks;
         return blockIdx < actualNumBlocks - 1? outer.blockSize: lastBlockSize;
     }
@@ -51,6 +52,7 @@ namespace Torrent {
     }
 
     void PieceManager::clearInTransitBlock(std::uint32_t pieceIdx, std::uint32_t blockOffset) {
+        Logging::Dynamic::Trace("Piece #{}, Block #{} is now marked pending", pieceIdx, blockOffset);
         Piece &piece {partialPieces.at(pieceIdx)};
         piece.states[blockOffset / blockSize] = Piece::State::PENDING;
         --piece.requestedBlocks;
@@ -74,10 +76,12 @@ namespace Torrent {
         if (partialPiece.completedBlocks == partialPiece.actualNumBlocks) {
             retBuffer = std::string {partialPiece.buffer.c_str(), partialPiece.actualPieceSize};
             if (hashutil::sha1(retBuffer, true) != getPieceHash(pieceIdx)) {
-                std::println("Mismatching hash for piece# {} will be dropped and rerequested", pieceIdx);
+                Logging::Dynamic::Info("Hash for piece# {} is INVALID, will be rerequested; "
+                    "pending {} pieces", pieceIdx, numPieces - haves.size());
                 retBuffer.clear();
             } else {
-                std::println("Hash for piece# {} is valid, scheduling write to disk", pieceIdx);
+                Logging::Dynamic::Info("Hash for piece# {} is VALID, will be scheduled for disk write; "
+                    "pending {} pieces", pieceIdx, numPieces - haves.size());
                 pieceCompleted = true; haves.insert(pieceIdx);
             }
             partialPieces.erase(pieceIdx);
@@ -93,6 +97,7 @@ namespace Torrent {
         for (auto partialIt {partialPieces.begin()}; partialIt != partialPieces.end() && result.size() < count; ++partialIt) {
             auto &[pieceIdx, piece] {*partialIt};
             if (peerHaves.contains(pieceIdx)) {
+                Logging::Dynamic::Trace("Partially processed piece #{} is being prioritized", pieceIdx);
                 std::uint16_t blockIdx {};
                 while (blockIdx < piece.actualNumBlocks && result.size() < count) {
                     if (piece.states[blockIdx] == Piece::State::PENDING) {
@@ -108,6 +113,7 @@ namespace Torrent {
         for (auto peerHavesIt {peerHaves.begin()}; peerHavesIt != peerHaves.end() && result.size() < count; ++peerHavesIt) {
             const std::uint32_t pieceIdx {*peerHavesIt};
             if (!haves.contains(pieceIdx) && !partialPieces.contains(pieceIdx)) {
+                Logging::Dynamic::Trace("New piece #{} is being requested", pieceIdx);
                 auto inserted {partialPieces.try_emplace(pieceIdx, *this, pieceIdx)};
                 Piece &piece {inserted.first->second}; std::uint16_t blockIdx {};
                 while (blockIdx < piece.actualNumBlocks && result.size() < count) {
