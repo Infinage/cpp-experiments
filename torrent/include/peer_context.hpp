@@ -7,16 +7,20 @@
 
 namespace Torrent {
     struct PeerContext {
-        int fd;                      // file descriptor, for lookup
-        std::string ip;              // peer IP (for logging)
-        std::uint16_t port;          // peer port
+        const std::string ip;        // peer IP (for logging)
+        const std::uint16_t port;    // peer port
+        const bool ipV4;             // IPV4 or IPV6
+        const std::string ID;        // uniquely tagging with ip:port
+
+        int fd;                      // Socket file descriptor
 
         bool handshaked {false};     // whether handshake done
         bool choked {true};          // we are choking them by default
         bool closed {false};         // whether to maintain the connection
 
-        std::uint8_t unchokeAttempts {}; // track # of unchoke attempts and drop if needed
-        std::uint8_t backlog {};         // # of unfulfilled requests pending
+        std::uint8_t unchokeAttempts {};   // track # of unchoke attempts and drop if needed
+        std::uint8_t reconnectAttempts {}; // track # of unchoke attempts and drop if needed
+        std::uint8_t backlog {};           // # of unfulfilled requests pending
 
         std::unordered_set<std::uint32_t> haves {};  // which pieces the peer has
 
@@ -29,6 +33,14 @@ namespace Torrent {
         // Last read event we received from the client
         std::chrono::steady_clock::time_point lastReadTimeStamp;
 
-        inline std::string str() const { return std::format("{}:{}", ip, port); }
+        // Resets all non const fields to defaults
+        inline void onReconnect(int newFd) {
+            fd = newFd; ++reconnectAttempts;
+            handshaked = false; choked = true; closed = false;
+            unchokeAttempts = 0; backlog = 0;
+            haves.clear(); pending.clear(); 
+            recvBuffer.clear(); sendBuffer.clear();
+            lastReadTimeStamp = std::chrono::steady_clock::now();
+        }
     };
 }

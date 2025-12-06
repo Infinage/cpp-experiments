@@ -15,17 +15,17 @@ namespace Torrent {
         std::memcpy(&pieceIdx, payload.c_str(), 4);
         pieceIdx = net::utils::bswap(pieceIdx);
         ctx.haves.insert(pieceIdx);
-        Logging::Dynamic::Trace("[{}] Client has Piece #{}", ctx.str(), pieceIdx);
+        Logging::Dynamic::Trace("[{}] Client has Piece #{}", ctx.ID, pieceIdx);
     }
 
     void TorrentDownloader::handleBitfield(const std::string &payload, PeerContext &ctx) {
         if (payload.size() != (torrentFile.numPieces + 7) / 8) {
             Logging::Dynamic::Debug("[{}] Bitfield received has invalid length: {}, "
-                    "will be dropped", ctx.str(), payload.size());
+                    "will be dropped", ctx.ID, payload.size());
             return;
         }
         ctx.haves = readBitField(payload);
-        Logging::Dynamic::Trace("[{}] Client has Pieces #{}", ctx.str(), ctx.haves.size());
+        Logging::Dynamic::Trace("[{}] Client has Pieces #{}", ctx.ID, ctx.haves.size());
     }
 
     void TorrentDownloader::handlePiece(const std::string &payload, PeerContext &ctx) {
@@ -40,14 +40,14 @@ namespace Torrent {
         auto pendingIt {ctx.pending.find({pIndex, pBegin, 0})};
         if (pendingIt == ctx.pending.end()) {
             Logging::Dynamic::Debug("[{}] Piece# {}, Block Offset {} was not requested "
-                "yet or has already been downloaded, dropping.", ctx.str(), pIndex, pBegin);
+                "yet or has already been downloaded, dropping.", ctx.ID, pIndex, pBegin);
             return;
         }
 
         // Convert the offset into a valid block index
         bool validBlock {payload.size() - 8 == pendingIt->blockSize};
         ctx.pending.erase(pendingIt); --ctx.backlog;
-        Logging::Dynamic::Debug("[{}] Piece: {}, Block Offset {} => {}", ctx.str(), 
+        Logging::Dynamic::Debug("[{}] Piece: {}, Block Offset {} => {}", ctx.ID, 
             pIndex, pBegin, validBlock? "Valid": "Invalid");
 
         // Notify piece manager that we have received a block
@@ -87,21 +87,24 @@ namespace Torrent {
     TorrentDownloader::TorrentDownloader(
         TorrentTracker &tTracker, const std::filesystem::path downloadDir, 
         const std::uint16_t bSize, const std::uint8_t backlog, 
-        const std::uint8_t unchokeAttempts, const std::uint16_t maxWaitTime,
-        const std::size_t maxDiskQueue
+        const std::uint8_t maxUnchokeAttempts, 
+        const std::uint8_t maxReconnectAttempts, 
+        const std::uint16_t maxReqWaitTime,
+        const std::uint16_t minReconWaitTime
     ): 
         torrentFile {tTracker.torrentFile},
         torrentTracker {tTracker},
         peerID{generatePeerID()},
         blockSize {bSize},
-        MAX_WAIT_TIME {maxWaitTime},
+        MAX_REQ_WAIT_TIME {maxReqWaitTime},
+        MIN_RECON_WAIT_TIME {minReconWaitTime},
         MAX_BACKLOG {backlog}, 
-        MAX_UNCHOKE_ATTEMPTS {unchokeAttempts},
+        MAX_UNCHOKE_ATTEMPTS {maxUnchokeAttempts},
+        MAX_RECONNECT_ATTEMPTS {maxReconnectAttempts},
         StateSavePath {downloadDir / ("." + torrentFile.name + ".ctorrent")},
         coldStart {!std::filesystem::exists(StateSavePath)},
         pieceManager {torrentFile.length, torrentFile.pieceSize, bSize, torrentFile.pieceBlob},
-        diskWriter {torrentFile.name, torrentFile.length, torrentFile.pieceSize, 
-            downloadDir, coldStart, maxDiskQueue}
+        diskWriter {torrentFile.name, torrentFile.length, torrentFile.pieceSize, downloadDir, coldStart}
     {
         // If save found reload the state
         if (!coldStart) {
@@ -127,17 +130,28 @@ namespace Torrent {
         std::vector<std::pair<std::string, std::uint16_t>> peerList {torrentTracker.getPeers(timeout)};
         if (peerList.empty()) { Logging::Dynamic::Error("No peers available"); return; }
 
-        // Connect to all available peers
         Logging::Dynamic::Info("Discovered {} peers.", peerList.size());
+
+        net::PollManager pollManager;
+        std::unordered_map<std::string, PeerContext> states;
+        std::unordered_map<int, std::string> fd2PeerID;
+
+        // Connect to all available peers and fill send buffer with handshakes
         std::string handshake {buildHandshake(torrentFile.infoHash, peerID)};
-        net::PollManager pollManager; std::unordered_map<int, PeerContext> states;
         for (const auto &[ip, port]: peerList) {
             std::optional<net::IP> ipType {net::utils::checkIPType(ip)};
             if (!ipType.has_value()) { Logging::Dynamic::Debug("Invalid IP: {}", ip); continue; }
+
+            // Create socket connection and the Peer Context
             auto peer {net::Socket{net::SOCKTYPE::TCP, ipType.value()}};
             peer.setNonBlocking(); peer.connect(ip, port);
-            states.insert({peer.fd(), {.fd=peer.fd(), .ip=ip, .port=port, .sendBuffer=handshake, 
-                .lastReadTimeStamp=std::chrono::steady_clock::now()}});
+            PeerContext peerCtx {.ip=ip, .port=port, .ipV4=(ipType.value() == net::IP::V4), 
+                .ID=(ip + ':' + std::to_string(port)), .fd=peer.fd(), .sendBuffer=handshake, 
+                .lastReadTimeStamp=std::chrono::steady_clock::now()};
+
+            states.emplace(peerCtx.ID, std::move(peerCtx));
+            fd2PeerID.emplace(peer.fd(), peerCtx.ID);
+
             pollManager.track(std::move(peer), net::PollEventType::Writable);
             Logging::Dynamic::Debug("Intiating connection with {}:{}", ip, port);
         }
@@ -146,18 +160,18 @@ namespace Torrent {
         std::signal(SIGINT, [](int) { interrupted = true; });
         while (!interrupted && !pieceManager.finished() && !pollManager.empty()) {
             for (auto &[peer, event]: pollManager.poll(5)) {
-                PeerContext &ctx {states.at(peer.fd())};
+                PeerContext &ctx {states.at(fd2PeerID.at(peer.fd()))};
 
                 if (!ctx.closed && event & net::PollEventType::Readable) {
                     std::string recvBytes;
                     try { recvBytes = peer.recvAll(); } 
                     catch (net::SocketError &err) {
-                        Logging::Dynamic::Debug("[{}] Recv from client failed: {}", ctx.str(), err.what());
+                        Logging::Dynamic::Debug("[{}] Recv from client failed: {}", ctx.ID, err.what());
                         ctx.closed = true;
                     }
 
                     if (!recvBytes.empty()) {
-                        Logging::Dynamic::Debug("[{}] Recv {} bytes from client", ctx.str(), recvBytes.size());
+                        Logging::Dynamic::Debug("[{}] Recv {} bytes from client", ctx.ID, recvBytes.size());
                         ctx.lastReadTimeStamp = std::chrono::steady_clock::now();
 
                         // Get existing buffer size to expand recvBuffer
@@ -165,17 +179,17 @@ namespace Torrent {
                         ctx.recvBuffer.resize(iSize + recvBytes.size());
                         std::memmove(ctx.recvBuffer.data() + iSize, recvBytes.data(), recvBytes.size());
 
-                        Logging::Dynamic::Trace("[{}] Current recv buffer size: {}", ctx.str(), ctx.recvBuffer.size());
+                        Logging::Dynamic::Trace("[{}] Current recv buffer size: {}", ctx.ID, ctx.recvBuffer.size());
 
                         if (!ctx.handshaked && ctx.recvBuffer.size() >= 68) {
                             ctx.handshaked = std::memcmp(handshake.data(), ctx.recvBuffer.data(), 20) == 0 
                                 && std::memcmp(handshake.data() + 28, ctx.recvBuffer.data() + 28, 20) == 0;
                             if (!ctx.handshaked) {
-                                Logging::Dynamic::Debug("[{}] Handshake failed, will be dropped", ctx.str());
+                                Logging::Dynamic::Debug("[{}] Handshake failed, will be dropped", ctx.ID);
                                 ctx.closed = true;
                             } else {
                                 ctx.recvBuffer = ctx.recvBuffer.substr(68);
-                                Logging::Dynamic::Debug("[{}] Handshake established", ctx.str());
+                                Logging::Dynamic::Debug("[{}] Handshake established", ctx.ID);
                                 ctx.sendBuffer = buildInterested();
                             }
                         }
@@ -184,7 +198,7 @@ namespace Torrent {
                             std::uint32_t msgLen;
                             while ((msgLen = IsCompleteMessage(ctx.recvBuffer)) > 0 && !ctx.closed) {
                                 auto [msgType, message] {parseMessage(std::string_view{ctx.recvBuffer.data(), msgLen + 4})};
-                                Logging::Dynamic::Debug("[{}] Received {} from client", ctx.str(), str(msgType));
+                                Logging::Dynamic::Debug("[{}] Received {} from client", ctx.ID, str(msgType));
 
                                 // Process the message and update the internal context
                                 switch (msgType) {
@@ -199,27 +213,28 @@ namespace Torrent {
                                 // maximum of 3 turns before disconnecting from the peer
                                 if (ctx.choked) {
                                     std::string unchokeMsg {buildUnchoke()};
-                                    if (ctx.unchokeAttempts > MAX_UNCHOKE_ATTEMPTS) {
-                                        Logging::Dynamic::Debug("[{}] Exceeded max unchoke attempts, disconnecting", ctx.str());
+                                    if (ctx.unchokeAttempts > MAX_UNCHOKE_ATTEMPTS - 1) {
+                                        Logging::Dynamic::Debug("[{}] Exceeded max unchoke attempts, disconnecting", ctx.ID);
                                         ctx.closed = true;
                                     }
 
                                     // If buffer already has unchoke, we haven't had
                                     // a chance to send to client yet, don't increase attempts
                                     else if (ctx.sendBuffer != unchokeMsg) {
-                                        Logging::Dynamic::Debug("[{}] Building unchoke for client", ctx.str());
-                                        ctx.sendBuffer = unchokeMsg;
                                         ++ctx.unchokeAttempts;
+                                        Logging::Dynamic::Debug("[{}] Building unchoke for client, attempt: {}/{}", 
+                                                ctx.ID, ctx.unchokeAttempts, MAX_UNCHOKE_ATTEMPTS);
+                                        ctx.sendBuffer = unchokeMsg;
                                     }
                                 }
 
                                 // If unchoked & peer not throttled, try requesting for block(s) available from peer
                                 else if (ctx.backlog < MAX_BACKLOG) {
                                     auto pendingBlocks {pieceManager.getPendingBlocks(ctx.haves, MAX_BACKLOG - ctx.backlog)};
-                                    Logging::Dynamic::Debug("[{}] Building request for {} pieces", ctx.str(), pendingBlocks.size());
+                                    Logging::Dynamic::Debug("[{}] Building request for {} blocks", ctx.ID, pendingBlocks.size());
                                     for (auto [pieceIdx, blockOffset, blockSize]: pendingBlocks) {
-                                        Logging::Dynamic::Trace("[{}] Building request for piece (pIdx={}, bOffset={}, bSize={})", 
-                                                ctx.str(), pieceIdx, blockOffset, blockSize);
+                                        Logging::Dynamic::Trace("[{}] Building request for block (pIdx={}, bOffset={}, bSize={})", 
+                                                ctx.ID, pieceIdx, blockOffset, blockSize);
                                         ctx.sendBuffer += buildRequest(pieceIdx, blockOffset, blockSize);
                                         ctx.pending.emplace(pieceIdx, blockOffset, blockSize);
                                         ++ctx.backlog;
@@ -239,18 +254,18 @@ namespace Torrent {
                     try {
                         long sentBytes {ctx.sendBuffer.empty()? 0: peer.sendAll(ctx.sendBuffer)};
                         if (sentBytes) {
-                            Logging::Dynamic::Debug("[{}] Sent {} bytes to client", ctx.str(), sentBytes);
+                            Logging::Dynamic::Debug("[{}] Sent {} bytes to client", ctx.ID, sentBytes);
                             ctx.sendBuffer = ctx.sendBuffer.substr(static_cast<std::size_t>(sentBytes));
                         }
                     } catch (net::SocketError &err) { 
-                        Logging::Dynamic::Debug("[{}] Send to client failed: {}", ctx.str(), err.what());
+                        Logging::Dynamic::Debug("[{}] Send to client failed: {}", ctx.ID, err.what());
                         ctx.closed = true;
                     }
                 }
 
                 // Drop client on closed or err event
                 if (event & net::PollEventType::Error || event & net::PollEventType::Closed || peer.fd() == -1) { 
-                    Logging::Dynamic::Debug("[{}] Got closed/err event", ctx.str());
+                    Logging::Dynamic::Debug("[{}] Got closed/err event", ctx.ID);
                     ctx.closed = true;
                 }
 
@@ -258,10 +273,10 @@ namespace Torrent {
                 if (!ctx.closed) {
                     if (ctx.sendBuffer.empty()) {
                         pollManager.updateTracking(peer.fd(), net::PollEventType::Readable);
-                        Logging::Dynamic::Trace("[{}] Send buffer empty, listening only for READABLE events", ctx.str());
+                        Logging::Dynamic::Trace("[{}] Send buffer empty, listening only for READABLE events", ctx.ID);
                     } else if (ctx.handshaked) {
                         pollManager.updateTracking(peer.fd(), net::PollEventType::Readable | net::PollEventType::Writable);
-                        Logging::Dynamic::Trace("[{}] Send buffer not empty, listening for READABLE & WRITABLE events", ctx.str());
+                        Logging::Dynamic::Trace("[{}] Send buffer not empty, listening for READABLE & WRITABLE events", ctx.ID);
                     }
                 }
             } // for poll loop
@@ -271,36 +286,49 @@ namespace Torrent {
                 auto timeDiff {std::chrono::steady_clock::now() - ctx.lastReadTimeStamp};
                 auto diffInSec {std::chrono::duration_cast<std::chrono::seconds>(timeDiff).count()};
                 // Good peers
-                if (!ctx.closed && diffInSec < MAX_WAIT_TIME) continue;
-
-                // Untracked peers
-                else if (!pollManager.hasSocket(ctx.fd)) continue;
+                if (!ctx.closed && diffInSec < MAX_REQ_WAIT_TIME) continue;
 
                 // Timed out peers (handshaked or not handshaked)
                 else if (!ctx.closed) {
-                    Logging::Dynamic::Trace("[{}] Client idled out, no message received for {}s", ctx.str(), diffInSec);
+                    Logging::Dynamic::Trace("[{}] Client idled out, no message received for {}s", ctx.ID, diffInSec);
                     if (ctx.choked) {
-                        Logging::Dynamic::Debug("[{}] Not handshaked or choked for too long, dropping", ctx.str(), diffInSec);
+                        Logging::Dynamic::Debug("[{}] Not handshaked or choked for too long, dropping", ctx.ID, diffInSec);
                         ctx.closed = true;
                     } else if (ctx.backlog) {
-                        Logging::Dynamic::Debug("[{}] Building cancel request for {} pieces", ctx.str(), ctx.pending.size());
+                        Logging::Dynamic::Debug("[{}] Building cancel request for {} blocks", ctx.ID, ctx.pending.size());
                         ctx.sendBuffer = "";
                         for (auto [pieceIdx, blockOffset, blockSize]: ctx.pending) {
-                            Logging::Dynamic::Trace("[{}] Building cancel request for piece (pIdx={}, bOffset={}, bSize={})", 
-                                ctx.str(), pieceIdx, blockOffset, blockSize);
+                            Logging::Dynamic::Trace("[{}] Building cancel request for block (pIdx={}, bOffset={}, bSize={})", 
+                                ctx.ID, pieceIdx, blockOffset, blockSize);
                             ctx.sendBuffer += buildRequest(pieceIdx, blockOffset, blockSize, false);
                         }
                         clearPendingFromPeer(ctx);
                     }
                 }
 
-                // Close the connection if dropped, erase all its pending states
                 if (ctx.closed) {
-                    clearPendingFromPeer(ctx);
-                    pollManager.untrack(ctx.fd);
-                    Logging::Dynamic::Debug("[{}] Dropped client, still connected to {} clients", 
-                        ctx.str(), pollManager.size());
-                }
+                    // Dropped from the poll loop or from timing out from above block
+                    if (fd2PeerID.contains(ctx.fd)) {
+                        clearPendingFromPeer(ctx);
+                        pollManager.untrack(ctx.fd);
+                        fd2PeerID.erase(ctx.fd);
+                        ctx.lastReadTimeStamp = std::chrono::steady_clock::now();
+                        Logging::Dynamic::Debug("[{}] Dropped client (Pending reconnects: {}/{}), still connected to {} clients", 
+                            ctx.ID, ctx.reconnectAttempts, MAX_RECONNECT_ATTEMPTS, pollManager.size());
+                    }
+
+                    // Already been dropped and set threshold time has passed, try to reconnect
+                    else if (diffInSec >= MIN_RECON_WAIT_TIME && ctx.reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
+                        auto peer {net::Socket{net::SOCKTYPE::TCP, ctx.ipV4? net::IP::V4: net::IP::V6}};
+                        peer.setNonBlocking(); peer.connect(ctx.ip, ctx.port);
+                        ctx.onReconnect(peer.fd()); fd2PeerID.emplace(peer.fd(), ctx.ID); 
+                        pollManager.track(std::move(peer), net::PollEventType::Writable);
+                        ctx.sendBuffer = handshake;
+                        Logging::Dynamic::Debug("Re-Initiating connection with {}, attempt: {}/{}", 
+                            ctx.ID, ctx.reconnectAttempts, 3);
+                    }
+                } 
+
             }
 
         } // while not interrupted && pieceManager not empty && poll manager has tracking sockets

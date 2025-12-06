@@ -49,7 +49,7 @@ namespace Torrent {
                         DownloadTempFile.write(piece.c_str(), static_cast<std::streamsize>(piece.size()));
                         if (!DownloadTempFile.good()) throw std::runtime_error("Write to temp file failed");
                         else if (++piecesWritten % MAX_QUEUE == 0) DownloadTempFile.flush();
-                        Logging::Dynamic::Debug("Piece #{} written to disk (ASYNC)", offset / this->pieceSize);
+                        Logging::Dynamic::Debug("Piece #{} written to disk asynchronously", offset / this->pieceSize);
                     }
                 }
             } catch (std::exception &ex) { 
@@ -63,7 +63,7 @@ namespace Torrent {
         DownloadTempFile.seekp(static_cast<std::int64_t>(offset), std::ios::beg);
         DownloadTempFile.write(piece.c_str(), static_cast<std::streamsize>(piece.size()));
         if (!DownloadTempFile.good()) throw std::runtime_error("Write to temp file failed");
-        Logging::Dynamic::Debug("Piece #{} written to disk (SYNC)", offset / this->pieceSize);
+        Logging::Dynamic::Debug("Piece #{} written to disk synchronously", offset / this->pieceSize);
     }
 
     void DiskWriter::schedule(std::uint64_t offset, std::string &&piece) {
