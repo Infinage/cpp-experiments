@@ -3,7 +3,6 @@
 #include <array>
 #include <cstdint>
 #include <string>
-#include <vector>
 
 namespace hashutil {
     constexpr char x2c(std::uint8_t val) { return "0123456789abcdef"[val]; }
@@ -38,43 +37,65 @@ namespace hashutil {
         return (b << shift) | (b >> (32u - shift));
     }
 
+    namespace impl {
+        struct Sha1BlockFeeder {
+            const std::string &bytes; std::size_t pos {};
+            enum State {CopyBytes, Add80, ZeroPad, WriteLen, Finished} state {CopyBytes};
+
+            constexpr bool nextBlock(std::array<uint8_t, 64> &chunk) {
+                if (state == Finished) return false;
+                std::size_t filledChars {}; chunk.fill(0);
+
+                if (state == CopyBytes) {
+                    filledChars = pos + 64 <= bytes.size()? 64: bytes.size() - pos;
+                    auto beg {bytes.begin() + static_cast<long>(pos)}; 
+                    auto end {beg + static_cast<long>(filledChars)};
+                    std::copy(beg, end, chunk.begin());
+                    if (pos + filledChars >= bytes.size()) state = Add80;
+                }
+
+                if (filledChars < 64 && state == Add80) { 
+                    chunk[filledChars++] = 0x80; state = ZeroPad; 
+                }
+
+                if (filledChars < 64 && state == ZeroPad) {
+                    filledChars = filledChars <= 56? 56: 64;
+                    state = WriteLen;
+                }
+
+                if (filledChars < 64 && state == WriteLen) {
+                    std::uint64_t bitLen {bytes.size() * 8ull};
+                    for (int i = 7; i >= 0; --i)
+                        chunk[filledChars++] = static_cast<uint8_t>(bitLen >> (i * 8));
+                    state = Finished;
+                }
+
+                pos += filledChars; return true;
+            }
+        };
+    }
+
     [[nodiscard]] constexpr std::string sha1(const std::string &raw, bool asBytes = false) {
-        // Define constants for SHA1
+        // Define constants for SHA1 we will overwrite these for each chunk
+        // Final sha string is just the concatenation of these values
         uint32_t h0{0x67452301};
         uint32_t h1{0xefcdab89};
         uint32_t h2{0x98badcfe};
         uint32_t h3{0x10325476};
         uint32_t h4{0xc3d2e1f0};
 
-        // Expected layout: [<msg bytes> <0x80> <8 byte msg len>]
-        // Store the raw bytes of the input into a bytes vector
-        std::vector<uint8_t> bytes {raw.begin(), raw.end()};
+        // Process 64 chars at a time (chunk), each chunk is processed into 80 word blocks
+        std::array<uint8_t, 64> chunk; std::array<uint32_t, 80> word;
 
-        // Append 128 (0x80) to the bytes vector
-        bytes.push_back(0x80);
-
-        // Pad until size % 64 == 56, so they can be processed as 
-        // 64 byte chunks after combining with the 8 byte msg length
-        while (bytes.size() % 64 != 56) bytes.push_back(0);
-
-        // Add the bitstring length
-        std::uint64_t bitLen {raw.size() * 8ull};
-        for (int i = 7; i >= 0; --i)
-            bytes.push_back(static_cast<uint8_t>(bitLen >> (i * 8)));
-
-        // Split the vector<uint8_t> into 64 byte chunks, each chunk further into 
-        // 16 words each containing 4 bytes (nested vector<array<uint32_t, 16>>)
-        // Using these 16 words that we created, we create additional 80 - 16 words
-        std::size_t nChunks {bytes.size() / 64};
-        std::array<uint32_t, 80> word;
-        for (std::size_t i {}; i < nChunks; ++i) {
+        // Get and process the chunks
+        impl::Sha1BlockFeeder blockFeeder {.bytes=raw};
+        while (blockFeeder.nextBlock(chunk)) {
             for (std::size_t j {}; j < 16; ++j) {
-                std::size_t pos {(i * 64) + (j * 4)};
                 word[j] = (
-                    static_cast<uint32_t>(bytes[pos + 0]) << 24 |
-                    static_cast<uint32_t>(bytes[pos + 1]) << 16 |
-                    static_cast<uint32_t>(bytes[pos + 2]) <<  8 |
-                    static_cast<uint32_t>(bytes[pos + 3]) <<  0 
+                    static_cast<uint32_t>(chunk[(j * 4) + 0]) << 24 |
+                    static_cast<uint32_t>(chunk[(j * 4) + 1]) << 16 |
+                    static_cast<uint32_t>(chunk[(j * 4) + 2]) <<  8 |
+                    static_cast<uint32_t>(chunk[(j * 4) + 3]) <<  0 
                 );
             }
 
