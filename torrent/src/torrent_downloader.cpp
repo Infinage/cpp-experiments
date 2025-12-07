@@ -138,6 +138,7 @@ namespace Torrent {
 
         // Connect to all available peers and fill send buffer with handshakes
         std::string handshake {buildHandshake(torrentFile.infoHash, peerID)};
+        auto lastTick {std::chrono::steady_clock::now()};
         for (const auto &[ip, port]: peerList) {
             std::optional<net::IP> ipType {net::utils::checkIPType(ip)};
             if (!ipType.has_value()) { Logging::Dynamic::Debug("Invalid IP: {}", ip); continue; }
@@ -147,7 +148,7 @@ namespace Torrent {
             peer.setNonBlocking(); peer.connect(ip, port);
             PeerContext peerCtx {.ip=ip, .port=port, .ipV4=(ipType.value() == net::IP::V4), 
                 .ID=(ip + ':' + std::to_string(port)), .fd=peer.fd(), .sendBuffer=handshake, 
-                .lastReadTimeStamp=std::chrono::steady_clock::now()};
+                .lastReadTimeStamp=lastTick};
 
             states.emplace(peerCtx.ID, std::move(peerCtx));
             fd2PeerID.emplace(peer.fd(), peerCtx.ID);
@@ -159,6 +160,7 @@ namespace Torrent {
         static bool interrupted {false};
         std::signal(SIGINT, [](int) { interrupted = true; });
         while (!interrupted && !pieceManager.finished() && !pollManager.empty()) {
+            auto lastTick {std::chrono::steady_clock::now()};
             for (auto &[peer, event]: pollManager.poll(5)) {
                 PeerContext &ctx {states.at(fd2PeerID.at(peer.fd()))};
 
@@ -172,7 +174,7 @@ namespace Torrent {
 
                     if (!recvBytes.empty()) {
                         Logging::Dynamic::Debug("[{}] Recv {} bytes from client", ctx.ID, recvBytes.size());
-                        ctx.lastReadTimeStamp = std::chrono::steady_clock::now();
+                        ctx.lastReadTimeStamp = lastTick;
 
                         // Get existing buffer size to expand recvBuffer
                         std::size_t iSize {ctx.recvBuffer.size()};
@@ -283,7 +285,7 @@ namespace Torrent {
 
             // Process the clients that didn't send us anything or were closed inside our poll loop
             for (auto &[fd, ctx]: states) {
-                auto timeDiff {std::chrono::steady_clock::now() - ctx.lastReadTimeStamp};
+                auto timeDiff {lastTick - ctx.lastReadTimeStamp};
                 auto diffInSec {std::chrono::duration_cast<std::chrono::seconds>(timeDiff).count()};
                 // Good peers
                 if (!ctx.closed && diffInSec < MAX_REQ_WAIT_TIME) continue;
@@ -312,7 +314,7 @@ namespace Torrent {
                         clearPendingFromPeer(ctx);
                         pollManager.untrack(ctx.fd);
                         fd2PeerID.erase(ctx.fd);
-                        ctx.lastReadTimeStamp = std::chrono::steady_clock::now();
+                        ctx.lastReadTimeStamp = lastTick;
                         Logging::Dynamic::Debug("[{}] Dropped client (Pending reconnects: {}/{}), still connected to {} clients", 
                             ctx.ID, ctx.reconnectAttempts, MAX_RECONNECT_ATTEMPTS, pollManager.size());
                     }
@@ -321,7 +323,7 @@ namespace Torrent {
                     else if (diffInSec >= MIN_RECON_WAIT_TIME && ctx.reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
                         auto peer {net::Socket{net::SOCKTYPE::TCP, ctx.ipV4? net::IP::V4: net::IP::V6}};
                         peer.setNonBlocking(); peer.connect(ctx.ip, ctx.port);
-                        ctx.onReconnect(peer.fd()); fd2PeerID.emplace(peer.fd(), ctx.ID); 
+                        ctx.onReconnect(peer.fd(), lastTick); fd2PeerID.emplace(peer.fd(), ctx.ID); 
                         pollManager.track(std::move(peer), net::PollEventType::Writable);
                         ctx.sendBuffer = handshake;
                         Logging::Dynamic::Debug("Re-Initiating connection with {}, attempt: {}/{}", 

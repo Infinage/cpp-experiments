@@ -76,12 +76,12 @@ namespace Torrent {
         if (partialPiece.completedBlocks == partialPiece.actualNumBlocks) {
             retBuffer = std::string {partialPiece.buffer.c_str(), partialPiece.actualPieceSize};
             if (hashutil::sha1(retBuffer, true) != getPieceHash(pieceIdx)) {
-                Logging::Dynamic::Info("Hash for piece# {} is INVALID, will be rerequested; "
+                Logging::Dynamic::Debug("Hash for piece# {} is INVALID, will be rerequested; "
                     "pending {} pieces", pieceIdx, numPieces - haves.size());
                 retBuffer.clear();
             } else {
-                Logging::Dynamic::Info("Hash for piece# {} is VALID, will be scheduled for disk write; "
-                    "pending {} pieces", pieceIdx, numPieces - haves.size());
+                double remaining_MB {static_cast<double>(numPieces - haves.size()) * pieceSize / (1024 * 1024)};
+                Logging::Dynamic::Info("Piece# {:5d} downloaded, saving to disk; pending {:.2f} MB", pieceIdx, remaining_MB);
                 pieceCompleted = true; haves.insert(pieceIdx);
             }
             partialPieces.erase(pieceIdx);

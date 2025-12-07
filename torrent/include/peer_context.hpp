@@ -34,13 +34,13 @@ namespace Torrent {
         std::chrono::steady_clock::time_point lastReadTimeStamp;
 
         // Resets all non const fields to defaults
-        inline void onReconnect(int newFd) {
+        inline void onReconnect(int newFd, auto &tick) {
             fd = newFd; ++reconnectAttempts;
             handshaked = false; choked = true; closed = false;
             unchokeAttempts = 0; backlog = 0;
             haves.clear(); pending.clear(); 
             recvBuffer.clear(); sendBuffer.clear();
-            lastReadTimeStamp = std::chrono::steady_clock::now();
+            lastReadTimeStamp = tick;
         }
     };
 }

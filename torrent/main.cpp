@@ -29,11 +29,11 @@ int main(int argc, char **argv) try {
         .validate<int>(argparse::validators::between(0, 10))
         .help("Maximum no of attempts we will try to reconnect a dropped peer");
 
-    cli.addArgument("max-iwait", argparse::NAMED).alias("i").defaultValue(5)
+    cli.addArgument("max-iwait", argparse::NAMED).alias("i").defaultValue(8)
         .validate<int>(argparse::validators::between(1, 600))
         .help("Maximum seconds a peer may stay idle before being disconnected or reset");
 
-    cli.addArgument("min-rwait", argparse::NAMED).alias("w").defaultValue(30)
+    cli.addArgument("min-rwait", argparse::NAMED).alias("w").defaultValue(15)
         .validate<int>(argparse::validators::between(1, 6000))
         .help("Minimum seconds we will wait before attempting to reconnect to a disconnected peer");
 
