@@ -144,11 +144,11 @@ namespace hashutil {
         // Convert h0..h4 to hex string (40 char long ascii)
         if (!asBytes) {
             std::string out; out.reserve(40);
-            out.append_range(x2s(h0, 8));
-            out.append_range(x2s(h1, 8));
-            out.append_range(x2s(h2, 8));
-            out.append_range(x2s(h3, 8));
-            out.append_range(x2s(h4, 8));
+            out.append(x2s(h0, 8));
+            out.append(x2s(h1, 8));
+            out.append(x2s(h2, 8));
+            out.append(x2s(h3, 8));
+            out.append(x2s(h4, 8));
             return out;
         }
         

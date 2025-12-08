@@ -81,7 +81,7 @@ namespace Torrent {
                 retBuffer.clear();
             } else {
                 double remaining_MB {static_cast<double>(numPieces - haves.size()) * pieceSize / (1024 * 1024)};
-                Logging::Dynamic::Info("Piece# {:5d} downloaded, saving to disk; pending {:.2f} MB", pieceIdx, remaining_MB);
+                Logging::Dynamic::Debug("Piece# {:5d} downloaded, saving to disk; pending {:.2f} MB", pieceIdx, remaining_MB);
                 pieceCompleted = true; haves.insert(pieceIdx);
             }
             partialPieces.erase(pieceIdx);

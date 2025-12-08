@@ -42,9 +42,10 @@ A BitTorrent client implemented from scratch in modern C++. No external dependen
 Only OpenSSL is used (for HTTPS trackers). Everything else is handcrafted:
 
 * `json.hpp` → JSON support
-* `hashlib.hpp` → SHA1 implementation
+* `hashlib.hpp` → A constexpr friendly SHA1 implementation
 * `net.hpp` → sockets, DNS, URL and many more
 * `argparse.hpp` → CLI argment parsing
+* `logger.hpp` → Logging functionality
 
 ---
 
@@ -67,6 +68,7 @@ Once every piece is downloaded and verified, the main thread signals the disk wr
 ├── include/           # Public headers
 ├── src/               # Implementations
 ├── CMakeLists.txt
+├── Dockerfile
 ├── main.cpp           # CLI interface
 └── README.md
 ```
@@ -83,7 +85,7 @@ Key components inside `include/`:
 
 ---
 
-## 🚀 Build & Run
+## 🚀 Build & Run (Native)
 
 ### **Requirements**
 
@@ -102,6 +104,58 @@ cmake --build build -j4
 
 ```
 ./build/ctorrent <path-to-file.torrent> <download-dir>
+```
+
+---
+
+## 🐳 Build & Run (Container)
+
+Prebuilt image available on [docker](https://hub.docker.com/repository/docker/infinage/ctorrent).
+
+### **Requirements**
+
+* Podman or Docker
+
+### **1. Build or just pull from dockerhub**
+
+```sh
+podman build -t ctorrent .
+```
+
+```sh
+podman pull docker.io/infinage/ctorrent:latest
+```
+
+### **2. Create workspace**
+
+```sh
+mkdir torrents downloads
+```
+
+* Put your `.torrent` files into `torrents/`
+* Downloads will be written into `downloads/`
+
+### **3. Add a clean alias**
+
+```sh
+alias ctorrent='podman run --rm \
+    -v ./torrents:/app/torrents:ro \
+    -v ./downloads:/app/downloads \
+    ctorrent'
+```
+
+`torrents/` is mounted read-only, `downloads/` is writable.
+
+### **4. Usage**
+
+```sh
+ctorrent [options] torrents/<name>.torrent
+```
+
+Example:
+
+```sh
+ctorrent torrents/archlinux.torrent
 ```
 
 ---
@@ -139,10 +193,11 @@ When you hit Ctrl+C or an exception occurs, `TorrentDownloader`'s destructor col
 
 ## 📌 Roadmap
 
-* [ ] Add docker snapshot to freeze the environment (my libraries evolve fast :)
-* [ ] Cleaner logs, implement logging with verbose/terse modes
+* [x] Better CLI argument support
+* [x] Reconnect to dropped peers
+* [x] Cleaner logs, implement logging with verbose/terse modes
+* [x] Add docker snapshot to freeze the environment
 * [ ] Add retry logic with incremental/exponential backoff for tracker failures
-* [ ] Implement retries with incremental backoff for tracker URLs
 * [ ] Periodically refresh the peer list when all current peers drop
 * [ ] Implement rarest-first and other smarter scheduling algorithms
 * [ ] Add seeding/upload mode to move toward full BitTorrent spec compliance

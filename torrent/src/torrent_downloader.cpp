@@ -157,6 +157,11 @@ namespace Torrent {
             Logging::Dynamic::Debug("Intiating connection with {}:{}", ip, port);
         }
 
+        std::size_t pendingPieceCount {torrentFile.numPieces - pieceManager.getHaves().size()};
+        double pendingSize {pendingPieceCount * torrentFile.pieceSize / (1024. * 1024.)};
+        Logging::Dynamic::Info("Established connection with {} peers, "
+            "Pending download: {:.2f} MB", pollManager.size(), pendingSize);
+
         static bool interrupted {false};
         std::signal(SIGINT, [](int) { interrupted = true; });
         while (!interrupted && !pieceManager.finished() && !pollManager.empty()) {

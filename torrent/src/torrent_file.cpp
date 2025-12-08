@@ -41,6 +41,9 @@ namespace Torrent {
     }
     
     TorrentFile::TorrentFile(const std::string_view torrentFP) {
+        if (!std::filesystem::exists(torrentFP)) 
+            throw std::runtime_error("File doesn't exist: " + std::string{torrentFP});
+
         std::ifstream ifs {torrentFP.data(), std::ios::binary | std::ios::ate};
         auto size {ifs.tellg()};
         std::string buffer(static_cast<std::size_t>(size), 0);

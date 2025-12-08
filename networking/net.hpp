@@ -25,8 +25,8 @@
 #include <fcntl.h>
 #include <arpa/inet.h>
 #include <netinet/in.h>
-#include <sys/poll.h>
 #include <sys/socket.h>
+#include <poll.h>
 #include <netdb.h>
 #include <unistd.h>
 #include <openssl/ssl.h>
@@ -459,6 +459,8 @@ namespace net {
                         throw SSLSocketError{"Failed to set certificate from path"};
                     if (keyPath.empty() || SSL_CTX_use_PrivateKey_file(ctx, keyPath.data(), SSL_FILETYPE_PEM) <= 0)
                         throw SSLSocketError{"Failed to set pem key from path"};
+                    if (SSL_CTX_check_private_key(ctx) <= 0)
+                        throw SSLSocketError("Private key does not match the certificate public key");
                 }
             }
 
@@ -753,7 +755,7 @@ namespace net {
                     return std::make_pair(decode(pair.first), decode(pair.second));
                 }};
 
-                return std::views::transform(params, urlDecodePair);
+                return std::ranges::views::transform(params, urlDecodePair);
             }
 
             [[nodiscard]] static std::string encode(std::string_view str, 
