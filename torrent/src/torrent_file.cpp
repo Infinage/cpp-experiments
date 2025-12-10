@@ -74,7 +74,7 @@ namespace Torrent {
         infoHash = hashutil::sha1(Bencode::encode(info.ptr, true), true);
 
         // Print out the meta
-        Logging::Dynamic::Debug(
+        Logging::Dynamic::Info(
             "Loaded torrent metadata\n"
             "  {:<12} {}\n"
             "  {:<12} {}\n"
