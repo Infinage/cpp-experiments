@@ -1,9 +1,9 @@
 # Stage #1
 FROM alpine:latest as builder
-RUN apk add --no-cache g++ make libstdc++
-WORKDIR /app
+RUN apk add --no-cache g++ cmake make
+WORKDIR /app 
 COPY . .
-RUN make release
+RUN cmake -B build && cmake --build build -j4
 
 # Stage #2
 FROM alpine:latest

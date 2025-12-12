@@ -1,5 +1,5 @@
 #include <string>
-#include <sys/poll.h>
+#include <poll.h>
 #include <tuple>
 #include <unordered_map>
 #include <vector>

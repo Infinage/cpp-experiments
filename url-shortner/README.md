@@ -12,7 +12,8 @@ This is a lightweight, in-memory URL shortener built entirely in C++ with no ext
 To build and test the application locally:
 
 ```bash
-make && ./build/main
+cmake -B build && cmake --build build -j4
+./build/app
 ```
 
 ---
@@ -23,7 +24,7 @@ To build and run the application using Docker:
 
 ```bash
 docker build -t url-container .
-docker run -p 80:8080 url-container
+docker run -p 80:8080 --name url-shortner url-container
 ```
 
 Dockerfile uses a multi stage build to save on the final container image size.
