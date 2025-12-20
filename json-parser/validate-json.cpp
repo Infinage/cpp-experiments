@@ -29,7 +29,7 @@ bool validateFile(const std::string &fname) {
         catch (...) { status = false; }
 
         auto path {std::filesystem::path{fname}.filename().string()};
-        bool expected {path.starts_with("pass") || path.starts_with("y_")};
+        bool expected {path.starts_with("bench") || path.starts_with("pass") || path.starts_with("y_")};
         return status == expected;
     }
 }

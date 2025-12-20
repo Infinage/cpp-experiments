@@ -15,7 +15,7 @@ This project offers a lightweight, header-only JSON library in C++ (`json.hpp`) 
 ## Requirements
 
 - **Compiler**: g++ (with C++23 support)
-- **Make**: for building and running tests
+- **CMake**: for building and running tests
 
 ## Project Structure
 
@@ -30,7 +30,7 @@ This project offers a lightweight, header-only JSON library in C++ (`json.hpp`) 
 Run the following command to build both example programs:
 
 ```bash
-make
+cmake -B build && cmake --build build -j4
 ```
 
 This will produce three executables in the `build/` directory:
@@ -43,7 +43,7 @@ This will produce three executables in the `build/` directory:
 To validate JSON files in the `test/` directory, run:
 
 ```bash
-make test
+ctest --build-dir build
 ```
 
 This will execute `validate-json.out` on the test files and print the results to the console. Tests under `test/extras` are not included by default and must be run manually if desired.
