@@ -1,103 +1,223 @@
 # JSON Parser and Validator
 
-This project offers a lightweight, header-only JSON library in C++ (`json.hpp`) that enables easy creation, parsing, and validation of JSON documents. It also includes three example programs: one for validating JSON files (`validate-json.cpp`), another for generating sample JSON documents (`create-json.cpp`), and a third for manipulating existing JSON data (`manipulate-json.cpp`)
+This project provides a lightweight, header-only JSON library in C++ (`json.hpp`) for creating, parsing, validating, and manipulating JSON documents. It also includes three example programs:
 
-### Additional Information
-- **Inspiration**: [Coding Challenges JSON Parser](https://codingchallenges.fyi/challenges/challenge-json-parser)
-- **Data Structure Credits**: [Stack Overflow on Data Types for Representing JSON in C](https://stackoverflow.com/questions/19543326/datatypes-for-representing-json-in-c)
-  
-### Design Decisions
-1. Mimic (imperfectly) Python's JSON module with `loads` and `dumps` methods.
-2. Throw errors instead of using failing silently by returning a `nullptr`.
-3. Use `std::vector` for both arrays and objects to maintain insertion order, following insights from the Stack Overflow thread.
-4. Allow arbitrary nesting depth: The parser is designed to support arbitrary levels of nesting. This means that test cases like `fail18.json`, which may contain deep nesting, are validated as correct.
+* **`validate-json.cpp`** — validates JSON files and benchmarks parsing time
+* **`create-json.cpp`** — demonstrates programmatic JSON construction
+* **`manipulate-json.cpp`** — demonstrates safe navigation and modification of JSON data
+
+---
+
+## Additional Information
+
+* **Inspiration**: [Coding Challenges JSON Parser](https://codingchallenges.fyi/challenges/challenge-json-parser)
+* **Data Structure Credits**:
+  [Stack Overflow: Data types for representing JSON in C](https://stackoverflow.com/questions/19543326/datatypes-for-representing-json-in-c)
+
+---
+
+## Design Decisions
+
+1. Mimic (imperfectly) Python’s `json` module with `loads` and `dumps`.
+2. Prefer throwing descriptive errors over silently returning invalid values.
+3. Use `std::vector` for both arrays and objects to preserve insertion order.
+4. Support arbitrary nesting depth.
+5. Expose a high-level, safe **view abstraction (`JSONHandle`)** over raw node pointers.
+
+---
 
 ## Requirements
 
-- **Compiler**: g++ (with C++23 support)
-- **CMake**: for building and running tests
+* **Compiler**: C++23-capable compiler (tested with `g++`)
+* **CMake**: for building and running tests
+
+---
 
 ## Project Structure
 
-- **json.hpp**: Header-only library for creating and parsing JSON.
-- **validate-json.cpp**: Program that validates JSON files, given a path argument. In addition to validation, it benchmarks the runtime (in milliseconds) for processing each JSON file. This can help assess performance with files of varying sizes.
-- **create-json.cpp**: Example program that demonstrates creating a JSON document using the library.
-- **manipulate-json.cpp**: Demonstrates loading a JSON document, casting nodes to object references, modifying keys, and adding new elements.
-- **test/**: Directory containing sample JSON files (`passXX.json`, `failXX.json`, `benchxx.json`) for validation. Includes 318 additional tests from the [JSONTestSuite](https://github.com/nst/JSONTestSuite/tree/master/test_parsing) under `test/extras/`.
+* **json.hpp** — Header-only JSON library
+* **validate-json.cpp** — Validates JSON files and benchmarks parsing time
+* **create-json.cpp** — Demonstrates JSON creation
+* **manipulate-json.cpp** — Demonstrates JSON navigation and modification
+* **test/** — Test JSON files (`passXX.json`, `failXX.json`, `benchXX.json`)
+  * Includes additional tests from
+    [JSONTestSuite](https://github.com/nst/JSONTestSuite/tree/master/test_parsing) under `test/extras/`
+
+---
 
 ## Building the Project
 
-Run the following command to build both example programs:
-
 ```bash
-cmake -B build && cmake --build build -j4
+cmake -S . -B build
+cmake --build build -j4
 ```
 
-This will produce three executables in the `build/` directory:
-- `build/validate-json.out`
-- `build/create-json.out`
-- `build/manipulate-json.out`
+This produces the following executables in `build/`:
+
+* `validate-json`
+* `create-json`
+* `manipulate-json`
+
+---
 
 ## Running the JSON Validator
 
-To validate JSON files in the `test/` directory, run:
+Tests are registered with CTest.
 
 ```bash
-ctest --build-dir build
+cd build
+ctest
 ```
 
-This will execute `validate-json.out` on the test files and print the results to the console. Tests under `test/extras` are not included by default and must be run manually if desired.
+To see full output from the validator:
+
+```bash
+ctest --verbose --test-dir build
+```
+
+---
 
 ## Creating Sample JSON Documents
 
-The `create-json.cpp` demonstrates how to create JSON structures using the library.
+Example from `create-json.cpp`:
 
-### Example Usage:
 ```cpp
-// Creating an array
-JSON::JSONNode_Ptr one   = JSON::helper::createNode(1);
-JSON::JSONNode_Ptr two   = JSON::helper::createNode(2);
-JSON::JSONNode_Ptr arr   = JSON::helper::createArray("array", {one, two});
+JSON::JSONNodePtr one  = JSON::helper::createNode(1);
+JSON::JSONNodePtr two  = JSON::helper::createNode(2);
+JSON::JSONNodePtr arr  = JSON::helper::createArray("array", {one, two});
 
-// Simple key-value pairs
-JSON::JSONNode_Ptr int_  = JSON::helper::createNode("number", 123);
-JSON::JSONNode_Ptr str_  = JSON::helper::createNode("string", "Hello World");
+JSON::JSONNodePtr num  = JSON::helper::createNode("number", 123);
+JSON::JSONNodePtr str  = JSON::helper::createNode("string", "Hello World");
 
-// Create a root object
-JSON::JSONNode_Ptr root  = JSON::helper::createObject({arr, int_, str_});
+JSON::JSONNodePtr root = JSON::helper::createObject({arr, num, str});
 
-// Serialize to JSON string
 std::cout << JSON::Parser::dumps(root) << "\n";
 ```
 
+Output:
+
 ```json
-{"array": [1, 2], "number": 123, "string": "Hello World"}
+{"array":[1,2],"number":123,"string":"Hello World"}
 ```
 
-## Definitions
+---
 
-### Types of JSON Objects
-The library defines several classes to represent different JSON structures:
+## Core Types
 
-- **`JSONNode`**: Base class for all JSON nodes, handling keys and types.
-- **`JSONValueNode`**: Represents simple key-value pairs.
-- **`JSONArrayNode`**: Represents an array of JSON nodes, equivalent to JSON arrays.
-- **`JSONObjectNode`**: Represents an object with key-value pairs, equivalent to JSON objects.
+### JSON Node Hierarchy
 
-### Helper Functions
-The `helper` namespace provides functions to simplify the creation of JSON nodes and structures, making it easy to build complex JSON documents.
+* **`JSONNode`** — Base class for all nodes
+* **`JSONValueNode`** — Simple values (`string`, `number`, `bool`, `null`)
+* **`JSONArrayNode`** — Array of JSON nodes
+* **`JSONObjectNode`** — Object of key–value pairs
 
-#### Example Helper Functions:
-- **`createNode`**: Creates a simple JSON node from a value.
-- **`createArray`**: Creates an array node containing other JSON nodes.
-- **`createObject`**: Creates an object node with key-value pairs.
-- **`pretty`**: Prettifies a JSON dump string by formatting it with appropriate indentation for better readability.
+---
 
-### Parser Class
-The `Parser` class handles the logic to parse JSON from strings and to dump JSON into strings.
+## JSONHandle Convenience Wrapper
 
-#### Key Methods:
-- **`loads`**: Loads JSON from a string in memory.
-- **`dumps`**: Serializes a JSON node to a string.
+`JSONHandle` is a lightweight wrapper around `JSONNodePtr` that provides a safer and more expressive API for navigating and manipulating JSON trees.
 
-For detailed definitions and more examples, refer to the source files included in this project.
+It behaves like a **non-owning view** with Python-like ergonomics while preserving strict type semantics.
+
+---
+
+### Safe Navigation (`operator[]`)
+
+```cpp
+JSONHandle root = Parser::loads(json_string);
+
+auto value = root["config"]["threads"];
+```
+
+* Returns an empty handle if:
+  * The node type is incorrect
+  * The key or index does not exist
+* Never throws
+
+---
+
+### Checked Access (`at()`)
+
+```cpp
+auto threads = root.at("config").at("threads");
+```
+
+* Throws `std::runtime_error` if:
+
+  * The node is not an object or array
+  * The key or index does not exist
+
+---
+
+### Typed Value Extraction (`to<T>()`)
+
+```cpp
+int threads = root["threads"].to<int>();
+std::string name = root["name"].to<std::string>();
+```
+
+* Valid only for value nodes
+* Throws if the type does not match
+* Returns a default-constructed value if the handle is empty
+
+---
+
+### Range-based Iteration
+
+```cpp
+for (JSONHandle child : root["items"]) {
+    std::cout << child.str() << "\n";
+}
+```
+
+* Arrays iterate over elements
+* Objects iterate over values (in insertion order)
+* Value nodes iterate as empty ranges
+
+---
+
+### Type-safe Casting
+
+```cpp
+auto &obj = root.cast<JSONObjectNode>();
+auto &arr = root["items"].cast<JSONArrayNode>();
+```
+
+* Throws on invalid casts
+* Intended for advanced use cases
+
+---
+
+### String Serialization
+
+```cpp
+root.str();        // pretty-printed (default)
+root.str(false);   // compact
+```
+
+`str()` is a convenience wrapper around the parser’s dump functionality.
+
+---
+
+## Parser API
+
+### `Parser::loads`
+
+Parses a JSON string and returns a `JSONHandle`.
+
+### `Parser::dumps`
+
+Serializes a JSON node into a string (pretty or compact).
+
+---
+
+## Notes
+
+* `JSONHandle` is cheap to copy (wraps a `shared_ptr`)
+* Invalid access never causes undefined behavior
+* Iteration order matches insertion order
+* Exit codes from `validate-json` integrate cleanly with CTest
+
+---
+
+For additional examples and details, refer directly to the source files in this repository.
