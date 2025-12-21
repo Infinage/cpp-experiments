@@ -1,7 +1,8 @@
 // https://queensgame.vercel.app/level/1
-// g++ queens.cpp -o queens -std=c++23 -I/usr/include/opencv4 -lopencv_core -lopencv_imgcodecs -lopencv_imgproc -I/home/kael/cpplib/include -Wno-deprecated-enum-enum-conversion
+// g++ queens.cpp -o queens -std=c++23 -I/usr/include/opencv4 -lopencv_core -lopencv_imgcodecs -lopencv_imgproc
 
 #include <algorithm>
+#include <csignal>
 #include <ranges>
 #include <sstream>
 #include <stack>
@@ -11,9 +12,10 @@
 
 #include "opencv2/imgcodecs.hpp"
 #include "opencv2/imgproc.hpp"
-#include "crow/app.h"
 
-std::string htmlMarkup {R"*(
+#include "../networking/net.hpp"
+
+const std::string htmlMarkup {R"*(
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -112,7 +114,8 @@ std::string htmlMarkup {R"*(
                 imgEl.style.display = 'block';
                 document.getElementById("clearBtn").style.display = 'inline';
             } else {
-                alert("Failed to process image.");
+                const errorText = await response.text();
+                alert("Failed to process image: " + errorText);
             }
         }
 
@@ -156,10 +159,12 @@ class QueensSolver {
         // Returns true if neighbours of said cell has a queen placed
         bool checkNeighbours(const std::size_t row, const std::size_t col) const {
             for (int dr {-1}; dr <= 1; ++dr) {
+                auto N {static_cast<long>(nQueens)};
                 for (int dc {-1}; dc <= 1; ++dc) {
-                    std::size_t cRow {row + static_cast<std::size_t>(dr)};
-                    std::size_t cCol {col + static_cast<std::size_t>(dc)};
-                    if (cRow < nQueens && cCol < nQueens && solution[cRow][cCol])
+                    auto cRow {static_cast<long>(row) + dr};
+                    auto cCol {static_cast<long>(col) + dc};
+                    if ((dr == 0 && dc == 0) || (cRow < 0 || cCol < 0 || cRow >= N || cCol >= N)) continue;
+                    else if (solution[static_cast<std::size_t>(cRow)][static_cast<std::size_t>(cCol)])
                         return true;
                 }
             }
@@ -312,7 +317,8 @@ class QueensSolver {
 
             // Check - 2
             if (regions.size() != nQueens) 
-                throw std::runtime_error("Regions must equal the grid dimensions");
+                throw std::runtime_error(std::format("Regions ({}) must equal the grid dimensions ({})", 
+                    regions.size(), nQueens));
 
             // Placeholder to hold the text rep solution
             solution = std::vector<std::vector<bool>>(nQueens, std::vector<bool>(nQueens, false));
@@ -374,32 +380,98 @@ class QueensSolver {
         }
 };
 
-static crow::response solvePuzzleReq(const crow::request &req) {
-    // Read input and solve it
-    QueensSolver solver{req.body};
-    solver.solve();
-    cv::Mat sol {solver.getImage()};
+net::HttpResponse solvePuzzleReq(const net::HttpRequest &req) {
+    // Construct a response placeholder
+    net::HttpResponse resp; 
 
-    // Get solution image for embedding into resp
-    std::vector<uchar> blob;
-    cv::imencode(".png", sol, blob);
-    std::string data {blob.begin(), blob.end()};
+    // Read input and attempt solving it
+    try {
+        QueensSolver solver{req.getBody()};
+        solver.solve(); 
+        cv::Mat sol {solver.getImage()};
 
-    // Construct and return resp
-    crow::response resp{data};
-    resp.set_header("Content-Type", "image/png");
+        // Get solution image for embedding into resp
+        std::vector<uchar> blob;
+        cv::imencode(".png", sol, blob);
+        std::string data {blob.begin(), blob.end()};
+        resp.body = data;
+        resp.headers.insert({"Content-Type", {"image/png"}});
+    } 
+
+    catch (std::exception &ex) { 
+        resp.body = ex.what();
+        resp.headers.insert({"Content-Type", {"text/html"}});
+        resp.statusCode = 500; 
+    }
+
     return resp;
 }
 
-static crow::response homePage() {
-    crow::response resp{htmlMarkup};
-    resp.set_header("Content-Type", "text/html");
+net::HttpResponse homePage() {
+    net::HttpResponse resp;
+    resp.body = htmlMarkup;
+    resp.headers.insert({"Content-Type", {"text/html"}});
     return resp;
 }
+
+net::HttpResponse redirectHome() {
+    net::HttpResponse resp;
+    resp.statusCode = 302;
+    resp.headers.insert({"Location", {"/"}});
+    return resp;
+}
+
+static int SERVER_RUNNING = true;
 
 int main() {
-    crow::SimpleApp app;
-    CROW_ROUTE(app, "/").methods(crow::HTTPMethod::GET)(homePage);
-    CROW_ROUTE(app, "/solve").methods(crow::HTTPMethod::POST)(solvePuzzleReq);
-    app.port(8080).run();
+    // Initialize a non blocking socket and bind to port
+    net::Socket serverSocket;
+    serverSocket.setNonBlocking();
+    serverSocket.bind("0.0.0.0", 8080);
+    serverSocket.listen();
+
+    net::PollManager pm;
+    const int serverFD {pm.track(std::move(serverSocket))};
+    std::unordered_map<int, std::string> recvBuffers;
+    std::unordered_map<int, std::string> sendBuffers;
+
+    // On interupt set SERVER_RUNNING flag to false
+    std::signal(SIGINT, [](int) { SERVER_RUNNING = false; });
+
+    while (SERVER_RUNNING) {
+        for (auto &[socket, event]: pm.poll(5, false)) {
+            int fd {socket.fd()};
+            if (!SERVER_RUNNING) break;
+
+            else if (event & net::PollEventType::Readable && fd == serverFD) {
+                net::Socket client {socket.accept()};
+                pm.track(std::move(client), net::PollEventType::Readable);
+            }
+
+            else if ((event & net::PollEventType::Readable)) {
+                recvBuffers[fd] += socket.recv();
+                if (net::utils::isCompleteHttpRequest(recvBuffers[fd])) {
+                    auto httpReq {net::HttpRequest::fromString(std::move(recvBuffers[fd]))};
+                    auto url {httpReq.getURL()}; recvBuffers.erase(fd);
+                    pm.updateTracking(fd, net::PollEventType::Writable);
+                    if (url.getPath() == "/" && httpReq.getMethod() == "GET") 
+                        sendBuffers[fd] = homePage().toString();
+                    else if (url.getPath() == "/solve" && httpReq.getMethod() == "POST")
+                        sendBuffers[fd] = solvePuzzleReq(httpReq).toString();
+                    else
+                        sendBuffers[fd] = redirectHome().toString();
+                }
+            }
+
+            else if (event & net::PollEventType::Writable && fd != serverFD) {
+                auto sendBytes {socket.send(sendBuffers[fd])};
+                sendBuffers[fd] = sendBuffers[fd].substr(static_cast<std::size_t>(sendBytes));
+                if (sendBuffers[fd].empty()) { sendBuffers.erase(fd); pm.untrack(fd); }
+            }
+
+            else if ((event & net::PollEventType::Error) && fd != serverFD) {
+                pm.untrack(fd); recvBuffers.erase(fd); sendBuffers.erase(fd);
+            }
+        }
+    }
 }

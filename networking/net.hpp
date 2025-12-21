@@ -117,6 +117,67 @@ namespace net {
             return res;
         }
 
+        [[nodiscard]] inline std::unordered_map<std::string, std::vector<std::string>>
+        parseHeadersFromString(std::string_view headerRaw) {
+            std::size_t pos1, pos2;
+            std::unordered_map<std::string, std::vector<std::string>> headers;
+            while (!headerRaw.empty()) {
+                pos1 = headerRaw.find(':');
+                if (pos1 == std::string::npos) throw std::runtime_error("Invalid Http header");
+
+                pos2 = headerRaw.find("\r\n", pos1 + 1);
+                if (pos2 == std::string::npos) throw std::runtime_error("Invalid Http header");
+
+                // Header keys are always in lower case
+                std::string key {trimStr(toLower(headerRaw.substr(0, pos1)))}; 
+                std::string value {trimStr(headerRaw.substr(pos1 + 1, pos2 - pos1 - 1))};
+                headers[key].push_back(value);
+
+                headerRaw = headerRaw.substr(pos2 + 2);
+            }
+
+            return headers;
+        }
+
+        // Parse the input http string to see if we are good to feed const from it
+        [[nodiscard]] inline bool isCompleteHttpRequest(std::string_view raw) {
+            std::size_t pos {raw.find("\r\n")};
+            if (pos == std::string::npos) return false;
+
+            std::size_t headerEnd {pos};
+            pos = raw.find("\r\n\r\n", headerEnd);
+            if (pos == std::string::npos) return false;
+            auto body = raw.substr(pos + 4);
+
+            std::string_view headerRaw {raw.begin() + headerEnd + 2, raw.begin() + pos + 2};
+            auto headers = parseHeadersFromString(headerRaw);
+
+            if (headers.count("content-length")) {
+                try {
+                    auto length {headers.at("content-length")[0]};
+                    return body.size() >= std::stoul(length);
+                } catch (...) { return false; }
+            }
+
+            if (headers.count("transfer-encoding")) {
+                std::size_t chunkSize;
+                do {
+                    pos = body.find("\r\n");
+                    if (pos == std::string::npos) return false;
+                    try { 
+                        std::string chunkSizeRaw {body.substr(0, pos)};
+                        chunkSize = std::stoul(chunkSizeRaw, nullptr, 16); 
+                    }
+                    catch (...) { return false; }
+                    if (body.size() <= pos + 4 + chunkSize) return false;
+                    body = body.substr(pos + chunkSize + 4);
+                } while (chunkSize && !body.empty());
+                return true;
+            }
+
+            return true;
+        }
+
         [[nodiscard]] inline 
         std::tuple<std::string, std::unordered_map<std::string, std::vector<std::string>>, std::string> 
         parseHttpString(std::string_view raw) {
@@ -134,22 +195,8 @@ namespace net {
                 raw.begin() + static_cast<long>(pos2) + 2
             };
 
-            // Parse the headers
-            std::unordered_map<std::string, std::vector<std::string>> headers;
-            while (!headerRaw.empty()) {
-                pos1 = headerRaw.find(':');
-                if (pos1 == std::string::npos) throw std::runtime_error("Invalid Http header");
-
-                pos2 = headerRaw.find("\r\n", pos1 + 1);
-                if (pos2 == std::string::npos) throw std::runtime_error("Invalid Http header");
-
-                // Header keys are always in lower case
-                std::string key {trimStr(toLower(headerRaw.substr(0, pos1)))}; 
-                std::string value {trimStr(headerRaw.substr(pos1 + 1, pos2 - pos1 - 1))};
-                headers[key].push_back(value);
-
-                headerRaw = headerRaw.substr(pos2 + 2);
-            }
+            // Parse the headers (no effect if headerRaw is empty)
+            auto headers {parseHeadersFromString(headerRaw)};
 
             return std::make_tuple(firstLine, headers, body);
         }
@@ -821,6 +868,21 @@ namespace net {
                 if (pos2 == std::string::npos) pos2 = statusLine.size(); // since reason is optional
                 resp.statusCode = std::stoi(statusLine.substr(pos1, pos2 - pos1).data());
                 return resp;
+            }
+
+            [[nodiscard]] std::string toString() const {
+                std::ostringstream oss;
+                oss << "HTTP/1.1 " << statusCode << "\r\n";
+                for (const auto &kv: headers) {
+                    for (const auto &val: kv.second)
+                        oss << kv.first << ": " << val << "\r\n";
+                }
+                if (body.empty()) oss << "\r\n";
+                else {
+                    oss << "content-length: " << body.size() 
+                        << "\r\n\r\n" << body;
+                }
+                return oss.str();
             }
 
             [[nodiscard]] inline bool ok() const { return statusCode >= 200 && statusCode < 400; }

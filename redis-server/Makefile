@@ -23,15 +23,11 @@ RELEASE_FLAGS = -O2
 
 # Rules
 all: release
-
 release: $(PROD_EXEC)
-
 debug: $(PROD_EXEC_DEBUG)
-
 test: $(TEST_EXEC)
 
-$(BIN_DIR):
-	mkdir -p $@
+$(BIN_DIR): mkdir -p $@
 
 # Releas target
 $(PROD_EXEC): $(MAIN_SRC) $(PROD_OBJS) | $(BIN_DIR)
