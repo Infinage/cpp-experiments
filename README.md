@@ -39,6 +39,8 @@ A growing collection of practical C++ projects — from system tools and network
 | `misc/iniparser.hpp`   | INI config parser with an interface similar to Python’s `configparser`.                                       |
 | `json-parser/json.hpp` | Standalone JSON parser with object manipulation and validation support. First project; may be messy.          |
 | `networking/net.hpp`   | TCP/SSL sockets, serialization helpers, safer wrappers, and other goodies                                     |
+| `misc/tarfile.hpp`     | POSIX ustar-compatible TAR reader/writer with support for files, directories, symlinks, and metadata.         |
+| `misc/xml.hpp`         | Lightweight XML parser and serializer with DOM-style traversal and zero external dependencies.                |
 
 ---
 

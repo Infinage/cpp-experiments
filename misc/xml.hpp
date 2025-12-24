@@ -1,3 +1,5 @@
+#pragma once
+
 #include <cctype>
 #include <fstream>
 #include <iostream>
@@ -16,6 +18,16 @@
  *   - Support for &apos, &quot, etc
  *   - Support namespace validation
  *   - API for navigating tree
+ *
+ *  Usage:
+ *  ```
+ *  #include "xml.hpp"
+ *  int main() {
+ *      XMLUtil::XMLTree tree {XMLUtil::XMLTree::parseFile("sample.xml")};
+ *      std::cout << tree << '\n';
+ *      return 0;
+ *  }
+ *  ```
  */
 
 namespace XMLUtil {
@@ -27,7 +39,7 @@ namespace XMLUtil {
         return std::ranges::find(options, val) != options.end();
     }
 
-    std::string trim(const std::string &str) {
+    [[nodiscard]] inline std::string trim(const std::string &str) {
         return 
             str 
             | std::views::drop_while(::isspace) 
@@ -390,9 +402,3 @@ namespace XMLUtil {
             }
     };
 };
-
-int main() {
-    XMLUtil::XMLTree tree {XMLUtil::XMLTree::parseFile("sample.xml")};
-    std::cout << tree << '\n';
-    return 0;
-}
