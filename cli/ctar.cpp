@@ -30,8 +30,8 @@ int main(int argc, char **argv) try {
     auto    addFiles = cli.get<std::vector<std::string>>("add");
 
     auto flags = {listFlag, extractFlag, !addFiles.empty()};
-    if (std::ranges::count(flags, true) == 1)
-        throw std::runtime_error{"Ctar Error: Can only pick one of options: "
+    if (std::ranges::count(flags, true) != 1)
+        throw std::runtime_error{"Ctar Error: Must pick (only) one of: "
             "'list', 'extract', 'add'"};
 
     if (listFlag) {

@@ -69,8 +69,6 @@ namespace tar {
         }
 
         inline std::pair<std::string, std::string> splitPathUSTAR(std::string_view path) {
-            if (path.empty()) throw std::runtime_error("Tarfile Error: empty path");
-
             if (path.size() > 255) throw std::runtime_error{"Tarfile Error: "
                 "Path exceeds USTAR limit: " + std::string(path)};
 
@@ -238,26 +236,16 @@ namespace tar {
         std::string writeHeader() const {
             std::string header(512, '\0');
             impl::writeStr<100>(header, fname, 0);
-            std::ranges::copy(impl::writeOInt< 8>(mode), header.data() + 100);
-            std::ranges::copy(impl::writeOInt< 8>( uid), header.data() + 108);
-            std::ranges::copy(impl::writeOInt< 8>( gid), header.data() + 116);
-            std::ranges::copy(impl::writeOInt<12>(size), header.data() + 124);
+            std::ranges::copy(impl::writeOInt< 7>(mode), header.data() + 100);
+            std::ranges::copy(impl::writeOInt< 7>( uid), header.data() + 108);
+            std::ranges::copy(impl::writeOInt< 7>( gid), header.data() + 116);
+            std::ranges::copy(impl::writeOInt<11>(size), header.data() + 124);
 
             auto mts = std::chrono::duration_cast<std::chrono::seconds>(mtime.time_since_epoch()).count();
-            std::ranges::copy(impl::writeOInt<12>(static_cast<std::uint64_t>(mts)), header.data() + 136);
-
-            // Calculate the checksum
-            std::uint16_t unsignedSum {};
-            for (std::size_t i{}; i < 512; ++i) {
-                char ch = 148 <= i && i < 156? ' ': header.at(i); 
-                unsignedSum += static_cast<unsigned char>(ch);
-            }
-
-            // Write the checksum + NULL + ' '
-            std::ranges::copy(impl::writeOInt<6>(unsignedSum), header.data() + 148);
-            header.at(155) = ' ';
+            std::ranges::copy(impl::writeOInt<11>(static_cast<std::uint64_t>(mts)), header.data() + 136);
 
             // Write the file type
+            header.at(155) = ' ';
             header.at(156) = ftype == FileType::NORMAL? '0': 
                 ftype == FileType::SYMLINK? '2': '5';
 
@@ -268,6 +256,16 @@ namespace tar {
                 impl::writeStr<32>(header, gname, 297);
                 impl::writeStr<155>(header, fprefix, 345);
             }
+
+            // Calculate the checksum at the end
+            std::uint16_t unsignedSum {};
+            for (std::size_t i{}; i < 512; ++i) {
+                char ch = 148 <= i && i < 156? ' ': header.at(i); 
+                unsignedSum += static_cast<unsigned char>(ch);
+            }
+
+            // Write the checksum + NULL + ' '
+            std::ranges::copy(impl::writeOInt<6>(unsignedSum), header.data() + 148);
 
             return header;
         }
@@ -339,8 +337,11 @@ namespace tar {
                 assertFileMode(Mode::READ);
 
                 // Construct the full path for file write
-                auto destPath = destDir / member.fullPath(); 
+                auto destPathStr = member.fullPath();
+                if (destPathStr.back() == '/') destPathStr.pop_back();
+                auto destPath = destDir / destPathStr; 
                 auto destBase = destPath.parent_path();
+
                 if (!std::filesystem::exists(destBase))
                     std::filesystem::create_directories(destBase);
 
@@ -353,7 +354,7 @@ namespace tar {
                         "already exists: " + destPath.string()};
 
                 if (member.ftype == FileType::NORMAL) [[likely]] {
-                    std::fstream dest {destPath, std::ios::binary};
+                    std::fstream dest {destPath, std::ios::binary | std::ios::out};
                     file.seekg(static_cast<std::streamoff>(member.blockOffset));
                     impl::chunkCopy(file, dest, member.size);
                 } 
@@ -400,26 +401,28 @@ namespace tar {
                 // Split the arcname such that it fits inside 255 char limit
                 auto [aleft, aright] = impl::splitPathUSTAR(arcname);
 
-                if (std::filesystem::is_directory(sourcePath) && !std::filesystem::is_empty(sourcePath)) {
+                // Regardless of what we are dealing with, write entry to archive
+                auto header = TarInfo::readFile(sourcePath);
+                header.blockOffset = static_cast<std::uint64_t>(file.tellp()) + 512;
+                if (!arcname.empty()) { header.fprefix = aleft, header.fname = aright; }
+                if (header.ftype == FileType::DIRECTORY && header.fname.back() != '/')
+                    header.fname.push_back('/');
+                auto headerStr = header.writeHeader();
+                file.write(headerStr.c_str(), 512);
+
+                // If entry is a file, write its content as well
+                if (header.ftype == FileType::NORMAL) {
+                    std::fstream ifs {sourcePath, std::ios::binary | std::ios::in};
+                    impl::chunkCopy(ifs, file, header.size);
+                    auto padBytes = header.size % 512? 512 - (header.size % 512): 0;
+                    std::fill_n(std::ostream_iterator<char>(file), padBytes, '\0');
+                }
+
+                // If entry is a directory and it has additional files under, recurse
+                else if (header.ftype == FileType::DIRECTORY && !std::filesystem::is_empty(sourcePath)) {
                     for (auto nextPath: std::filesystem::directory_iterator {sourcePath}) {
                         auto nextArcPath = (std::filesystem::path{arcname} / nextPath).string();
                         add(nextPath, nextArcPath, true);
-                    }
-                }
-
-                else {
-                    auto header = TarInfo::readFile(sourcePath);
-                    header.blockOffset = static_cast<std::uint64_t>(file.tellp()) + 512;
-                    if (!arcname.empty()) { header.fprefix = aleft, header.fname = aright; }
-                    if (header.ftype == FileType::DIRECTORY && header.fname.back() != '/')
-                        header.fname.push_back('/');
-                    auto headerStr = header.writeHeader();
-                    file.write(headerStr.c_str(), 512);
-                    if (header.ftype == FileType::NORMAL) {
-                        std::fstream ifs {sourcePath, std::ios::binary};
-                        impl::chunkCopy(ifs, file, header.size);
-                        auto padBytes = header.size % 512? 512 - (header.size % 512): 0;
-                        std::fill_n(std::ostream_iterator<char>(file), padBytes, '\0');
                     }
                 }
 
