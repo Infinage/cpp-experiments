@@ -246,8 +246,8 @@ namespace tar {
 
             // Write the file type
             header.at(155) = ' ';
-            header.at(156) = ftype == FileType::NORMAL? '0': 
-                ftype == FileType::SYMLINK? '2': '5';
+            header.at(156) = ftype == FileType::NORMAL? '0': ftype == FileType::SYMLINK? '2': '5';
+            impl::writeStr<100>(header, linkName, 157);
 
             // Check and write ustar relevant fields
             if (ustar) {
