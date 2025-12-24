@@ -123,9 +123,13 @@ namespace argparse {
                 std::ostringstream oss, part;
 
                 // Handle the name portion with padding
-                part << "--" << _name;
-                if (!_alias.empty()) 
-                    part << ", -" << _alias;
+                if (_type == ARGTYPE::POSITIONAL) {
+                    part << "<" << _name << ">";
+                } else {
+                    part << "--" << _name;
+                    if (!_alias.empty()) 
+                        part << ", -" << _alias;
+                }
 
                 // Insert name along with the actual help str
                 oss << std::left << std::setw(width) << part.str() 
@@ -566,8 +570,7 @@ namespace argparse {
                     subcommandsAvailable += command.name + ',';
                     std::string commandDesc {command._description? *command._description: "The '" + command.name + "' subcommand"};
                     subcommandsHelp << ' ' << std::left << std::setw(maxSubCmdLen) 
-                                    << command.name << "\t" << commandDesc 
-                                    << '\n';
+                                    << command.name << "\t" << commandDesc << '\n';
                 }
                 if (!subcommands.empty()) {
                     subcommandsAvailable.pop_back();
@@ -591,10 +594,29 @@ namespace argparse {
                     oss << "\n\nSubcommands:\n" << temp;
                 }
 
-                // Print out all the args with details
-                oss << "\n\nArguments:\n";
-                for (const auto &[_, arg]: allArgs)
-                    oss << " " << arg.getHelp(maxArgLen) << '\n';
+                std::ostringstream positionalHelp, nonPositionalHelp;
+                bool positionalAvailable {false}, nonPositionalAvailable {false};
+
+                // Split into positional and non-positional args help
+                for (const auto &[_, arg]: allArgs) {
+                    if (arg.getArgType() == ARGTYPE::POSITIONAL) {
+                        positionalHelp << " " << arg.getHelp(maxArgLen) << '\n';
+                        positionalAvailable = true;
+                    } else {
+                        nonPositionalHelp << " " << arg.getHelp(maxArgLen) << '\n';
+                        nonPositionalAvailable = true;
+                    }
+                }
+
+                // Print out positionalHelp first
+                if (positionalAvailable) 
+                    oss << "\n\nArguments:\n" << positionalHelp.str();
+
+                // Print the non positional help next
+                if (nonPositionalAvailable) {
+                    oss << (positionalAvailable? "\n": "\n\n");
+                    oss << "Options:\n" << nonPositionalHelp.str();
+                }
 
                 if (_epilog) 
                     oss << "\n" << *_epilog << '\n';

@@ -1,8 +1,3 @@
-/*
- * TODO:
- * - ExtractAll to set the file perms and mtime
- */
-
 #pragma once
 
 #include <algorithm>
@@ -13,7 +8,24 @@
 #include <fstream>
 #include <iterator>
 
+#include <pwd.h>
+#include <grp.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
 namespace tar {
+    enum class FileType: std::uint8_t { NORMAL=0, SYMLINK=2, DIRECTORY=5 };
+
+    struct FileStat {
+        std::string fname;
+        std::uint32_t mode, uid, gid; 
+        std::uint64_t size;
+        std::chrono::system_clock::time_point mtime;
+        FileType ftype;
+        std::string linkName;
+        std::string uname, gname;
+    };
+
     namespace impl {
         template<std::unsigned_integral T>
         T parseOInt(std::string_view str) {
@@ -34,18 +46,19 @@ namespace tar {
             std::ranges::copy(src.substr(0, N), dest.data() + offset);
         };
 
-        inline bool chunkCopy(std::fstream &source, std::fstream &destination, std::uint64_t size, std::uint64_t chunkSize) {
+        inline void chunkCopy(std::fstream &source, std::fstream &destination, 
+            std::uint64_t size, std::uint64_t chunkSize = 1024 * 1024 * 5) 
+        {
             std::vector<char> buffer(chunkSize);
             while (size > 0) {
                 std::size_t toRead {size > chunkSize? chunkSize: size};
                 source.read(buffer.data(), static_cast<std::streamsize>(toRead));
                 std::streamsize bytesRead {source.gcount()};
-                if (bytesRead <= 0) return false;
+                if (bytesRead <= 0) throw std::runtime_error{"TarFile Error: Chunked READ->write failed"};
                 destination.write(buffer.data(), bytesRead);
-                if (!destination.good()) return false;
+                if (!destination.good()) throw std::runtime_error{"TarFile Error: Chunked read->WRITE failed"};
                 size -= static_cast<std::uint64_t>(bytesRead);
             }
-            return !size;
         }
 
         inline std::string rstrip(std::string_view str) {
@@ -53,6 +66,71 @@ namespace tar {
             if (end != std::string::npos)
                 str = str.substr(0, end);
             return {str.data(), str.size()};
+        }
+
+        inline std::pair<std::string, std::string> splitPathUSTAR(std::string_view path) {
+            if (path.empty()) throw std::runtime_error("Tarfile Error: empty path");
+
+            if (path.size() > 255) throw std::runtime_error{"Tarfile Error: "
+                "Path exceeds USTAR limit: " + std::string(path)};
+
+            // Fits entirely in name
+            if (path.size() <= 100) return { "", std::string(path) };
+
+            // Try splitting from the right on '/'
+            // prefix = path[0..i-1]; name = path[i+1..end]
+            for (std::size_t i = path.size(); i-- > 0; ) {
+                if (path[i] != '/') continue;
+                if (path.size() - i - 1 <= 100 && i <= 155) {
+                    return {
+                        std::string(path.substr(0, i)),
+                        std::string(path.substr(i + 1))
+                    };
+                }
+            }
+
+            throw std::runtime_error{"Tarfile Error: No valid USTAR split for path: " 
+                + std::string(path)};
+        }
+
+        inline FileStat stat(const std::filesystem::path &path) {
+            struct ::stat st{}; 
+            if (::lstat(path.c_str(), &st) != 0)
+                throw std::runtime_error {"TarFile Error: Stat failed: " + path.string()};
+
+            FileStat fst {};
+
+            // File Permissions, User and Group IDs 
+            fst.mode = static_cast<std::uint32_t>(st.st_mode & 0777);
+            fst.uid  = static_cast<std::uint32_t>(st.st_uid);
+            fst.gid  = static_cast<std::uint32_t>(st.st_gid);
+
+            // Modified time (ignore tv_nsec)
+            fst.mtime = std::chrono::system_clock::time_point {
+                std::chrono::seconds{st.st_mtime}};
+
+            // File type
+            fst.size = 0;
+            if (S_ISDIR(st.st_mode)) {
+                fst.ftype = FileType::DIRECTORY;
+            } else if (S_ISREG(st.st_mode)) {
+                fst.ftype = FileType::NORMAL;
+                fst.size = static_cast<std::uint64_t>(st.st_size);
+            } else if (S_ISLNK(st.st_mode)) {
+                fst.ftype = FileType::SYMLINK;
+                std::vector<char> buf(static_cast<std::size_t>(st.st_size + 1));
+                ssize_t len = ::readlink(path.c_str(), buf.data(), buf.size());
+                if (len < 0) throw std::runtime_error{"Tarfile Error: readlink failed: " + path.string()};
+                fst.linkName.assign(buf.data(), static_cast<std::size_t>(len));
+            } else {
+                throw std::runtime_error{"Tarfile Error: unsupported file type: " + path.string()};
+            }
+
+            // Username & Group name (best effort)
+            if (auto *pw = ::getpwuid(st.st_uid)) fst.uname = pw->pw_name;
+            if (auto *gr = ::getgrgid(st.st_gid)) fst.gname = gr->gr_name;
+
+            return fst;
         }
     }
 
@@ -62,7 +140,7 @@ namespace tar {
         std::uint32_t mode, uid, gid; 
         std::uint64_t blockOffset, size;
         std::chrono::system_clock::time_point mtime;
-        enum class FileType: std::uint8_t { NORMAL=0, SYMLINK=2, DIRECTORY=5 } ftype;
+        FileType ftype;
         std::string linkName;
         bool ustar;
         std::string uname, gname;
@@ -71,25 +149,25 @@ namespace tar {
         // Full path combing both (no impact if not a ustar format)
         std::string fullPath() const {
             std::string result; result.reserve(fprefix.size() + fname.size());
-            result += impl::rstrip(fprefix); result += impl::rstrip(fname);
+            if (!fprefix.empty()) result += impl::rstrip(fprefix) + "/"; 
+            result += impl::rstrip(fname);
             return result;
         }
 
-        // Construct entry for empty directory
-        static TarInfo emptyDirectory(std::string_view fname) {
-            if (fname.size() > 255) 
-                throw std::runtime_error {"Tarfile Error: Filename length is "
-                    "too long: " + std::string{fname}};
+        // Construct entry for an input file, block offset is set to 0
+        static TarInfo readFile(const std::filesystem::path &fpath) {
+            auto fname = fpath.string(); 
+            auto [fpath_left, fpath_right] = impl::splitPathUSTAR(fname);
+            auto st = impl::stat(fpath);
 
-            TarInfo tarInfo;
-            tarInfo.ustar = true;
-            if (fname.size() <= 100) {
-                tarInfo.fname = fname;
-            } else if (fname.size() <= 255) {
+            TarInfo tarInfo {
+                .fname = fpath_right, .mode = st.mode, .uid = st.uid, .gid = st.gid, 
+                .blockOffset = 0, .size = st.size, .mtime = st.mtime, .ftype = st.ftype, 
+                .linkName = st.linkName, .ustar = true, .uname = st.uname, .gname = st.gname,
+                .fprefix = fpath_left
+            };
 
-            }
-
-            return tarInfo;
+            return tarInfo; 
         }
 
         // Construct from string, header offset is used to store the beginning idx of file
@@ -160,13 +238,13 @@ namespace tar {
         std::string writeHeader() const {
             std::string header(512, '\0');
             impl::writeStr<100>(header, fname, 0);
-            std::ranges::copy(impl::writeOInt< 8>( mode), header.data() + 100);
-            std::ranges::copy(impl::writeOInt< 8>(  uid), header.data() + 108);
-            std::ranges::copy(impl::writeOInt< 8>(  gid), header.data() + 116);
-            std::ranges::copy(impl::writeOInt<12>( size), header.data() + 124);
+            std::ranges::copy(impl::writeOInt< 8>(mode), header.data() + 100);
+            std::ranges::copy(impl::writeOInt< 8>( uid), header.data() + 108);
+            std::ranges::copy(impl::writeOInt< 8>( gid), header.data() + 116);
+            std::ranges::copy(impl::writeOInt<12>(size), header.data() + 124);
 
             auto mts = std::chrono::duration_cast<std::chrono::seconds>(mtime.time_since_epoch()).count();
-            std::ranges::copy(impl::writeOInt<12>(static_cast<std::uint64_t>(mts)), header.data() + 124);
+            std::ranges::copy(impl::writeOInt<12>(static_cast<std::uint64_t>(mts)), header.data() + 136);
 
             // Calculate the checksum
             std::uint16_t unsignedSum {};
@@ -256,9 +334,7 @@ namespace tar {
             }
 
             // Extracts a given tarfile member to specified dest directory
-            void extract(const TarInfo &member, const std::filesystem::path &destDir = ".", 
-                const std::size_t copyChunkSizeInBytes = 5 * 1024 * 1024)
-            {
+            void extract(const TarInfo &member, const std::filesystem::path &destDir = ".") {
                 // Ensure that file has been opened for READ ops
                 assertFileMode(Mode::READ);
 
@@ -276,25 +352,28 @@ namespace tar {
                     throw std::runtime_error{"Tarfile Error: Write filepath "
                         "already exists: " + destPath.string()};
 
-                if (member.ftype == TarInfo::FileType::NORMAL) [[likely]] {
+                if (member.ftype == FileType::NORMAL) [[likely]] {
                     std::fstream dest {destPath, std::ios::binary};
                     file.seekg(static_cast<std::streamoff>(member.blockOffset));
-                    impl::chunkCopy(file, dest, member.size, copyChunkSizeInBytes);
+                    impl::chunkCopy(file, dest, member.size);
                 } 
 
-                else if (member.ftype == TarInfo::FileType::DIRECTORY) {
+                else if (member.ftype == FileType::DIRECTORY) {
                     std::filesystem::create_directory(destPath);
                 }
 
-                else if (member.ftype == TarInfo::FileType::SYMLINK) {
+                else if (member.ftype == FileType::SYMLINK) {
                     std::filesystem::create_symlink(impl::rstrip(member.linkName), destPath);
                 }
+
+                // Set file last modified time and file perms
+                auto mftime = std::chrono::file_clock::from_sys(member.mtime);
+                std::filesystem::last_write_time(destPath, mftime);
+                ::chmod(destPath.c_str(), member.mode);
             }
 
             // Extracts all members of a archive to the specified dest directory
-            void extractAll(const std::filesystem::path &destDir = ".", 
-                const std::size_t copyChunkSizeInBytes = 5 * 1024 * 1024) 
-            {
+            void extractAll(const std::filesystem::path &destDir = ".") {
                 // Ensure that file has been opened for READ ops
                 assertFileMode(Mode::READ);
 
@@ -305,7 +384,7 @@ namespace tar {
 
                 // Process and extract each member
                 for (const auto &member: getMembers()) {
-                    extract(member, destDir, copyChunkSizeInBytes);
+                    extract(member, destDir);
                 }
             }
 
@@ -318,27 +397,32 @@ namespace tar {
                     throw std::runtime_error{"Tarfile Error: No such file or directory: " 
                         + sourcePath.string()};
 
-                if (std::filesystem::is_regular_file(sourcePath)) {
+                // Split the arcname such that it fits inside 255 char limit
+                auto [aleft, aright] = impl::splitPathUSTAR(arcname);
 
-                }
-
-                else if (std::filesystem::is_directory(sourcePath)) {
-                    if (std::filesystem::is_empty(sourcePath)) {
-
-                    } 
-
-                    else {
-                        for (auto nextPath: std::filesystem::recursive_directory_iterator {sourcePath})
-                            add(sourcePath, arcname, true);
+                if (std::filesystem::is_directory(sourcePath) && !std::filesystem::is_empty(sourcePath)) {
+                    for (auto nextPath: std::filesystem::directory_iterator {sourcePath}) {
+                        auto nextArcPath = (std::filesystem::path{arcname} / nextPath).string();
+                        add(nextPath, nextArcPath, true);
                     }
                 }
 
-                else if (std::filesystem::is_symlink(sourcePath)) {
-
+                else {
+                    auto header = TarInfo::readFile(sourcePath);
+                    header.blockOffset = static_cast<std::uint64_t>(file.tellp()) + 512;
+                    if (!arcname.empty()) { header.fprefix = aleft, header.fname = aright; }
+                    if (header.ftype == FileType::DIRECTORY && header.fname.back() != '/')
+                        header.fname.push_back('/');
+                    auto headerStr = header.writeHeader();
+                    file.write(headerStr.c_str(), 512);
+                    if (header.ftype == FileType::NORMAL) {
+                        std::fstream ifs {sourcePath, std::ios::binary};
+                        impl::chunkCopy(ifs, file, header.size);
+                        auto padBytes = header.size % 512? 512 - (header.size % 512): 0;
+                        std::fill_n(std::ostream_iterator<char>(file), padBytes, '\0');
+                    }
                 }
 
-                else throw std::runtime_error {"Tarfile Error: Unsupported file type: " 
-                    + sourcePath.string()};
             }
 
             ~TarFile() {
@@ -364,4 +448,7 @@ namespace tar {
                         modeStr + " access"};
             }
     };
+
+    // Helper alias
+    using FMode = TarFile::Mode;
 }
