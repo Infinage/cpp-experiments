@@ -12,6 +12,7 @@
 #include <grp.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <fcntl.h>
 
 namespace tar {
     enum class FileType: std::uint8_t { NORMAL=0, SYMLINK=2, DIRECTORY=5 };
@@ -43,7 +44,10 @@ namespace tar {
         // Helper to truncate and write string at offset
         template<std::size_t N>
         void writeStr(std::string &dest, std::string_view src, std::size_t offset) {
-            std::ranges::copy(src.substr(0, N), dest.data() + offset);
+            if (dest.size() < offset + N) [[unlikely]] 
+                throw std::runtime_error{"TarFile Error: Attempt to write bytes larger than capacity"};
+            std::ranges::copy(src.begin(), src.begin() + std::min(N, src.size()), 
+                dest.data() + offset);
         };
 
         inline void chunkCopy(std::fstream &source, std::fstream &destination, 
@@ -129,6 +133,17 @@ namespace tar {
             if (auto *gr = ::getgrgid(st.st_gid)) fst.gname = gr->gr_name;
 
             return fst;
+        }
+
+        inline void setLastWriteTime(const std::filesystem::path &destPath, 
+            const std::chrono::system_clock::time_point &mftime) 
+        {
+            namespace cr = std::chrono; 
+            struct timespec times[2];
+            auto seconds = cr::duration_cast<cr::seconds>(mftime.time_since_epoch()).count();
+            times[0] = { .tv_sec = seconds, .tv_nsec = 0 }; // access time
+            times[1] = { .tv_sec = seconds, .tv_nsec = 0 }; // modification time
+            ::utimensat(AT_FDCWD, destPath.c_str(), times, AT_SYMLINK_NOFOLLOW);
         }
     }
 
@@ -216,8 +231,8 @@ namespace tar {
             // Check for ustar format
             if (header.substr(257, 5) == "ustar") {
                 tarInfo.ustar = true;
-                auto ustarVer = header.substr(262, 3);
-                if (!std::equal(ustarVer.begin(), ustarVer.end(), "  \0")) 
+                auto ustarVer = header.substr(263, 2);
+                if (!std::equal(ustarVer.begin(), ustarVer.end(), "00")) 
                     throw std::runtime_error("Tarfile Error: "
                     "Unknown ustar version: " + std::string{ustarVer});
 
@@ -251,7 +266,8 @@ namespace tar {
 
             // Check and write ustar relevant fields
             if (ustar) {
-                impl::writeStr<7>(header, "ustar  ", 257);
+                impl::writeStr<5>(header, "ustar", 257);
+                impl::writeStr<2>(header, "00", 263);
                 impl::writeStr<32>(header, uname, 265);
                 impl::writeStr<32>(header, gname, 297);
                 impl::writeStr<155>(header, fprefix, 345);
@@ -336,11 +352,8 @@ namespace tar {
                 // Ensure that file has been opened for READ ops
                 assertFileMode(Mode::READ);
 
-                // Construct the full path for file write
-                auto destPathStr = member.fullPath();
-                if (destPathStr.back() == '/') destPathStr.pop_back();
-                auto destPath = destDir / destPathStr; 
-                auto destBase = destPath.parent_path();
+                // Construct the full path and path's parent for file write
+                auto [destBase, destPath] = splitPathForDestination(member.fullPath(), destDir);
 
                 if (!std::filesystem::exists(destBase))
                     std::filesystem::create_directories(destBase);
@@ -368,9 +381,8 @@ namespace tar {
                 }
 
                 // Set file last modified time and file perms
-                auto mftime = std::chrono::file_clock::from_sys(member.mtime);
-                std::filesystem::last_write_time(destPath, mftime);
-                ::chmod(destPath.c_str(), member.mode);
+                impl::setLastWriteTime(destPath, member.mtime);
+                ::lchmod(destPath.c_str(), member.mode);
             }
 
             // Extracts all members of a archive to the specified dest directory
@@ -384,8 +396,18 @@ namespace tar {
                         "is not a directory: " + destDir.string()};
 
                 // Process and extract each member
-                for (const auto &member: getMembers()) {
+                std::vector<TarInfo> members {getMembers()};
+                for (const auto &member: members) {
                     extract(member, destDir);
+                }
+
+                // Set the modified time again for directories since we end up 
+                // modifying the mtime when we write files again
+                for (const auto &member: members) {
+                    if (member.ftype == FileType::DIRECTORY) {
+                        auto [_, destPath] = splitPathForDestination(member.fullPath(), destDir);
+                        impl::setLastWriteTime(destPath, member.mtime);
+                    }
                 }
             }
 
@@ -394,7 +416,8 @@ namespace tar {
                 // Ensure that file has been opened for WRITE ops
                 assertFileMode(Mode::WRITE);
 
-                if (!std::filesystem::exists(sourcePath) && !ignoreErrors)
+                auto fStatus = std::filesystem::symlink_status(sourcePath);
+                if (fStatus.type() == std::filesystem::file_type::not_found && !ignoreErrors)
                     throw std::runtime_error{"Tarfile Error: No such file or directory: " 
                         + sourcePath.string()};
 
@@ -420,8 +443,18 @@ namespace tar {
 
                 // If entry is a directory and it has additional files under, recurse
                 else if (header.ftype == FileType::DIRECTORY && !std::filesystem::is_empty(sourcePath)) {
+                    std::vector<std::pair<std::filesystem::path, std::string>> nextFiles;
                     for (auto nextPath: std::filesystem::directory_iterator {sourcePath}) {
                         auto nextArcPath = (std::filesystem::path{arcname} / nextPath).string();
+                        nextFiles.push_back({nextPath, nextArcPath});
+                    }
+
+                    // Sort lexiographically before adding to the archive
+                    std::ranges::sort(nextFiles, [](auto &pr1, auto &pr2) { 
+                            return pr1.first < pr2.first; });
+
+                    // Add the sorted files
+                    for (auto &[nextPath, nextArcPath]: nextFiles) {
                         add(nextPath, nextArcPath, true);
                     }
                 }
@@ -440,7 +473,7 @@ namespace tar {
             std::fstream file; Mode mode;
 
         private:
-            [[nodiscard]] static bool isZeroBlock(std::string_view block) {
+            static bool isZeroBlock(std::string_view block) {
                 return block.find_first_not_of('\0') == std::string::npos;
             }
 
@@ -449,6 +482,16 @@ namespace tar {
                 if (this->mode != mode) 
                     throw std::runtime_error{"Tarfile Error: File mode mismatch, requires " + 
                         modeStr + " access"};
+            }
+
+            static std::pair<std::filesystem::path, std::filesystem::path> 
+            splitPathForDestination(std::string destPathStr, 
+                    const std::filesystem::path &destDir) 
+            {
+                if (destPathStr.back() == '/') destPathStr.pop_back();
+                std::filesystem::path destPath = destDir / destPathStr, 
+                    destBase = destPath.parent_path();
+                return {destBase, destPath};
             }
     };
 
