@@ -1,4 +1,4 @@
-#include "../cli/argparse.hpp"
+#include "../../cli/argparse.hpp"
 
 int main(int argc, char **argv) {
     try {

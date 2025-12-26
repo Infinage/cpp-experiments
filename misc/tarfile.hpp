@@ -135,6 +135,8 @@ namespace tar {
             return fst;
         }
 
+        // Unfortunately, `fs::last_write_time` follows the symlink instead 
+        // of setting mtime for the link itself so we use `utimensat`
         inline void setLastWriteTime(const std::filesystem::path &destPath, 
             const std::chrono::system_clock::time_point &mftime) 
         {
@@ -412,7 +414,9 @@ namespace tar {
             }
 
             // Adds a file or directory from sourcePath to the archive.
-            void add(const std::filesystem::path &sourcePath, std::string_view arcname = "", bool ignoreErrors = false) {
+            void add(const std::filesystem::path &sourcePath, std::string_view arcname = "", 
+                    bool ignoreErrors = false) 
+            {
                 // Ensure that file has been opened for WRITE ops
                 assertFileMode(Mode::WRITE);
 
@@ -444,8 +448,10 @@ namespace tar {
                 // If entry is a directory and it has additional files under, recurse
                 else if (header.ftype == FileType::DIRECTORY && !std::filesystem::is_empty(sourcePath)) {
                     std::vector<std::pair<std::filesystem::path, std::string>> nextFiles;
+                    std::filesystem::path arcPath{arcname};
                     for (auto nextPath: std::filesystem::directory_iterator {sourcePath}) {
-                        auto nextArcPath = (std::filesystem::path{arcname} / nextPath).string();
+                        auto nextArcPath = arcname.empty()? "": 
+                            (arcPath / nextPath.path().filename()).string();
                         nextFiles.push_back({nextPath, nextArcPath});
                     }
 

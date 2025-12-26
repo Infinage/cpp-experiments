@@ -5,7 +5,13 @@
 
 int main(int argc, char **argv) try {
     argparse::ArgumentParser cli {"ctar"};
-    cli.description("A lightweight tarball utility.");
+    cli.description(
+        "A lightweight tarball utility.\n\n"
+        "Examples:\n"
+        "  ctar -l -- in.tar\n"
+        "  ctar -x -- in.tar\n"
+        "  ctar -a folder,file.txt:docs/renamed.txt -- out.tar"
+    );
 
     cli.addArgument("file", argparse::POSITIONAL)
         .help("Tar file path").required();
@@ -19,7 +25,7 @@ int main(int argc, char **argv) try {
         .implicitValue(true).defaultValue(false);
 
     cli.addArgument("add", argparse::NAMED)
-        .alias("a").help("Add list of files to archive")
+        .alias("a").help("Add files to archive. Syntax: SRC[:ARCNAME]")
         .defaultValue(std::vector<std::string>{});
 
     cli.parseArgs(argc, argv);
@@ -45,7 +51,22 @@ int main(int argc, char **argv) try {
 
     else if (!addFiles.empty()) {
         tar::TarFile tf {filePath, tar::FMode::WRITE};
-        for (const auto &fpath: addFiles) tf.add(fpath);
+
+        for (const auto &arg: addFiles) {
+            std::string srcStr = arg, arcname;
+
+            if (auto pos = arg.find(':'); pos != std::string::npos) {
+                srcStr  = arg.substr(0, pos), arcname = arg.substr(pos + 1);
+
+                if (arcname.empty())
+                    throw std::runtime_error{"Ctar Error: empty arcname in '" + arg + "'"};
+
+                if (!arcname.empty() && arcname.front() == '/')
+                    throw std::runtime_error{"Ctar Error: arcname must be relative: '" + arcname + "'"};
+            }
+
+            tf.add(srcStr, arcname);
+        }
     }
 }
 
