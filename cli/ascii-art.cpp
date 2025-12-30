@@ -1,7 +1,7 @@
 // g++ ascii-art.cpp -o ascii-art -std=c++23 -O2 -lpng
 
-#include "../cli/argparse.hpp"
-#include "png_reader.hpp"
+#include "argparse.hpp"
+#include "../misc/png_reader.hpp"
 
 #include <cmath>
 #include <fstream>

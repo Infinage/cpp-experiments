@@ -5,38 +5,6 @@
 #include <string>
 
 namespace hashutil {
-    constexpr char x2c(std::uint8_t val) { return "0123456789abcdef"[val]; }
-
-    template<std::unsigned_integral t>
-    constexpr std::string x2s(t val, std::size_t minWidth = 0) {
-        // How many hex digits from converting the val
-        std::size_t bits {sizeof(t) * 8}, hexDigits {bits / 4};
-        minWidth = minWidth < hexDigits? hexDigits: minWidth;
-
-        // Extract hex digits from MSB → LSB
-        std::string out; out.reserve(hexDigits);
-        for (std::size_t shift {(hexDigits - 1) * 4}; ; shift -= 4) {
-            out.push_back(x2c((val >> shift) & 0xF));
-            if (shift == 0) break;
-        }
-
-        // Trim leading zeros unless minWidth forces them
-        std::size_t firstNonZero = out.find_first_not_of('0');
-        if (firstNonZero == std::string::npos) out = "0";
-        else out.erase(0, firstNonZero);
-
-        // Pad on the left to minWidth
-        if (out.size() < minWidth)
-            out.insert(out.begin(), minWidth - out.size(), '0');
-
-        return out;
-    }
-
-    constexpr uint32_t rotate_left(uint32_t b, unsigned shift) {
-        shift = shift & 31u;
-        return (b << shift) | (b >> (32u - shift));
-    }
-
     namespace impl {
         struct Sha1BlockFeeder {
             const std::string &bytes; std::size_t pos {};
@@ -73,6 +41,57 @@ namespace hashutil {
                 pos += filledChars; return true;
             }
         };
+        
+        class CRC32 {
+            private:
+                const std::uint32_t POLY = 0xedb88320;
+                std::uint32_t crc = 0xFFFFFFFFu;
+
+            public:
+                constexpr std::uint32_t value() const { return crc ^ 0xFFFFFFFFu; }
+                constexpr void reset() { crc = 0xFFFFFFFFu; }
+
+                constexpr CRC32& update(std::string_view data) {
+                    for (auto ch: data) {
+                        crc ^= static_cast<std::uint8_t>(ch);
+                        for (int k = 0; k < 8; k++)
+                            crc = crc & 1 ? (crc >> 1) ^ POLY : crc >> 1;
+                    }
+                    return *this;
+                }
+        };
+    }
+
+    constexpr char x2c(std::uint8_t val) { return "0123456789abcdef"[val]; }
+
+    template<std::unsigned_integral t>
+    constexpr std::string x2s(t val, std::size_t minWidth = 0) {
+        // How many hex digits from converting the val
+        std::size_t bits {sizeof(t) * 8}, hexDigits {bits / 4};
+        minWidth = minWidth < hexDigits? hexDigits: minWidth;
+
+        // Extract hex digits from MSB → LSB
+        std::string out; out.reserve(hexDigits);
+        for (std::size_t shift {(hexDigits - 1) * 4}; ; shift -= 4) {
+            out.push_back(x2c((val >> shift) & 0xF));
+            if (shift == 0) break;
+        }
+
+        // Trim leading zeros unless minWidth forces them
+        std::size_t firstNonZero = out.find_first_not_of('0');
+        if (firstNonZero == std::string::npos) out = "0";
+        else out.erase(0, firstNonZero);
+
+        // Pad on the left to minWidth
+        if (out.size() < minWidth)
+            out.insert(out.begin(), minWidth - out.size(), '0');
+
+        return out;
+    }
+
+    constexpr uint32_t rotate_left(uint32_t b, unsigned shift) {
+        shift = shift & 31u;
+        return (b << shift) | (b >> (32u - shift));
     }
 
     [[nodiscard]] constexpr std::string sha1(const std::string &raw, bool asBytes = false) {
@@ -163,9 +182,15 @@ namespace hashutil {
             return digest;
         }
     }
+
+    [[nodiscard]] constexpr std::uint32_t crc32(std::string_view data) {
+        impl::CRC32 crc;
+        return crc.update(data).value();
+    }
+    
 };
 
-// ---------------------- TEST CASES ---------------------- //
+// ---------------------- TEST CASES (SHA1) ---------------------- //
 
 static_assert(hashutil::sha1("", false) == "da39a3ee5e6b4b0d3255bfef95601890afd80709");
 
@@ -189,3 +214,10 @@ static_assert(
         20
     }
 );
+
+// ---------------------- TEST CASES (CRC32) ---------------------- //
+
+static_assert(hashutil::crc32("") == 0);
+static_assert(hashutil::crc32("123456789") == 0xCBF43926u);
+static_assert(hashutil::crc32("The quick brown fox jumps over the lazy dog") 
+        == 0x414FA339u);

@@ -139,7 +139,7 @@ namespace argparse {
                 if (_implicit.has_value()) oss << " (implicit=" << *_implicit << ")";
                 if (_defaultValueSet) oss << " (default=" << *_default << ")";
 
-                return oss.str(); 
+                return oss.str();
             }
 
             std::string getTypeName() const {
@@ -485,7 +485,7 @@ namespace argparse {
             }
 
             // Conveneince function over `check()`
-            bool ok() const { return touched && check().empty(); }
+            [[nodiscard]] bool ok() const { return touched && check().empty(); }
 
             ArgumentParser &description(const std::string &message) {
                 _description = message; return *this;
