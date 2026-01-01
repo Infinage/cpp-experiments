@@ -12,6 +12,9 @@ namespace sqlite {
     // SQLite column data type
     enum class dtype {null, integer, real, text, blob};
 
+    // Header wide representation for blobs
+    using BlobType = std::span<const std::byte>;
+
     class Statement {
         private:
             // Private CTOR, use prepare() factory fn
@@ -31,7 +34,7 @@ namespace sqlite {
                 std::int64_t,
                 double,
                 std::string_view,
-                std::span<const std::byte>
+                BlobType 
             >;
 
             // Iterator over statement rows
@@ -57,7 +60,7 @@ namespace sqlite {
                 }
 
                 // Access column by index (0 based)
-                ColRType operator[](std::size_t index) { 
+                [[nodiscard]] ColRType operator[](std::size_t index) { 
                     if (!stmt || done) return std::monostate{}; 
                     return stmt->column(static_cast<int>(index)); 
                 }
@@ -95,7 +98,9 @@ namespace sqlite {
                 } else if constexpr (T == dtype::text) {
                     rc = sqlite3_bind_text(stmt, index1, value.data(), value.size(), SQLITE_TRANSIENT);
                 } else if constexpr (T == dtype::blob) {
-                    rc = sqlite3_bind_blob(stmt, index1, value.data(), value.size(), SQLITE_TRANSIENT);
+                    using ValueType = std::remove_reference_t<decltype(value)>::value_type;
+                    auto len = sizeof(ValueType) * value.size();
+                    rc = sqlite3_bind_blob(stmt, index1, value.data(), len, SQLITE_TRANSIENT);
                 }
 
                 if (rc != SQLITE_OK)
@@ -149,12 +154,12 @@ namespace sqlite {
                 } else if constexpr (T == dtype::blob) {
                     auto* ptr = sqlite3_column_blob(stmt, index);
                     auto len  = static_cast<std::size_t>(sqlite3_column_bytes(stmt, index));
-                    return std::span<const std::byte>{static_cast<const std::byte*>(ptr), len};
+                    return BlobType{static_cast<const std::byte*>(ptr), len};
                 }
             }
 
             // Variant-based generic column accessor, return type determined at runtime
-            ColRType column(int index) {
+            [[nodiscard]] ColRType column(int index) {
                 auto *stmt = handle.get();
                 switch (sqlite3_column_type(stmt, index)) {
                     case SQLITE_NULL:
@@ -171,7 +176,7 @@ namespace sqlite {
                     case SQLITE_BLOB: {
                         auto* ptr = sqlite3_column_blob(stmt, index);
                         auto len  = static_cast<std::size_t>(sqlite3_column_bytes(stmt, index));
-                        return std::span<const std::byte>{static_cast<const std::byte*>(ptr), len};
+                        return BlobType{static_cast<const std::byte*>(ptr), len};
                     }
                 }
                 return std::monostate{};    
