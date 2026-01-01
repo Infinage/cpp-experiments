@@ -4,13 +4,15 @@
 
 #include <expected>
 #include <functional>
-#include <format>
-#include <utility>
+#include <memory>
 
 namespace sqlite {
     class DB {
         private:
-            sqlite3 *db {};
+            using db_handle = std::unique_ptr<sqlite3, decltype(&sqlite3_close)>;
+            db_handle handle {nullptr, sqlite3_close};
+
+            // Can only create an instance via factory function provided
             DB() = default;
 
             /*
@@ -34,35 +36,19 @@ namespace sqlite {
         public:
             using RowCallback = std::function<bool(int colC, char **values, char **names)>;
 
-            // Disable copy semantics
-            DB(const DB&) = delete;
-            DB &operator=(const DB&) = delete;
-
-            // Allow move semantics
-            DB(DB &&other) noexcept: db{std::exchange(other.db, nullptr)} {}
-            DB &operator=(DB &&other) noexcept {
-                DB{std::move(other)}.swap(*this);
-                return *this;
-            }
-
-            // Swap member function for swap idiom
-            void swap(DB &other) noexcept { 
-                using std::swap; 
-                swap(other.db, db); 
-            }
-
-            // Close connection on exit
-            ~DB() { if (db) sqlite3_close(db); }
-
             // Static factory function
             [[nodiscard]] static std::expected<DB, std::string> 
             open(std::string_view path) { 
-                DB db;
-                if (sqlite3_open(path.data(), &db.db) != SQLITE_OK) {
-                    auto emsg = std::format("Failed to init: {}", sqlite3_errmsg(db.db));
+                sqlite3 *raw {};
+                if (sqlite3_open(path.data(), &raw) != SQLITE_OK) {
+                    auto emsg = raw? sqlite3_errmsg(raw): "sqlite3_open_failed";
+                    if (raw) sqlite3_close(raw);
                     return std::unexpected{emsg};
                 }
-                return db;
+
+                DB database;
+                database.handle.reset(raw);
+                return database;
             }
 
             /**
@@ -90,11 +76,11 @@ namespace sqlite {
              */
             std::expected<void, std::string> exec(std::string_view query, RowCallback cb = nullptr) {
                 char *emsg {}; 
-                void *userFn = cb == nullptr? nullptr: &cb;
-                if (sqlite3_exec(db, query.data(), trampoline, userFn, &emsg) != SQLITE_OK) {
+                auto *sqliteCB = cb? trampoline: nullptr; auto *userFn = cb? &cb: nullptr;
+                if (sqlite3_exec(handle.get(), query.data(), sqliteCB, userFn, &emsg) != SQLITE_OK) {
                     std::string emsgStr = emsg? emsg: "unknown sqlite error";
                     sqlite3_free(emsg);
-                    return std::unexpected(emsgStr);
+                    return std::unexpected{emsgStr};
                 }
                 return {};
             }
