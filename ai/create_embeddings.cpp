@@ -7,7 +7,7 @@
 #include <print>
 
 // Constants
-constexpr std::size_t EMBED_BATCH_SIZE =  16; 
+constexpr std::size_t EMBED_BATCH_SIZE =  64; 
 constexpr std::size_t  EMBED_MAX_CHARS = 300; 
 constexpr std::size_t        EMBED_DIM = 384; 
 
@@ -196,12 +196,14 @@ int main() try {
         for (std::size_t cid {}; cid < numChunks; ++cid) {
             auto start = cid * EMBED_MAX_CHARS;
             auto end = std::min(start + EMBED_MAX_CHARS, row.body.size());
-            batch.emplace_back(fid, cid, row.body.substr(start, end - start)); 
+            auto toEmbed = row.body.substr(start, end - start);
+            batch.emplace_back(fid, cid, toEmbed); 
         }
 
         // Compute and write the embeddings to DB
         if (batch.size() >= EMBED_BATCH_SIZE) {
             processEmbeddingBatch(embedQ.value(), batch);
+            std::println("Writing batch, current func counter: {}", fid);
             batch.clear();
         }
 
