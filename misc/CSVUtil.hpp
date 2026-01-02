@@ -184,6 +184,16 @@ namespace CSVUtil {
                 return Proxy{const_cast<CSVRecord&>(*this), idx};
             }
 
+            // Unpack CSV row into a tuple, i.e unpack(row);
+            template<typename ...Args> requires(SimpleConvertible<Args> && ...)
+            void unpack(std::tuple<Args...> &tuple) const {
+                std::apply(
+                    [this](Args&... elems) { unpack(elems...); },
+                    tuple
+                );
+            }
+
+            // Unpack CSV row into a tuple of args, i.e unpack(col1, col2, ...);
             template<typename ...Args> requires(SimpleConvertible<Args> && ...)
             void unpack(Args &...values) const {
                 if (sizeof...(Args) != records.size())
@@ -243,6 +253,7 @@ namespace CSVUtil {
             mutable std::size_t cols;
             mutable std::ifstream csvStream;
             mutable CSVRecord currentRow;
+            std::size_t skipRows = 0;
 
         public:
             class CSVIterator {
@@ -252,7 +263,12 @@ namespace CSVUtil {
 
                 public:
                     CSVIterator(const CSVReader *reader, bool end = false): 
-                        reader(reader), end(end) { ++(*this); }
+                        reader(reader), end(end) 
+                    { 
+                            ++(*this); // Init reader state
+                            for (std::size_t i {}; i < reader->skipRows; ++i)
+                                ++(*this);
+                    }
 
                     CSVIterator &operator++() {
                         if (!end) end = !reader->nextCSVLine();
@@ -267,8 +283,8 @@ namespace CSVUtil {
                     }
             };
 
-            CSVReader(const std::string &fname, std::size_t cols = 0):
-                fname(fname), cols(cols), csvStream(fname)
+            CSVReader(const std::string &fname, std::size_t cols = 0, bool skipRows = 0):
+                fname(fname), cols(cols), csvStream(fname), skipRows(skipRows)
             {
                 if (!csvStream) 
                     throw std::runtime_error("Failed to open file: " + fname);

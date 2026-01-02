@@ -1,3 +1,6 @@
+// g++ ts-workspace-functions.cpp -ltree-sitter -ltree-sitter-cpp -o ts-fextract -std=c++23 
+// find ../ \( -name "*.hpp" -or -name "*.cpp" \) -exec ./ts-fextract code.csv {} + 
+
 #include <fstream>
 #include <iostream>
 #include <print>

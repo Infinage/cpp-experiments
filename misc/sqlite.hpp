@@ -15,6 +15,34 @@ namespace sqlite {
     // Header wide representation for blobs
     using BlobType = std::span<const std::byte>;
 
+    // Concept to check if a input type is blob convertible
+    template<typename T>
+    concept IsBlobConvertible = requires(T value) {
+        typename T::value_type;
+        requires std::is_trivially_copyable_v<typename T::value_type>;
+        { value.size() } -> std::convertible_to<std::size_t>;
+        { value.data() } -> std::convertible_to<const void*>;
+    };
+
+    // Concept to constrain the bind function
+    template<dtype BT, typename VT>
+    concept IsValidBind =
+        (BT == dtype::null    && std::same_as<std::remove_cvref_t<VT>, std::nullptr_t>) ||
+        (BT == dtype::integer && std::integral<std::remove_cvref_t<VT>>) ||
+        (BT == dtype::real    && std::floating_point<std::remove_cvref_t<VT>>) ||
+        (BT == dtype::text    && std::convertible_to<VT, std::string_view>) ||
+        (BT == dtype::blob    && IsBlobConvertible<std::remove_cvref_t<VT>>);
+
+    struct NonCopyable {
+        NonCopyable() = default;
+        NonCopyable(const NonCopyable&) = delete;
+        std::size_t size() const;
+        const void *data();
+        using value_type = int;
+    };
+
+    static_assert(IsBlobConvertible<NonCopyable>);
+
     class Statement {
         private:
             // Private CTOR, use prepare() factory fn
@@ -69,7 +97,7 @@ namespace sqlite {
             // Iterator support
             Row end() { return Row {nullptr, true}; }
             Row begin() {
-                reset(false); 
+                if (!reset(false)) return Row{this, false};
                 auto res = step();
                 return Row{this, !res || !res.value()};
             }
@@ -86,18 +114,18 @@ namespace sqlite {
             }
 
             // Bind value to parameter by index (1 based)
-            template<dtype T>
-            std::expected<void, std::string> bind(int index1, auto&& value) {
+            template<dtype BT, typename VT> requires(IsValidBind<BT, VT>)
+            std::expected<void, std::string> bind(int index1, VT value) {
                 int rc {}; auto *stmt = handle.get();
-                if constexpr (T == dtype::null) {
+                if constexpr (BT == dtype::null) {
                     rc = sqlite3_bind_null(stmt, index1);
-                } else if constexpr (T == dtype::integer) {
+                } else if constexpr (BT == dtype::integer) {
                     rc = sqlite3_bind_int64(stmt, index1, static_cast<sqlite3_int64>(value));
-                } else if constexpr (T == dtype::real) {
+                } else if constexpr (BT == dtype::real) {
                     rc = sqlite3_bind_double(stmt, index1, static_cast<double>(value));
-                } else if constexpr (T == dtype::text) {
+                } else if constexpr (BT == dtype::text) {
                     rc = sqlite3_bind_text(stmt, index1, value.data(), value.size(), SQLITE_TRANSIENT);
-                } else if constexpr (T == dtype::blob) {
+                } else if constexpr (BT == dtype::blob) {
                     using ValueType = std::remove_reference_t<decltype(value)>::value_type;
                     auto len = sizeof(ValueType) * value.size();
                     rc = sqlite3_bind_blob(stmt, index1, value.data(), len, SQLITE_TRANSIENT);
@@ -109,11 +137,11 @@ namespace sqlite {
             }
 
             // Bind by named parameter
-            template<dtype T>
-            std::expected<void, std::string> bind(std::string_view idxStr, auto&& value) {
+            template<dtype BT, typename VT> requires(IsValidBind<BT, VT>)
+            std::expected<void, std::string> bind(std::string_view idxStr, VT value) {
                 int idx = sqlite3_bind_parameter_index(handle.get(), idxStr.data());
                 if (idx == 0) return std::unexpected{"No matching param: " + std::string(idxStr)};
-                return bind(idx, value);
+                return bind<BT>(idx, value);
             }
 
             // Number of columns in result set
@@ -194,10 +222,13 @@ namespace sqlite {
             }
 
             // Reset statement, optionally clear bound parameters
-            void reset(bool clearBinds = false) { 
-                if (!handle) return;
-                sqlite3_reset(handle.get()); 
-                if (clearBinds) sqlite3_clear_bindings(handle.get());
+            std::expected<void, std::string> reset(bool clearBinds = false) { 
+                if (!handle) return std::unexpected{"invalid statement"};
+                if (sqlite3_reset(handle.get()) != SQLITE_OK)
+                    return std::unexpected{sqlite3_errmsg(dbPtr)};
+                if (clearBinds && sqlite3_clear_bindings(handle.get()) != SQLITE_OK)
+                    return std::unexpected{sqlite3_errmsg(dbPtr)};
+                return {};
             }
     };
 
