@@ -37,7 +37,7 @@ extractEmbeddings(const std::vector<std::tuple<int, int, std::string>> &batch)
 
     // Prepare a list of strings (in json string)
     std::string text(1, '[');
-    text.reserve(batch.size() * std::get<2>(batch[0]).size());
+    text.reserve(batch.size() * EMBED_MAX_CHARS);
     for (auto &[_, __, body]: batch)
         text += '"' + JSON::helper::jsonEscape(body) + "\",";
     text.pop_back(); text += ']';
@@ -89,7 +89,7 @@ void bindToFunctionsInsertQuery(sqlite::Statement &query, const CSVRow &csvRow) 
     res = query.bind<sqlite::dtype::integer>(":end", csvRow.end);
     if (!res) throw std::runtime_error{res.error()};
 
-    auto numChunks = (csvRow.body.size() + EMBED_MAX_CHARS) / EMBED_MAX_CHARS;
+    auto numChunks = (csvRow.body.size() + EMBED_MAX_CHARS - 1) / EMBED_MAX_CHARS;
     res = query.bind<sqlite::dtype::integer>(":chunks", numChunks);
     if (!res) throw std::runtime_error{res.error()};
 }
@@ -192,7 +192,7 @@ int main() try {
         if (!resetRes) throw std::runtime_error{stepRes.error()};
 
         // Split the function into chunks as required
-        auto numChunks = (row.body.size() + EMBED_MAX_CHARS) / EMBED_MAX_CHARS;
+        auto numChunks = (row.body.size() + EMBED_MAX_CHARS - 1) / EMBED_MAX_CHARS;
         for (std::size_t cid {}; cid < numChunks; ++cid) {
             auto start = cid * EMBED_MAX_CHARS;
             auto end = std::min(start + EMBED_MAX_CHARS, row.body.size());
@@ -215,12 +215,6 @@ int main() try {
 
     txRes = db->exec("COMMIT");
     if (!txRes) throw std::runtime_error{txRes.error()};
-
-    // Reloading the data
-    //auto query = db.query("select * from embeddings where id = 1");
-    //auto blob = query->column<sqlite::dtype::blob>(2);
-    //EMBEDDING embeddingsCpy(blob.size() / sizeof(float));
-    //std::memcpy(embeddingsCpy.data(), blob.data(), blob.size());
 } 
 
 catch(std::exception &ex) {

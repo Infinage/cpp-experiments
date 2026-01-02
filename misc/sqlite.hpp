@@ -12,6 +12,14 @@ namespace sqlite {
     // SQLite column data type
     enum class dtype {null, integer, real, text, blob};
 
+    // Expose underlying ints for OPEN factory func
+    inline constexpr int OPEN_READONLY  = SQLITE_OPEN_READONLY;
+    inline constexpr int OPEN_READWRITE = SQLITE_OPEN_READWRITE;
+    inline constexpr int OPEN_CREATE    = SQLITE_OPEN_CREATE;
+    inline constexpr int OPEN_MEMORY    = SQLITE_OPEN_MEMORY;
+    inline constexpr int OPEN_URI       = SQLITE_OPEN_URI;
+    inline constexpr int OPEN_RW_CREATE = OPEN_READWRITE | OPEN_CREATE;
+
     // Header wide representation for blobs
     using BlobType = std::span<const std::byte>;
 
@@ -145,7 +153,7 @@ namespace sqlite {
             }
 
             // Number of columns in result set
-            std::size_t columns() {
+            [[nodiscard]] std::size_t columns() {
                 auto cols = sqlite3_column_count(handle.get());
                 return static_cast<std::size_t>(cols);
             }
@@ -162,12 +170,12 @@ namespace sqlite {
                     std::to_string(index)};
             }
 
-            std::string_view columnName(int index) {
+            [[nodiscard]] std::string_view columnName(int index) {
                 return sqlite3_column_name(handle.get(), index);
             }
 
             // Get column value by type, forces conversions in case of type mismatch
-            template<dtype T> auto column(int index) {
+            template<dtype T> [[nodiscard]] auto column(int index) {
                 auto *stmt = handle.get();
                 if constexpr (T == dtype::null) {
                     return sqlite3_column_type(stmt, index) == SQLITE_NULL;
@@ -261,10 +269,18 @@ namespace sqlite {
         public:
             using RowCallback = std::function<bool(int colC, char **values, char **names)>;
 
+            std::expected<void, std::string> enableloadExtension(bool onOff = true) {
+                auto dbPtr = handle.get();
+                if (sqlite3_enable_load_extension(dbPtr, onOff) != SQLITE_OK)
+                    return std::unexpected{sqlite3_errmsg(dbPtr)};
+                return {};
+            }
+
             // Static factory function
-            static std::expected<DB, std::string> open(std::string_view path) { 
+            static std::expected<DB, std::string> 
+            open(std::string_view path, int oflags = OPEN_RW_CREATE) {
                 sqlite3 *raw {};
-                if (sqlite3_open(path.data(), &raw) != SQLITE_OK) {
+                if (sqlite3_open_v2(path.data(), &raw, oflags, nullptr) != SQLITE_OK) {
                     auto emsg = raw? sqlite3_errmsg(raw): "sqlite3_open_failed";
                     if (raw) sqlite3_close(raw);
                     return std::unexpected{emsg};
@@ -309,5 +325,6 @@ namespace sqlite {
     };
 
     // Wrapper over DB::open
-    inline auto open(std::string_view path) { return DB::open(path); }
+    inline auto open(std::string_view path, int oflags = OPEN_RW_CREATE) 
+    { return DB::open(path, oflags); }
 }
