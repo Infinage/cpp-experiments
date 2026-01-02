@@ -1,5 +1,5 @@
-// g++ ts-workspace-functions.cpp -ltree-sitter -ltree-sitter-cpp -o ts-fextract -std=c++23 
-// find ../ \( -name "*.hpp" -or -name "*.cpp" \) -exec ./ts-fextract code.csv {} + 
+// g++ extract-functions.cpp -ltree-sitter -ltree-sitter-cpp -o fextract -std=c++23 
+// find ../ \( -name "*.hpp" -or -name "*.cpp" \) -exec ./fextract code.csv {} + 
 
 #include <fstream>
 #include <iostream>
@@ -55,7 +55,8 @@ std::string extractFunctionInfo(std::string_view code, TSQueryMatch match) {
     uint32_t startPos = ts_node_start_byte(fnBodyNode);
     uint32_t endPos = ts_node_end_byte(fnBodyNode);
 
-    return std::format("{},{},{},{},{},{}", ns, cls, CSVUtil::writeCSVField(name), 
+    return std::format("{},{},{},{},{},{}", CSVUtil::writeCSVField(ns), 
+        CSVUtil::writeCSVField(cls), CSVUtil::writeCSVField(name), 
         startPos, endPos, CSVUtil::writeCSVField(body));
 }
 

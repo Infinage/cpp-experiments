@@ -431,6 +431,33 @@ namespace JSON {
             // What the heck is this token?
             else throw error;
         }
+
+        inline std::string jsonEscape(std::string_view s) {
+            static constexpr char hex[] = "0123456789ABCDEF";
+            std::string out; out.reserve(s.size());
+
+            for (char ch_: s) {
+                auto ch = static_cast<unsigned char>(ch_);
+                switch (ch) {
+                    case '"':  out += "\\\""; break;
+                    case '\\': out += "\\\\"; break;
+                    case '\n': out += "\\n";  break;
+                    case '\r': out += "\\r";  break;
+                    case '\t': out += "\\t";  break;
+                    case '\b': out += "\\b";  break;
+                    case '\f': out += "\\f";  break;
+                    default:
+                        if (ch < 0x20) {
+                            out += "\\u00";
+                            out += hex[ch >> 4];
+                            out += hex[ch & 0x0F];
+                        } else {
+                            out += ch_;
+                        }
+                }
+            }
+            return out;
+        }
     }
 
     // Handles logic To parse JSON from strings (and) To Dump JSON into string
