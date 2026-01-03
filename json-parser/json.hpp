@@ -458,7 +458,41 @@ namespace JSON {
             }
             return out;
         }
-    }
+
+        inline std::string jsonUnescape(std::string_view s) {
+            auto hex = [](unsigned char c) -> unsigned {
+                if (c >= '0' && c <= '9') return c - '0';
+                if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+                if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+                return 0;
+            };
+
+            std::string out; out.reserve(s.size());
+            for (std::size_t i {}; i < s.size(); ++i) {
+                if (s[i] == '\\' && i + 1 < s.size()) {
+                    switch (s[++i]) {
+                        case 'n':  out += '\n'; break;
+                        case 'r':  out += '\r'; break;
+                        case 't':  out += '\t'; break;
+                        case '"':  out += '"';  break;
+                        case '\\': out += '\\'; break;
+                        case 'u': {
+                            if (i + 4 < s.size()) {
+                                unsigned v = 0;
+                                for (int k = 0; k < 4; ++k)
+                                    v = (v << 4) | hex(static_cast<unsigned char>(s[++i]));
+                                if (v < 0x80) out += static_cast<char>(v);
+                            }
+                            break;
+                        }
+                        default: out += s[i];
+                    }
+                } else out += s[i];
+            }
+            return out;
+        }
+
+    } // namespace helper
 
     // Handles logic To parse JSON from strings (and) To Dump JSON into string
     class Parser {

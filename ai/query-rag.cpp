@@ -97,24 +97,22 @@ std::string preparePrompt(sqlite::Statement &queryRes, std::string_view input) {
     return oss.str();
 }
 
-// TODO: handle stream API
-std::string queryModelWithPrompt(std::string_view prompt) {
+void queryModelWithPrompt(std::string_view prompt) {
     // Send a HTTP request to process embeddings
     net::HttpRequest req {"http://localhost:11434/api/generate", "POST"};
     req.setHeader("Accept", "application/json");
-    req.setBody(R"({"model":"phi3:mini","stream": false, "prompt":")" 
+    req.setBody(R"({"model":"phi3:mini","stream": true, "prompt":")" 
         + JSON::helper::jsonEscape(prompt) + R"("})");
 
     // Execute query & throw in case of errors
-    auto resp = req.execute(30);
-    if (!resp.ok()) throw std::runtime_error{resp.body};
-
-    // Process the HTTP response (unchunk if required)
-    else {
-        auto data = JSON::Parser::loads(resp.header("Transfer-Encoding") == "chunked"? 
-                resp.unchunk(): resp.body);
-        return data["response"].to<std::string>();
-    }
+    req.stream([](const auto &resp) -> bool {
+        if (!resp.ok()) throw std::runtime_error{resp.body};
+        auto data = resp.json();
+        auto output = data["response"].template to<std::string>();
+        std::print("{}", JSON::helper::jsonUnescape(output)); 
+        std::fflush(stdout);
+        return !data["done"].template to<bool>();
+    }, 30);
  }
 
 int main() {
@@ -145,10 +143,11 @@ int main() {
     if (!searchQ) throw std::runtime_error{"Q prep: " + res.error()};
 
     // REPL style
-    std::string input;        
+    bool debugCtx = false; std::string input;
     while (std::print(">> "), std::getline(std::cin, input)) {
         if (input.empty()) continue;
-        if (input == "exit" || input == "quit") break;
+        else if (input == "/bye") break;
+        else if (input == "/toggle") { debugCtx = !debugCtx; continue; }
 
         res = searchQ->reset(true);
         if (!res) std::println("Unbind: {}", res.error());
@@ -157,11 +156,21 @@ int main() {
         res = searchQ->bind<sqlite::dtype::blob>(1, embeddings);
         if (!res) std::println("Vector search: {}", res.error());
 
-        // Prepare the prompt
-        auto prompt = preparePrompt(searchQ.value(), input);
+        // Only print out the context that would be used for prompt
+        if (debugCtx) {
+            for (Context ctx: *searchQ) {
+                std::println(
+                    "Dist={}\nFile={}\nFunction={}\nbody={}\n", 
+                    ctx.dist, ctx.file, ctx.fn, ctx.body
+                );
+            }
+        }
 
-        // Get model response
-        std::println("{}", queryModelWithPrompt(prompt));
+        // Prep the prompt and query the model
+        else {
+            auto prompt = preparePrompt(searchQ.value(), input);
+            queryModelWithPrompt(prompt); std::println();
+        }
     }
 
     std::println("bye!");
