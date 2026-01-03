@@ -92,6 +92,55 @@ EMBEDDING extractEmbeddings(std::string_view query) {
     }
 }
 
+std::vector<std::pair<std::size_t, double>> fetchTopFunctionIDMatches(
+    sqlite::Statement &query, const EMBEDDING &embeddings, std::size_t K) 
+{
+    auto res = query.reset(true);
+    if (!res) std::println("Unbind: {}", res.error());
+
+    res = query.bind<sqlite::dtype::blob>(1, embeddings);
+    if (!res) std::println("Vector search: {}", res.error());
+
+    // Retrieve all matches and score at a function level
+    std::unordered_map<std::size_t, std::pair<std::size_t, double>> counter;
+    for (SimilarityResult ctx: query) {
+        auto &[count, dist] = counter[ctx.fid];
+        ++count; dist += ctx.dist;
+    }
+
+    // Compute mean of the scores
+    auto transformed = counter | std::views::transform(
+        [](auto &pr) -> std::pair<std::size_t, double> { 
+            auto [count, dist] = pr.second;
+            return {pr.first, dist / (double) count}; 
+        }
+    );
+
+    // Store the top five hits
+    std::vector<std::pair<std::size_t, double>> topHits{K};
+    std::ranges::partial_sort_copy(transformed, topHits);
+    return topHits;
+}
+
+std::vector<Context> fetchFunctions(sqlite::Statement &query,
+    const std::vector<std::pair<std::size_t, double>> &topHits) 
+{
+    auto res = query.reset(true);
+    if (!res) std::println("Unbind: {}", res.error());
+
+    // Fetch the relevant functions from DB
+    for (std::size_t i {}; i < 3; ++i) {
+        res = query.bind<sqlite::dtype::integer>(
+            static_cast<int>(i + 1), topHits[i].first);
+        if (!res) throw std::runtime_error{res.error()};
+    }
+
+    // Pull the result from the query
+    std::vector<Context> functions;
+    for (auto row: query) functions.emplace_back(row);
+    return functions;
+}
+
 std::string preparePrompt(const std::vector<Context> &context, std::string_view input) {
     std::ostringstream oss; 
     oss << "You are a coding assistant.\n\n"
@@ -126,9 +175,10 @@ void queryModelWithPrompt(std::string_view prompt) {
     }, 30);
  }
 
-int main() {
+std::tuple<sqlite::DB, sqlite::Statement, sqlite::Statement>
+initDB(std::string_view databaseName) {
     // Init a DB connection
-    auto db = sqlite::open(".codebase");
+    auto db = sqlite::open(databaseName);
     if (!db) throw std::runtime_error{"Init: " + db.error()};
 
     // Enable extension loading
@@ -166,6 +216,13 @@ int main() {
         GROUP BY fid;
     )");
 
+    return {std::move(*db), std::move(*fetchContextQ), std::move(*fetchCompleteFunctionQ)};
+}
+
+int main() {
+    // Init database and search queries
+    auto [db, fetchContextQ, fetchCompleteFunctionQ] = initDB(".codebase");
+
     // REPL style
     bool debugCtx = false; std::string input;
     while (std::print(">> "), std::getline(std::cin, input)) {
@@ -173,53 +230,22 @@ int main() {
         else if (input == "/bye") break;
         else if (input == "/debug") { 
             debugCtx = !debugCtx; 
-            std::println("DEBUG MODE: {}", debugCtx);
+            std::println("DEBUG MODE ON: {}", debugCtx);
             continue; 
         }
 
-        res = fetchContextQ->reset(true);
-        if (!res) std::println("Unbind: {}", res.error());
-
+        // Extract embeddings from input
         auto embeddings = extractEmbeddings(input);
-        res = fetchContextQ->bind<sqlite::dtype::blob>(1, embeddings);
-        if (!res) std::println("Vector search: {}", res.error());
 
-        // Retrieve all matches and score at a function level
-        std::unordered_map<std::size_t, std::pair<std::size_t, double>> counter;
-        for (SimilarityResult ctx: *fetchContextQ) {
-            auto &[count, dist] = counter[ctx.fid];
-            ++count; dist += ctx.dist;
-        }
+        // Rank and return function ids that are most relevant from retreived chunks
+        auto topHits = fetchTopFunctionIDMatches(fetchContextQ, embeddings, 3);
 
-        // Compute mean of the scores
-        auto transformed = counter | std::views::transform(
-            [](auto &pr) -> std::pair<std::size_t, double> { 
-                auto [count, dist] = pr.second;
-                return {pr.first, dist / (double) count}; 
-            }
-        );
-
-        // Store the top five hits
-        std::vector<std::pair<std::size_t, double>> topHits(3);
-        std::ranges::partial_sort_copy(transformed, topHits);
-
-        res = fetchCompleteFunctionQ->reset(true);
-        if (!res) std::println("Unbind: {}", res.error());
-
-        // Fetch the relevant functions from DB
-        for (std::size_t i {}; i < 3; ++i) {
-            res = fetchCompleteFunctionQ->bind<sqlite::dtype::integer>(
-                static_cast<int>(i + 1), topHits[i].first);
-            if (!res) throw std::runtime_error{res.error()};
-        }
-
-        // Pull the result from the query
-        std::vector<Context> functions;
-        for (auto row: *fetchCompleteFunctionQ) functions.emplace_back(row);
+        // Retrieve the complete function given fid matches
+        auto functions = fetchFunctions(fetchCompleteFunctionQ, topHits);
 
         // Only print out the context that would be used for prompt
         if (debugCtx) { 
-            for (auto &ctx: functions) 
+            for (auto &ctx: functions)
                 std::println("File={}\nFunction={}\nbody={}\n", 
                     ctx.file, ctx.fn, ctx.body);
         }
