@@ -140,7 +140,9 @@ namespace net {
         }
 
         // Parse the input http string to see if we are good to feed const from it
-        [[nodiscard]] inline bool isCompleteHttpRequest(std::string_view raw) {
+        // If all chunks is true, returns false until all the chunks have been received
+        // Otherwise returns true as soon as first chunk has been received
+        [[nodiscard]] inline bool isCompleteHttpRequest(std::string_view raw, bool allChunks = true) {
             std::size_t pos {raw.find("\r\n")};
             if (pos == std::string::npos) return false;
 
@@ -171,7 +173,7 @@ namespace net {
                     catch (...) { return false; }
                     if (body.size() <= pos + 4 + chunkSize) return false;
                     body = body.substr(pos + chunkSize + 4);
-                } while (chunkSize && !body.empty());
+                } while (allChunks && chunkSize && !body.empty());
                 return true;
             }
 
@@ -229,6 +231,22 @@ namespace net {
             if (!ret) throw SocketError{"Failed to convert address to string"};
             ipStr.resize(std::strlen(ipStr.data()));
             return ipStr;
+        }
+
+        // Unchunk the buffer and mutates it retaining everything except first parsed chunk
+        // `<headers>\r\n\r\n<size_in_Hex>\r\n<body>\r\n...0\r\n`
+        [[nodiscard]] inline std::optional<std::string> unchunkBody(std::string &buffer) {
+            auto pos = buffer.find("\r\n");
+            if (pos == std::string::npos || !buffer.ends_with("\r\n")) 
+                return {};
+
+            auto chunkSizeRaw = std::string(buffer.substr(0, pos));
+            std::size_t chunkSize {std::stoul(chunkSizeRaw, nullptr, 16)};
+            if (buffer.size() < pos + 2 + chunkSize + 2) return {};
+
+            std::string chunk {buffer.substr(pos + 2, chunkSize)};
+            buffer.erase(0, pos + 2 + chunkSize + 2);
+            return chunk;
         }
     };
 
@@ -622,6 +640,52 @@ namespace net {
             Socket socket; 
             SSL_CTX *ctx; SSL* ssl; 
     };
+
+    namespace utils {
+        // Invariant to reduce some code duplication, not efficient as it could be due to visit()
+        struct SocketInvariant {
+            std::variant<Socket, SSLSocket> socket;
+
+            void setTimeout(long rcvTimeoutSec, long sndTimeoutSec) {
+                std::visit([&](auto &sock) {
+                    return sock.setTimeout(rcvTimeoutSec, sndTimeoutSec);
+                }, socket);
+            }
+
+            void connect(std::string_view serverIp, std::uint16_t port, std::string_view hostname = "") {
+                std::visit([&](auto &sock){
+                    using T = std::decay_t<decltype(sock)>;
+                    if constexpr (std::is_same_v<T, Socket>)
+                        sock.connect(serverIp, port);
+                    else if (std::is_same_v<T, SSLSocket>)
+                        sock.connect(serverIp, port, hostname);
+                }, socket);
+            }
+
+            [[nodiscard]] long sendAll(std::string_view message) {
+                return std::visit([&](auto &sock){
+                    using T = std::decay_t<decltype(sock)>;
+                    if constexpr (std::is_same_v<T, Socket>)
+                        return sock.sendAll(message);
+                    else if (std::is_same_v<T, SSLSocket>)
+                        sock.sendAll(message);
+                    return 0l;
+                }, socket);
+            }
+            
+            [[nodiscard]] std::string recv(std::size_t maxBytes = 2048) {
+                return std::visit([&](auto &sock) { 
+                    return sock.recv(maxBytes); 
+                }, socket);
+            }
+
+            [[nodiscard]] std::string recvAll(std::size_t recvBatchSize = 2048) {
+                return std::visit([&](auto &sock) { 
+                    return sock.recvAll(recvBatchSize); 
+                }, socket);
+            }
+        };
+    }
 
     class URL {
         private:
@@ -1020,6 +1084,63 @@ namespace net {
                 return resp;
             }
 
+
+            // Stream an HTTP response and invoke the callback for each received body segment.
+            // Chunked transfer-encoding is handled internally and never exposed to the callback.
+            // For non-chunked responses, the callback is invoked once with the complete response.
+            // Returning false from the callback terminates the stream early.
+            template<typename Fn> requires(std::is_invocable_r_v<bool, Fn, const HttpResponse&>)
+            void stream(Fn callback, long timeoutSec = 5, std::string_view certPath = "") {
+                url.resolve(); // Resolve the URL and throw on failure
+                if (url.protocol != "http" && url.protocol != "https")
+                    throw std::runtime_error("Unsupported protocol: " + url.protocol);
+
+                // Make use of the invariant helper
+                utils::SocketInvariant socket;
+                if (url.protocol == "http") socket.socket = net::Socket {SOCKTYPE::TCP, url.ipType};
+                else socket.socket = net::SSLSocket {false, certPath, "", url.ipType};
+
+                // Set host name if not set and other configs
+                if (headers.find("host") == headers.end()) setHeader("Host", url.domain);
+                if (timeoutSec > 0) socket.setTimeout(timeoutSec, timeoutSec);
+
+                // Establish connection and send request
+                socket.connect(url.ipAddr, url.port);
+                std::ignore = socket.sendAll(this->toString());
+
+                std::string rawResp; HttpResponse httpResp;
+                enum class State {START, CHUNKED, END} state {State::START};
+                while (state != State::END) { 
+                    rawResp += socket.recv();
+                    // Until we recv the headers keep looping
+                    if(state == State::START && !utils::isCompleteHttpRequest(rawResp, false)) 
+                        continue;
+
+                    // Categorise based on headers whether we should continue looping
+                    if (state == State::START) {
+                        httpResp = HttpResponse::fromString(rawResp);
+                        if (httpResp.header("transfer-encoding") != "chunked") {
+                            state = State::END;
+                        } else {
+                            httpResp.headers.erase("transfer-encoding");
+                            rawResp = httpResp.body;
+                            httpResp.body = *utils::unchunkBody(rawResp);
+                            state = State::CHUNKED;
+                        }
+                    } 
+
+                    else if (state == State::CHUNKED) {
+                        auto unchunked = utils::unchunkBody(rawResp);
+                        if (!unchunked) continue;
+                        httpResp.body = *unchunked;
+                    }
+
+                    // If empty chunk (last) or cb forces early return
+                    if ((state == State::CHUNKED && httpResp.body.empty()) 
+                            || !callback(httpResp)) state = State::END;
+                }
+            }
+
         // Unlike httpresponse unintended modification of these values can mean trouble
         // So we keep them private and provide functions for access
         private: 
@@ -1029,20 +1150,13 @@ namespace net {
         private:
             // If timeout set to a negative number, timeouts are ignored
             HttpResponse _execute(long timeoutSec, std::string_view certPath, bool ssl) {
-                if (!ssl) {
-                    net::Socket socket {SOCKTYPE::TCP, url.ipType};
-                    if (timeoutSec > 0) socket.setTimeout(timeoutSec, timeoutSec);
-                    socket.connect(url.ipAddr, url.port);
-                    socket.sendAll(this->toString());
-                    return HttpResponse::fromString(socket.recvAll());
-                } 
-                else {
-                    net::SSLSocket socket{false, certPath, "", url.ipType};
-                    if (timeoutSec > 0) socket.setTimeout(timeoutSec, timeoutSec);
-                    socket.connect(url.ipAddr, url.port, url.domain);
-                    socket.sendAll(this->toString());
-                    return HttpResponse::fromString(socket.recvAll());
-                }
+                utils::SocketInvariant socket;
+                if (!ssl) socket.socket = net::Socket {SOCKTYPE::TCP, url.ipType};
+                else socket.socket = net::SSLSocket {false, certPath, "", url.ipType};
+                if (timeoutSec > 0) socket.setTimeout(timeoutSec, timeoutSec);
+                socket.connect(url.ipAddr, url.port);
+                std::ignore = socket.sendAll(this->toString());
+                return HttpResponse::fromString(socket.recvAll());
             }
     };
 
