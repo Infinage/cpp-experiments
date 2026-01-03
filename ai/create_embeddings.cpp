@@ -31,8 +31,7 @@ using EMBEDDING = std::array<float, EMBED_DIM>;
 
 // Process and send out REST API request to ollama embedding url
 std::vector<EMBEDDING>
-extractEmbeddings(const std::vector<std::tuple<int, int, std::string>> &batch) 
-{
+extractEmbeddings(const std::vector<std::tuple<int, int, std::string>> &batch) {
     std::vector<EMBEDDING> result(batch.size());
 
     // Prepare a list of strings (in json string)
@@ -121,7 +120,11 @@ void processEmbeddingBatch(sqlite::Statement &query,
     // Bind & insert records one at a time
     for (const auto &[batchRow, embedding]: std::ranges::zip_view(batch, embeddings)) {
         const auto &[fid, cid, body] = batchRow;
-        bindToEmbeddingsInsertQuery(query, fid, cid, body, embedding);
+        auto metaEnd = body.find("]\n"); // Remove the meta we added
+        auto fnStart = metaEnd != std::string::npos? static_cast<long>(metaEnd) + 2: 0;
+        fnStart = std::min(fnStart, static_cast<long>(body.size()));
+        std::string_view bodyWithoutMeta {body.begin() + fnStart, body.end()};
+        bindToEmbeddingsInsertQuery(query, fid, cid, bodyWithoutMeta, embedding);
         auto stepRes = query.step();
         if (!stepRes) throw std::runtime_error{stepRes.error()};
         auto resetRes = query.reset(true);
@@ -190,13 +193,19 @@ int main() try {
         if (!stepRes) throw std::runtime_error{stepRes.error()};
         auto resetRes = funcQ->reset(true);
         if (!resetRes) throw std::runtime_error{stepRes.error()};
+        
+        // Process the file meta along side the function for better retreival
+        auto meta = std::format("[file={} namespace={} class={} function={}]\n", 
+                row.file, row.ns, row.cls, row.function);
 
         // Split the function into chunks as required
-        auto numChunks = (row.body.size() + EMBED_MAX_CHARS - 1) / EMBED_MAX_CHARS;
+        if (meta.size() >= EMBED_MAX_CHARS) throw std::runtime_error{"EMBED_MAX_CHARS too low"};
+        std::size_t actualChunkSize {EMBED_MAX_CHARS - meta.size()};
+        std::size_t numChunks {(row.body.size() + actualChunkSize - 1) / actualChunkSize};
         for (std::size_t cid {}; cid < numChunks; ++cid) {
-            auto start = cid * EMBED_MAX_CHARS;
-            auto end = std::min(start + EMBED_MAX_CHARS, row.body.size());
-            auto toEmbed = row.body.substr(start, end - start);
+            auto start = cid * actualChunkSize;
+            auto end = std::min(start + actualChunkSize, row.body.size());
+            auto toEmbed = meta + row.body.substr(start, end - start);
             batch.emplace_back(fid, cid, toEmbed); 
         }
 
