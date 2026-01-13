@@ -7,8 +7,8 @@
 #include <string>
 
 // Constants
-constexpr std::size_t EMBED_MAX_CHARS = 300; 
-constexpr std::size_t EMBED_DIM = 384; 
+constexpr std::size_t EMBED_MAX_CHARS = 2500; 
+constexpr std::size_t EMBED_DIM = 768;
 
 // Embedding type for convenience
 using EMBEDDING = std::array<float, EMBED_DIM>;
@@ -67,7 +67,7 @@ EMBEDDING extractEmbeddings(std::string_view query) {
     // Send a HTTP request to process embeddings
     net::HttpRequest req {"http://localhost:11434/api/embed", "POST"};
     req.setHeader("Accept", "application/json");
-    req.setBody(R"({"model":"all-minilm:l6-v2","input":)" + text + R"(})");
+    req.setBody(R"({"model":"embeddinggemma","input":)" + text + R"(})");
     auto resp = req.execute();
 
     // Throw in case of errors
@@ -118,7 +118,8 @@ std::vector<std::pair<std::size_t, double>> fetchTopFunctionIDMatches(
 
     // Store the top five hits
     std::vector<std::pair<std::size_t, double>> topHits{K};
-    std::ranges::partial_sort_copy(transformed, topHits);
+    std::ranges::partial_sort_copy(transformed, topHits,
+        [](auto p1, auto p2) { return p1.second < p2.second; });
     return topHits;
 }
 
@@ -186,12 +187,13 @@ initDB(std::string_view databaseName) {
     if (!res) throw std::runtime_error{"Enable ext load: " + res.error()};
 
     // Vector DB support
-    res = db->exec(R"(
+    auto initQuery = std::format(R"(
         SELECT load_extension('./vector');
-        SELECT vector_init('embeddings', 'embedding', 'dimension=384,distance=cosine');
+        SELECT vector_init('embeddings', 'embedding', 'dimension={},distance=cosine');
         SELECT vector_quantize('embeddings', 'embedding');
         -- SELECT vector_quantize_preload('embeddings', 'embedding');
-    )");
+    )", EMBED_DIM);
+    res = db->exec(initQuery);
     if (!res) throw std::runtime_error{"Ext load: " + res.error()};
 
     // Prepare query to fetch context
@@ -244,7 +246,7 @@ int main() {
         auto functions = fetchFunctions(fetchCompleteFunctionQ, topHits);
 
         // Only print out the context that would be used for prompt
-        if (debugCtx) { 
+        if (debugCtx) {
             for (auto &ctx: functions)
                 std::println("File={}\nFunction={}\nbody={}\n", 
                     ctx.file, ctx.fn, ctx.body);

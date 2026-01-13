@@ -4,12 +4,13 @@
 #include "../misc/sqlite.hpp"
 
 #include <exception>
+#include <filesystem>
 #include <print>
 
 // Constants
-constexpr std::size_t EMBED_BATCH_SIZE =  64; 
-constexpr std::size_t  EMBED_MAX_CHARS = 300; 
-constexpr std::size_t        EMBED_DIM = 384; 
+constexpr std::size_t EMBED_BATCH_SIZE =   64;
+constexpr std::size_t  EMBED_MAX_CHARS = 2500; 
+constexpr std::size_t        EMBED_DIM =  768; 
 
 // CSV data structure for code.csv
 struct CSVRow {
@@ -44,8 +45,8 @@ extractEmbeddings(const std::vector<std::tuple<int, int, std::string>> &batch) {
     // Send a HTTP request to process embeddings
     net::HttpRequest req {"http://localhost:11434/api/embed", "POST"};
     req.setHeader("Accept", "application/json");
-    req.setBody(R"({"model":"all-minilm:l6-v2","input":)" + text + R"(})");
-    auto resp = req.execute();
+    req.setBody(R"({"model":"embeddinggemma","input":)" + text + R"(})");
+    auto resp = req.execute(-1);
 
     // Log in case of errors
     if (!resp.ok()) std::println("Batch failed with message: {}", resp.body);
@@ -133,6 +134,10 @@ void processEmbeddingBatch(sqlite::Statement &query,
 }
 
 int main() try {
+
+    // Create new DB if one already exists
+    if (std::filesystem::exists(".codebase")) 
+        std::filesystem::remove(".codebase");
 
     // Create sqlite db and init tables
     auto db = sqlite::open(".codebase");
