@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.18)
-project(video-chat LANGUAGES CXX)
+project(ai-experiments LANGUAGES CXX)
 
-set(CMAKE_CXX_STANDARD 23)
+set(CMAKE_CXX_STANDARD 23 REQUIRED)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 file(
@@ -14,8 +14,14 @@ file(
 include(${CMAKE_CURRENT_BINARY_DIR}/cmake/CPM.cmake)
 
 CPMAddPackage("gh:TheLartians/Ccache.cmake@1.2.5")
-CPMAddPackage("gh:h4tr3d/avcpp@2.7.1")
 
-add_executable(video-chat)
-target_sources(video-chat PRIVATE main.cpp)
-target_link_libraries(video-chat PRIVATE avcpp::avcpp)
+CPMAddPackage(
+    URI "gh:ggml-org/llama.cpp#b7726" 
+    OPTIONS 
+        "LLAMA_STANDALONE OFF" 
+        "LLAMA_BUILD_COMMON ON"
+)
+
+add_executable(embedding-sample)
+target_sources(embedding-sample PRIVATE embedding.cpp)
+target_link_libraries(embedding-sample PRIVATE common llama)

@@ -646,6 +646,9 @@ namespace net {
         struct SocketInvariant {
             std::variant<Socket, SSLSocket> socket;
 
+            bool ok() const { return std::visit([&](auto &sock) { return sock.ok(); }, socket); }
+            int fd() const { return std::visit([&](auto &sock) { return sock.fd(); }, socket); }
+
             void setTimeout(long rcvTimeoutSec, long sndTimeoutSec) {
                 std::visit([&](auto &sock) {
                     return sock.setTimeout(rcvTimeoutSec, sndTimeoutSec);
@@ -934,6 +937,8 @@ namespace net {
                 return resp;
             }
 
+            // If content-length is already defined, we will not update it even
+            // if the body size doesn't match. If not defined we will auto set it
             [[nodiscard]] std::string toString() const {
                 std::ostringstream oss;
                 oss << "HTTP/1.1 " << statusCode << "\r\n";
@@ -941,11 +946,12 @@ namespace net {
                     for (const auto &val: kv.second)
                         oss << kv.first << ": " << val << "\r\n";
                 }
-                if (body.empty()) oss << "\r\n";
-                else {
-                    oss << "content-length: " << body.size() 
-                        << "\r\n\r\n" << body;
-                }
+
+                if (!body.empty() && !headers.count("content-length"))
+                    oss << "content-length: " << body.size() << "\r\n";
+
+                oss << "\r\n" << body;
+
                 return oss.str();
             }
 
@@ -1084,6 +1090,35 @@ namespace net {
                 return resp;
             }
 
+            // Stream an HTTP response and invoke the callback for each received body segment.
+            // Chunked transfer-encoding is handled internally and never exposed to the callback.
+            // For non-chunked responses, the callback is invoked once with the complete response.
+            // Returning false from the callback terminates the stream early.
+            template<typename Fn> requires(std::is_invocable_r_v<bool, Fn, std::string_view>)
+            void stream(Fn callback, std::size_t chunkSize = 2048, long timeoutSec = 5, std::string_view certPath = "") {
+                url.resolve(); // Resolve the URL and throw on failure
+                if (url.protocol != "http" && url.protocol != "https")
+                    throw std::runtime_error("Unsupported protocol: " + url.protocol);
+
+                // Make use of the invariant helper
+                utils::SocketInvariant socket;
+                if (url.protocol == "http") socket.socket = net::Socket {SOCKTYPE::TCP, url.ipType};
+                else socket.socket = net::SSLSocket {false, certPath, "", url.ipType};
+
+                // Set host name if not set and other configs
+                if (headers.find("host") == headers.end()) setHeader("Host", url.domain);
+                if (timeoutSec > 0) socket.setTimeout(timeoutSec, timeoutSec);
+
+                // Establish connection and send request
+                socket.connect(url.ipAddr, url.port, url.domain);
+                std::ignore = socket.sendAll(this->toString());
+
+                // Callback on each chunk as read from the wire
+                while (socket.ok()) {
+                    auto chunk = socket.recv(chunkSize);
+                    if (chunk.empty() || !callback(chunk)) break;
+                }
+            }
 
             // Stream an HTTP response and invoke the callback for each received body segment.
             // Chunked transfer-encoding is handled internally and never exposed to the callback.
@@ -1105,7 +1140,7 @@ namespace net {
                 if (timeoutSec > 0) socket.setTimeout(timeoutSec, timeoutSec);
 
                 // Establish connection and send request
-                socket.connect(url.ipAddr, url.port);
+                socket.connect(url.ipAddr, url.port, url.domain);
                 std::ignore = socket.sendAll(this->toString());
 
                 std::string rawResp; HttpResponse httpResp;
@@ -1154,7 +1189,7 @@ namespace net {
                 if (!ssl) socket.socket = net::Socket {SOCKTYPE::TCP, url.ipType};
                 else socket.socket = net::SSLSocket {false, certPath, "", url.ipType};
                 if (timeoutSec > 0) socket.setTimeout(timeoutSec, timeoutSec);
-                socket.connect(url.ipAddr, url.port);
+                socket.connect(url.ipAddr, url.port, url.domain);
                 std::ignore = socket.sendAll(this->toString());
                 return HttpResponse::fromString(socket.recvAll());
             }
