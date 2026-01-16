@@ -2,8 +2,8 @@
  * Usage
  *  ```
     curl 'http://localhost:8080/stream' --get \
-      --data-urlencode 'url=https://repo.msys2.org/msys/x86_64/ctags-6.2.1-2-x86_64.pkg.tar.zst' \
-      --data-urlencode 'output=ctar.tar.zst'
+      --data-urlencode 'url=https://repo.msys2.org/msys/x86_64/clang-20.1.2-1-x86_64.pkg.tar.zst' \
+      --data-urlencode 'output=clang.tar.zst'
  *  ```
  *
  *  Dockerfile:
@@ -51,13 +51,6 @@ struct Client {
     net::Socket *operator->() { return &socket; }
 };
 
-constexpr const char *BAD_REQ = 
-"HTTP/1.1 400\r\n"
-"Connection: close\r\n"
-"Content-Type: text/plain\r\n"
-"Content-Length: 11\r\n\r\n"
-"Bad Request";
-
 constexpr const char *BAD_URL = 
 "HTTP/1.1 400\r\n"
 "Connection: close\r\n"
@@ -73,61 +66,82 @@ constexpr const char *NOT_FOUND =
 "Not Found";
 
 void pipeDownloadStream(Client &client, const net::URL &target, std::string_view download) {
-    net::HttpRequest req{target}; 
+    net::HttpRequest req{target};
     bool first = true; std::string acc;
     req.stream([&first, &acc, &client, &download](std::string_view raw) {
+        long sent;
+
         // Somewhere in middle, passthrough
-        if (!first) client->sendAll(raw);
+        if (!first) sent = client->sendAll(raw);
+
+        // Incomplete headers, wait for more
         else {
-            // Incomplete headers, wait for more
             acc += raw;
-            if (first && !net::utils::isCompleteHttpRequest(acc, false)) 
-                return true;
+            auto headerStart = acc.find("\r\n");
+            if (first && headerStart == std::string::npos) return true;
+            auto headerEnd = acc.find("\r\n\r\n", headerStart + 2);
+            if (first && headerEnd == std::string::npos) return true;
 
             // Headers done, send everything but modify headers
-            auto resp = net::HttpResponse::fromString(acc);
-            resp.headers.erase("server");
-            resp.headers["connection"] = {"close"};
-            resp.headers["x-content-type-options"] = {"nosniff"};
-            resp.headers["content-disposition"] = {"attachment; filename=\"" + std::string{download} + "\""};
-            client->sendAll(resp.toString());
-            first = false;
+            auto headers = net::utils::parseHeadersFromString(acc.substr(headerStart + 2, headerEnd - headerStart));
+            headers.erase("server");
+            headers["connection"] = {"close"};
+            headers["x-content-type-options"] = {"nosniff"};
+            headers["content-disposition"] = {"attachment; filename=\"" + std::string{download} + "\""};
+            std::ostringstream headerRaw;
+            headerRaw << "HTTP/1.1 " << 200 << " OK\r\n";
+            for (const auto &kv: headers) {
+                for (const auto &val: kv.second)
+                    headerRaw << kv.first << ": " << val << "\r\n";
+            }
+
+            // Send with modified headers
+            std::string sendBuffer = headerRaw.str() + "\r\n" + std::string{raw.substr(headerEnd + 4)};
+            sent = client->sendAll(sendBuffer); first = false;
+            std::println("Updated headers sent, beginning content stream {}:{}", 
+                client.ip, client.port);
         }
-        return true;
+        return sent > 0;
     });
 }
 
-void handleRequest(Client &&client) {
-    auto raw = client.socket.recv();
-    if (!net::utils::isCompleteHttpRequest(raw)) {
-        std::println("Invalid req from client ({}: {})", client.ip, client.port);
-        std::ignore = client->send(BAD_REQ);
-        return;
+// Function owns lifetime of client socket
+void handleRequest(Client client) {
+    try {
+        auto raw = client.socket.recv();
+        if (!net::utils::isCompleteHttpRequest(raw))
+            throw std::runtime_error{"Invalid Request"};
+
+        auto req = net::HttpRequest::fromString(raw);
+        if (req.getURL().path != "/stream") {
+            std::ignore = client->send(NOT_FOUND);
+            return;
+        }
+
+        std::string target, output {"download"};
+        for (auto [key_, val_]: req.getURL().params) {
+            auto key = net::URL::decode(key_);
+            auto val = net::URL::decode(val_);
+            if (key == "url") target = val;
+            else if (key == "output") output = val;
+        }
+
+        // Resolving URL can throw, can be empty as well
+        net::URL targetURL{target};
+        try { targetURL.resolve(); }
+        catch(...) { 
+            std::ignore = client->send(BAD_URL); 
+            return; 
+        }
+
+        std::println("Client {}:{} has requested {}", client.ip, client.port, target);
+        pipeDownloadStream(client, targetURL, output);
     }
 
-    auto req = net::HttpRequest::fromString(raw);
-    if (req.getURL().path != "/stream") {
-        std::ignore = client->send(NOT_FOUND);
-        return;
+    catch (std::exception &ex) {
+        std::println("HandleRequest Error ({}:{}): {}", client.ip, 
+            client.port, ex.what());
     }
-
-    std::string target, output {"download"};
-    for (auto [key_, val_]: req.getURL().params) {
-        auto key = net::URL::decode(key_);
-        auto val = net::URL::decode(val_);
-        if (key == "url") target = val;
-        else if (key == "output") output = val;
-    }
-
-    net::URL targetURL{target};
-    try { targetURL.resolve(); }
-    catch(...) { 
-        std::ignore = client->send(BAD_URL); 
-        return; 
-    }
-
-    std::println("Client {}:{} has requested {}", client.ip, client.port, targetURL.path);
-    pipeDownloadStream(client, targetURL, output);
 }
 
 int main() try {
@@ -146,7 +160,7 @@ int main() try {
         std::println("Connection from {}:{}", clientIP, clientPort);
         handleRequest({std::move(client), clientIP, clientPort});
     }
-} 
+}
 
 catch (std::exception &ex) { 
     std::println("Error occured: {}", ex.what()); 
