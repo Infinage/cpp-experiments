@@ -4,7 +4,6 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
-#include <functional>
 #include <iostream>
 #include <mutex>
 #include <netinet/in.h>
@@ -170,7 +169,7 @@ int main(int argc, char **argv) {
               << "/) \nDirectory: " << serveDirectory << "\n\n";
 
     // Accept connections
-    ThreadPool<std::function<void()>> pool(N_THREADS);
+    async::ThreadPool pool(N_THREADS);
     std::signal(SIGINT, handleInterrupt);
     while (httpServerRunning) {
         // Accept a connection, store the client addr

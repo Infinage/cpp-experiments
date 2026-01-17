@@ -1,3 +1,4 @@
+# TODO: convert to cmakelists and also add target for mandelbrot
 # Compiler and Flags
 CXX = g++
 CXXFLAGS = -std=c++23 -Wall -Wextra

@@ -30,14 +30,12 @@ inline short getTradeSignal(double delta) {
     return delta < 0? -1: delta > 0? 1: 0;
 }
 
-[[nodiscard]] 
-double trade(
+[[nodiscard]] double trade(
     const std::string &fileName, 
     double corpus = 100'000, 
     const std::size_t shortWin = 15, 
     const std::size_t longWin = 50) 
 {
-
     // Read the CSV file
     CSVUtil::CSVReader reader {fileName}; 
     MovingAverage shortMA {shortWin}, longMA {longWin};
@@ -101,8 +99,7 @@ int main(int argc, char **argv) {
                           longWin {static_cast<std::size_t>(program.get<int>("long-window"))};
 
         // Define the pool of threads
-        ThreadPool<std::function<std::pair<std::string, double>(void)>> pool {
-            std::thread::hardware_concurrency()};
+        async::ThreadPool pool {std::thread::hardware_concurrency()};
 
         // Add the tasks to our pool of threads
         std::vector<std::future<std::pair<std::string, double>>> futures;
@@ -117,7 +114,7 @@ int main(int argc, char **argv) {
         // Process the results
         std::ofstream ofs {ofile};
         ofs << "File,Profit,Profit%\n";
-        for (std::future<std::pair<std::string, double>> &future: futures) {
+        for (auto &future: futures) {
             std::string file; double profit;
             std::tie(file, profit) = future.get();
             double profitPercentage = (profit / corpus) * 100.0;

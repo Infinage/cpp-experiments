@@ -8,7 +8,6 @@
 
 #include <algorithm>
 #include <chrono>
-#include <vector>
 
 #include <SFML/Graphics.hpp>
 
@@ -118,7 +117,7 @@ int main(int argc, char **argv) {
 
         // Create SFML Window and a pool of threads
         sf::RenderWindow window{sf::VideoMode{800, 600}, "Mandelbrot Set Explorer"};
-        ThreadPool<std::function<void()>> pool(static_cast<std::size_t>(nThreads));
+        async::ThreadPool pool(static_cast<std::size_t>(nThreads));
 
         // Define variables to be used inside event loop
         double MIN_RE {-2.}, MAX_RE {1.}, MIN_IM {-1.}, MAX_IM {1.};
@@ -293,9 +292,8 @@ int main(int argc, char **argv) {
                 unsigned HEIGHT {winSize.y}, WIDTH {winSize.x};
                 double STEP_IM {(MAX_IM - MIN_IM) / HEIGHT}, STEP_RE {(MAX_RE - MIN_RE) / WIDTH};
                 std::vector<std::uint8_t> image(WIDTH * HEIGHT * 4);
-                std::vector<std::function<void(void)>> tasks;
                 for (unsigned row {0}; row < HEIGHT; row++) {
-                    tasks.emplace_back([WIDTH, MIN_RE, STEP_RE, MIN_IM, STEP_IM, row, MAX_ITER, &image]() {
+                    pool.enqueue([WIDTH, MIN_RE, STEP_RE, MIN_IM, STEP_IM, row, MAX_ITER, &image]() {
                         for (unsigned col {0}; col < WIDTH; col++) {
                             double re {MIN_RE + col * STEP_RE}, im {MIN_IM + row * STEP_IM};
                             unsigned iters {check(re, im, MAX_ITER)};
@@ -307,8 +305,7 @@ int main(int argc, char **argv) {
                     });
                 }
 
-                // Burst enqueue to minimize lock contention
-                pool.enqueueAll(tasks);
+                // Wait for pool to complete executing
                 pool.wait();
 
                 // Update the image

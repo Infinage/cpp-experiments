@@ -2,8 +2,9 @@
  * Usage
  *  ```
     curl 'http://localhost:8080/stream' --get \
-      --data-urlencode 'url=https://repo.msys2.org/msys/x86_64/clang-20.1.2-1-x86_64.pkg.tar.zst' \
-      --data-urlencode 'output=clang.tar.zst'
+      --data-urlencode 'target=https://repo.msys2.org/msys/x86_64/clang-20.1.2-1-x86_64.pkg.tar.zst' \
+      --data-urlencode 'filename=clang.tar.zst'
+      --data-urlencode 'token=SECRET'
  *  ```
  *
  *  Dockerfile:
@@ -40,16 +41,12 @@
  *  ```
  */
 
+#include "../misc/threadPool.hpp"
 #include "net.hpp"
-#include <csignal>
-#include <print>
 
-struct Client {
-    net::Socket socket; 
-    std::string ip; 
-    std::uint16_t port; 
-    net::Socket *operator->() { return &socket; }
-};
+#include <csignal>
+#include <cstdlib>
+#include <print>
 
 constexpr const char *BAD_URL = 
 "HTTP/1.1 400\r\n"
@@ -58,6 +55,13 @@ constexpr const char *BAD_URL =
 "Content-Length: 7\r\n\r\n"
 "Bad URL";
 
+constexpr const char *UNAUTHORISED = 
+"HTTP/1.1 401\r\n"
+"Connection: close\r\n"
+"Content-Type: text/plain\r\n"
+"Content-Length: 12\r\n\r\n"
+"Unauthorised";
+
 constexpr const char *NOT_FOUND = 
 "HTTP/1.1 404\r\n"
 "Connection: close\r\n"
@@ -65,14 +69,16 @@ constexpr const char *NOT_FOUND =
 "Content-Length: 9\r\n\r\n"
 "Not Found";
 
-void pipeDownloadStream(Client &client, const net::URL &target, std::string_view download) {
+void pipeDownloadStream(net::Socket &client, const std::string &ip, const std::uint16_t port, 
+    const net::URL &target, std::string_view filename) 
+{
     net::HttpRequest req{target};
     bool first = true; std::string acc;
-    req.stream([&first, &acc, &client, &download](std::string_view raw) {
+    req.stream([&](std::string_view raw) {
         long sent;
 
         // Somewhere in middle, passthrough
-        if (!first) sent = client->sendAll(raw);
+        if (!first) sent = client.sendAll(raw);
 
         // Incomplete headers, wait for more
         else {
@@ -87,7 +93,7 @@ void pipeDownloadStream(Client &client, const net::URL &target, std::string_view
             headers.erase("server");
             headers["connection"] = {"close"};
             headers["x-content-type-options"] = {"nosniff"};
-            headers["content-disposition"] = {"attachment; filename=\"" + std::string{download} + "\""};
+            headers["content-disposition"] = {"attachment; filename=\"" + std::string{filename} + "\""};
             std::ostringstream headerRaw;
             headerRaw << "HTTP/1.1 " << 200 << " OK\r\n";
             for (const auto &kv: headers) {
@@ -97,71 +103,77 @@ void pipeDownloadStream(Client &client, const net::URL &target, std::string_view
 
             // Send with modified headers
             std::string sendBuffer = headerRaw.str() + "\r\n" + std::string{raw.substr(headerEnd + 4)};
-            sent = client->sendAll(sendBuffer); first = false;
-            std::println("Updated headers sent, beginning content stream {}:{}", 
-                client.ip, client.port);
+            sent = client.sendAll(sendBuffer); first = false;
+            std::println("Updated headers sent, beginning content stream {}:{}", ip, port);
         }
         return sent > 0;
     });
 }
 
 // Function owns lifetime of client socket
-void handleRequest(Client client) {
+void handleRequest(net::Socket &&client, std::string ip, std::uint16_t port, const std::string &TOKEN) {
     try {
-        auto raw = client.socket.recv();
+        auto raw = client.recv();
         if (!net::utils::isCompleteHttpRequest(raw))
             throw std::runtime_error{"Invalid Request"};
 
         auto req = net::HttpRequest::fromString(raw);
         if (req.getURL().path != "/stream") {
-            std::ignore = client->send(NOT_FOUND);
+            std::ignore = client.send(NOT_FOUND);
             return;
         }
 
-        std::string target, output {"download"};
+        bool validToken = false;
+        std::string target, filename {"download"};
         for (auto [key_, val_]: req.getURL().params) {
             auto key = net::URL::decode(key_);
             auto val = net::URL::decode(val_);
-            if (key == "url") target = val;
-            else if (key == "output") output = val;
+            if (key == "target") target = val;
+            else if (key == "filename") filename = val;
+            else if (key == "token") validToken = val == TOKEN;
         }
+
+        // Add a simple string based authentication
+        if (!validToken) { std::ignore = client.send(UNAUTHORISED); return; }
 
         // Resolving URL can throw, can be empty as well
         net::URL targetURL{target};
         try { targetURL.resolve(); }
-        catch(...) { 
-            std::ignore = client->send(BAD_URL); 
-            return; 
-        }
+        catch(...) { std::ignore = client.send(BAD_URL); return; }
 
-        std::println("Client {}:{} has requested {}", client.ip, client.port, target);
-        pipeDownloadStream(client, targetURL, output);
+        std::println("Client {}:{} has requested {}", ip, port, target);
+        pipeDownloadStream(client, ip, port, targetURL, filename);
     }
 
     catch (std::exception &ex) {
-        std::println("HandleRequest Error ({}:{}): {}", client.ip, 
-            client.port, ex.what());
+        std::println("HandleRequest Error ({}:{}): {}", ip, port, ex.what());
     }
 }
 
 int main() try {
-    const std::string serverIP = "0.0.0.0";
-    const std::uint16_t serverPort = 8080;
+    const std::string SERVERIP = "0.0.0.0";
+    const std::uint16_t SERVERPORT = 8080;
+    const std::string TOKEN = [] {
+        auto *envTok = std::getenv("TOKEN");
+        return envTok == nullptr? "SECRET": envTok;
+    }();
 
     static net::Socket server;
-    server.bind(serverIP, serverPort);
-    server.listen();
-    std::println("Up and listening on {}:{}", serverIP, serverPort);
+    server.bind(SERVERIP, SERVERPORT); server.listen();
+    std::println("Up and listening on {}:{}", SERVERIP, SERVERPORT);
 
     std::signal(SIGINT, [](int) { server.close(); });
+    async::ThreadPool pool {4, async::ThreadPool::ExitPolicy::CURRENT_TASK_COMPLETE};
     while (server.ok()) {
         std::string clientIP; std::uint16_t clientPort;
-        auto client = server.accept(clientIP, clientPort);    
+        auto sock = server.accept(clientIP, clientPort);    
         std::println("Connection from {}:{}", clientIP, clientPort);
-        handleRequest({std::move(client), clientIP, clientPort});
+        pool.enqueue([client = std::move(sock), clientIP, clientPort, &TOKEN] mutable {
+            handleRequest(std::move(client), clientIP, clientPort, TOKEN); 
+        });
     }
 }
 
 catch (std::exception &ex) { 
-    std::println("Error occured: {}", ex.what()); 
+    std::println("Fatal Error: {}", ex.what()); 
 }

@@ -2,7 +2,6 @@
 #include "threadPool.hpp"
 
 #include <charconv>
-#include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
@@ -232,7 +231,7 @@ class CSVMerge {
             std::mutex ofileMutex;
             std::size_t fileCounts{0};
             std::atomic_size_t recCounts{0};
-            ThreadPool<std::function<void()>> pool(std::thread::hardware_concurrency());
+            async::ThreadPool pool(std::thread::hardware_concurrency());
             for (const std::string &fname: files) {
                 fileCounts++;
                 pool.enqueue([fname, &recCounts, &ofile, &ofileMutex]() {
@@ -269,7 +268,7 @@ class CSVStat {
     public:
         static void statFiles(const std::vector<std::string> &files) {
             // Create a thread pool to add tasks to queue
-            ThreadPool<std::function<void()>> pool(std::thread::hardware_concurrency());
+            async::ThreadPool pool(std::thread::hardware_concurrency());
 
             // Variables to track total stats if there are multiple files
             std::size_t totalRows {0}, totalCols {0}, totalLines {0}; 
