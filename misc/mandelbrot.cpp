@@ -113,10 +113,10 @@ int main(int argc, char **argv) {
                   << "n_workers: " << nThreads << '\n';
 
         // Start with predetermined height and width, change on user interaction
-        unsigned MAX_ITER = {static_cast<unsigned>(nIters)};
+        auto MAX_ITER = static_cast<unsigned>(nIters);
 
         // Create SFML Window and a pool of threads
-        sf::RenderWindow window{sf::VideoMode{800, 600}, "Mandelbrot Set Explorer"};
+        sf::RenderWindow window{sf::VideoMode{{800, 600}}, "Mandelbrot Set Explorer"};
         async::ThreadPool pool(static_cast<std::size_t>(nThreads));
 
         // Define variables to be used inside event loop
@@ -124,160 +124,149 @@ int main(int argc, char **argv) {
         bool isMouseDragged {false}; int oldMouseX {-1}, oldMouseY {-1};
 
         // Cache image & redraw only on demand
-        sf::Texture texture;
-        texture.create(800, 600);
+        sf::Texture texture{{800, 600}};
         sf::Sprite mandelSprite {texture};
         sf::Clock clk; bool redraw {true}; 
-        sf::Cursor normalCursor, handCursor;
-        normalCursor.loadFromSystem(sf::Cursor::Arrow);
-        handCursor.loadFromSystem(sf::Cursor::SizeAll);
-        window.setMouseCursor(normalCursor);
+        auto normalCursor = sf::Cursor::createFromSystem(sf::Cursor::Type::Arrow);
+        auto handCursor = sf::Cursor::createFromSystem(sf::Cursor::Type::Hand);
+        if (!normalCursor || !handCursor) throw std::runtime_error{"Cursors not supported"};
+        window.setMouseCursor(*normalCursor);
 
         // Run event loop
         while (window.isOpen()) {
             // Poll events and respond to user interaction
-            sf::Event evnt;
-            while (window.pollEvent(evnt)) {
-                switch (evnt.type) {
-                    case sf::Event::Closed: {
-                        window.close();
-                        break;
-                    } case sf::Event::Resized: {
-                        float width_ {static_cast<float>(evnt.size.width)}, height_ {static_cast<float>(evnt.size.height)};
-                        window.setView(sf::View{sf::FloatRect{0, 0, width_, height_}});
-                        texture.create(evnt.size.width, evnt.size.height);
-                        mandelSprite.setTexture(texture, true);
-                        redraw = true;
-                        break;
-                    } case sf::Event::MouseWheelScrolled: {
-                        // Compute percentage from top left
-                        sf::Vector2u winSize {window.getSize()};
-                        double scrollXP {static_cast<double>(evnt.mouseWheelScroll.x) / winSize.x};
-                        double scrollYP {static_cast<double>(evnt.mouseWheelScroll.y) / winSize.y};
+            while (auto event = window.pollEvent()) {
+                if (event->is<sf::Event::Closed>()) {
+                    window.close();
+                } else if (const auto *ev = event->getIf<sf::Event::Resized>()) {
+                    auto width  = static_cast<float>(ev->size.x);
+                    auto height = static_cast<float>(ev->size.y);
+                    window.setView(sf::View{sf::FloatRect{{0.f, 0.f}, {width, height}}});
+                    if (!texture.resize(ev->size)) std::cerr << "Texture resize event failed\n";
+                    mandelSprite.setTexture(texture, true);
+                    redraw = true;
+                } else if (const auto *ev = event->getIf<sf::Event::MouseWheelScrolled>()) {
+                    // Compute percentage from top left
+                    sf::Vector2u winSize = window.getSize();
+                    double scrollXP = static_cast<double>(ev->position.x) / winSize.x;
+                    double scrollYP = static_cast<double>(ev->position.y) / winSize.y;
 
-                        // Convert in terms of RE, IM
-                        double currRE {MIN_RE + (MAX_RE - MIN_RE) * scrollXP}; 
-                        double currIM {MIN_IM + (MAX_IM - MIN_IM) * scrollYP};
+                    // Convert in terms of RE, IM
+                    double currRE = MIN_RE + (MAX_RE - MIN_RE) * scrollXP;
+                    double currIM = MIN_IM + (MAX_IM - MIN_IM) * scrollYP;
 
-                        // Determine zoom factor - {0.9: zoom in, 1.1: zoom out}
-                        double zoom = evnt.mouseWheelScroll.delta > 0? 0.9: 1.1;
-                        double reRange {MAX_RE - MIN_RE}, imRange {MAX_IM - MIN_IM}; 
+                    // Determine zoom factor - {0.9: zoom in, 1.1: zoom out}
+                    double zoom = ev->delta > 0 ? 0.9 : 1.1;
+                    double reRange = MAX_RE - MIN_RE;
+                    double imRange = MAX_IM - MIN_IM;
 
+                    // Prevent zoom in beyond the point it gets blurry
+                    if ((reRange < 5e-14 || imRange < 5e-14) && zoom < 1.0) continue;
+
+                    // Compute new bounds - ensuring we don't go out of bounds
+                    MIN_RE = std::max(currRE - (currRE - MIN_RE) * zoom, -2.0);
+                    MAX_RE = std::min(MIN_RE + reRange * zoom, 1.0);
+                    MIN_IM = std::max(currIM - (currIM - MIN_IM) * zoom, -1.0);
+                    MAX_IM = std::min(MIN_IM + imRange * zoom, 1.0);
+                    redraw = true;
+                } else if (const auto *ev = event->getIf<sf::Event::MouseButtonPressed>()) {
+                    if (ev->button == sf::Mouse::Button::Left) {
+                        isMouseDragged = true;
+                        oldMouseX = ev->position.x;
+                        oldMouseY = ev->position.y;
+                        window.setMouseCursor(*handCursor);
+                    }
+                } else if (const auto *ev = event->getIf<sf::Event::MouseButtonReleased>()) {
+                    if (ev->button == sf::Mouse::Button::Left) {
+                        isMouseDragged = false;
+                        window.setMouseCursor(*normalCursor);
+                    }
+                } else if (const auto *ev = event->getIf<sf::Event::MouseMoved>()) {
+                    if (!isMouseDragged) continue;
+
+                    // Compute delta b/w current & prev mouse pos
+                    sf::Vector2u winSize = window.getSize();
+                    double deltaX = static_cast<double>(ev->position.x - oldMouseX) / winSize.x;
+                    double deltaY = static_cast<double>(ev->position.y - oldMouseY) / winSize.y;
+                    double reRange = MAX_RE - MIN_RE;
+                    double imRange = MAX_IM - MIN_IM;
+
+                    // Compute new bounds - ensuring we don't go out of bounds
+                    MIN_RE = std::max(MIN_RE - deltaX * reRange, -2.0);
+                    MAX_RE = std::min(MAX_RE - deltaX * reRange, 1.0);
+                    MIN_IM = std::max(MIN_IM - deltaY * imRange, -1.0);
+                    MAX_IM = std::min(MAX_IM - deltaY * imRange, 1.0);
+
+                    // Above might end up stretching the range - lets ensure it doesn't
+                    if (MIN_RE == -2.0) MAX_RE = MIN_RE + reRange;
+                    else if (MAX_RE == 1.0) MIN_RE = MAX_RE - reRange;
+                    if (MIN_IM == -1.0) MAX_IM = MIN_IM + imRange;
+                    else if (MAX_IM == 1.0) MIN_IM = MAX_IM - imRange;
+
+                    oldMouseX = ev->position.x;
+                    oldMouseY = ev->position.y;
+
+                    redraw = true;
+                } else if (const auto *ev = event->getIf<sf::Event::KeyPressed>()) {
+                    sf::Keyboard::Key key = ev->code;
+                    double reRange = MAX_RE - MIN_RE, imRange = MAX_IM - MIN_IM;
+                    if (isInKeys(key, {sf::Keyboard::Key::Add, sf::Keyboard::Key::Equal,
+                                       sf::Keyboard::Key::Subtract, sf::Keyboard::Key::Hyphen})) {
                         // Prevent zoom in beyond the point it gets blurry
-                        if ((reRange < 5e-14 || imRange < 5e-14) && zoom == 0.9) break;
+                        double zoom = isInKeys(key, {sf::Keyboard::Key::Add, sf::Keyboard::Key::Equal}) ? 0.9 : 1.1;
+                        if ((reRange < 5e-14 || imRange < 5e-14) && zoom < 1.0) continue;
 
                         // Compute new bounds - ensuring we don't go out of bounds
-                        MIN_RE = std::max(currRE - (currRE - MIN_RE) * zoom, -2.); 
-                        MAX_RE = std::min(MIN_RE + reRange * zoom, 1.);
-                        MIN_IM = std::max(currIM - (currIM - MIN_IM) * zoom, -1.); 
-                        MAX_IM = std::min(MIN_IM + imRange * zoom, 1.);
-                        redraw = true; break;
-                    } case sf::Event::MouseButtonPressed: {
-                        if (evnt.mouseButton.button == 0) {
-                            isMouseDragged = true;
-                            oldMouseX = evnt.mouseButton.x;
-                            oldMouseY = evnt.mouseButton.y;
-                            window.setMouseCursor(handCursor);
-                        } break;
-                    } case sf::Event::MouseButtonReleased: {
-                        if (evnt.mouseButton.button == 0) {
-                            isMouseDragged = false;
-                            window.setMouseCursor(normalCursor);
-                        }
-                        break;
-                    } case sf::Event::MouseMoved: {
-                        if (!isMouseDragged) break;
+                        double centerRE = (MIN_RE + MAX_RE) * 0.5;
+                        double centerIM = (MIN_IM + MAX_IM) * 0.5;
+                        MIN_RE = std::max(centerRE - (centerRE - MIN_RE) * zoom, -2.0);
+                        MAX_RE = std::min(MIN_RE + reRange * zoom, 1.0);
+                        MIN_IM = std::max(centerIM - (centerIM - MIN_IM) * zoom, -1.0);
+                        MAX_IM = std::min(MIN_IM + imRange * zoom, 1.0);
+                        redraw = true;
+                    } else if (isInKeys(key, {sf::Keyboard::Key::Up, sf::Keyboard::Key::Down,
+                                            sf::Keyboard::Key::Left, sf::Keyboard::Key::Right})) {
+                        // Assign delta based on key press
+                        double delta {0.1}, dx {0}, dy {0};
+                        if (key == sf::Keyboard::Key::Up)    dy =  delta;
+                        if (key == sf::Keyboard::Key::Down)  dy = -delta;
+                        if (key == sf::Keyboard::Key::Left)  dx =  delta;
+                        if (key == sf::Keyboard::Key::Right) dx = -delta;
 
-                        // Compute delta b/w current & prev mouse pos
-                        sf::Vector2u winSize {window.getSize()};
-                        double deltaX {static_cast<double>(evnt.mouseMove.x - oldMouseX) / winSize.x};
-                        double deltaY {static_cast<double>(evnt.mouseMove.y - oldMouseY) / winSize.y};
-                        double reRange = MAX_RE - MIN_RE, imRange = MAX_IM - MIN_IM;
+                        // Ensure we stay in range
+                        MIN_RE = std::max(MIN_RE - dx * reRange, -2.0);
+                        MAX_RE = std::min(MAX_RE - dx * reRange, 1.0);
+                        MIN_IM = std::max(MIN_IM - dy * imRange, -1.0);
+                        MAX_IM = std::min(MAX_IM - dy * imRange, 1.0);
 
-                        // Compute new bounds - ensuring we don't go out of bounds
-                        MIN_RE = std::max(MIN_RE - deltaX * reRange, -2.);
-                        MAX_RE = std::min(MAX_RE - deltaX * reRange, 1.);
-                        MIN_IM = std::max(MIN_IM - deltaY * imRange, -1.); 
-                        MAX_IM = std::min(MAX_IM - deltaY * imRange, 1.);
-
-                        // Above might end up stretching the range - lets ensure it doesn't
+                        // Prevent stretching
                         if (MIN_RE == -2.) MAX_RE = MIN_RE + reRange;
                         else if (MAX_RE == 1.) MIN_RE = MAX_RE - reRange;
                         if (MIN_IM == -1.) MAX_IM = MIN_IM + imRange;
                         else if (MAX_IM == 1.) MIN_IM = MAX_IM - imRange;
+                        redraw = true;
+                    } else if (key == sf::Keyboard::Key::Z) {
+                        // Reset the coordinates
+                        MIN_RE = -2.0, MAX_RE = 1.0, MIN_IM = -1.0, MAX_IM = 1.0;
+                        redraw = true;
+                    } else if (key == sf::Keyboard::Key::S) {
+                        // Take a screenshot and save to png file with timestamp
+                        sf::Texture screenshotTexture{window.getSize()};
+                        screenshotTexture.update(window);
+                        sf::Image screenshot {screenshotTexture.copyToImage()};
+                        std::chrono::time_point now {std::chrono::system_clock::now()};
+                        long ms {std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count()};
+                        if (!screenshot.saveToFile("screenshot-" + std::to_string(ms) + ".png"))
+                            std::cerr <<  "Failed to write screenshot";
 
-                        oldMouseX = evnt.mouseMove.x;
-                        oldMouseY = evnt.mouseMove.y;
-
-                        redraw = true; break;
-                    } case sf::Event::KeyPressed: {
-                        double reRange = MAX_RE - MIN_RE, imRange = MAX_IM - MIN_IM;
-                        sf::Keyboard::Key key {evnt.key.code};
-                        if (isInKeys(key, {sf::Keyboard::Add, sf::Keyboard::Equal, sf::Keyboard::Subtract, sf::Keyboard::Hyphen})) {
-                            // Prevent zoom in beyond the point it gets blurry
-                            double zoom = isInKeys(key, {sf::Keyboard::Add, sf::Keyboard::Equal}) > 0? 0.9: 1.1;
-                            if ((reRange < 5e-14 || imRange < 5e-14) && zoom == 0.9) break;
-
-                            // Compute new bounds - ensuring we don't go out of bounds
-                            double centerRE {MIN_RE + (MAX_RE - MIN_RE) * 0.5}; 
-                            double centerIM {MIN_IM + (MAX_IM - MIN_IM) * 0.5};
-                            MIN_RE = std::max(centerRE - (centerRE - MIN_RE) * zoom, -2.); 
-                            MAX_RE = std::min(MIN_RE + reRange * zoom, 1.);
-                            MIN_IM = std::max(centerIM - (centerIM - MIN_IM) * zoom, -1.); 
-                            MAX_IM = std::min(MIN_IM + imRange * zoom, 1.);
-                            redraw = true;
-                        }
-
-                        else if (isInKeys(key, {sf::Keyboard::Up, sf::Keyboard::Down, sf::Keyboard::Left, sf::Keyboard::Right})) {
-                            // Assign delta based on key press
-                            double delta {0.1}, deltaX {0}, deltaY {0};
-                            if      (key ==    sf::Keyboard::Up) deltaY =  delta;
-                            else if (key ==  sf::Keyboard::Down) deltaY = -delta;
-                            else if (key ==  sf::Keyboard::Left) deltaX =  delta;
-                            else if (key == sf::Keyboard::Right) deltaX = -delta;
-
-                            // Ensure we stay in range
-                            MIN_RE = std::max(MIN_RE - deltaX * reRange, -2.);
-                            MAX_RE = std::min(MAX_RE - deltaX * reRange, 1.);
-                            MIN_IM = std::max(MIN_IM - deltaY * imRange, -1.); 
-                            MAX_IM = std::min(MAX_IM - deltaY * imRange, 1.);
-
-                            // Prevent stretching
-                            if (MIN_RE == -2.) MAX_RE = MIN_RE + reRange;
-                            else if (MAX_RE == 1.) MIN_RE = MAX_RE - reRange;
-                            if (MIN_IM == -1.) MAX_IM = MIN_IM + imRange;
-                            else if (MAX_IM == 1.) MIN_IM = MAX_IM - imRange;
-                            redraw = true;
-                        }
-
-                        else if (key == sf::Keyboard::Z) {
-                            // Reset the coordinates
-                            MIN_RE = -2., MAX_RE = 1., MIN_IM = -1., MAX_IM = 1.;
-                            redraw = true;
-                        }
-
-                        else if (key == sf::Keyboard::S) {
-                            // Take a screenshot and save to png file with timestamp
-                            sf::Vector2u winSize {window.getSize()};
-                            sf::Texture screenshotTexture;
-                            screenshotTexture.create(winSize.x, winSize.y);
-                            screenshotTexture.update(window);
-                            sf::Image screenshot {screenshotTexture.copyToImage()};
-                            std::chrono::time_point now {std::chrono::system_clock::now()};
-                            long ms {std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count()};
-                            screenshot.saveToFile("screenshot-" + std::to_string(ms) + ".png");
-
-                            // Feedback for screenshot
-                            sf::RectangleShape flashRect{};
-                            flashRect.setSize(static_cast<sf::Vector2f>(winSize));
-                            flashRect.setFillColor(sf::Color::White);
-                            window.draw(flashRect);
-                            window.display(); sf::sleep(sf::milliseconds(10));
-                            redraw = true;
-                        }
-
-                         break;
-                    } default: {}
+                        // Feedback for screenshot
+                        sf::RectangleShape flashRect{};
+                        flashRect.setSize(sf::Vector2f{window.getSize()});
+                        flashRect.setFillColor(sf::Color::White);
+                        window.draw(flashRect);
+                        window.display(); sf::sleep(sf::milliseconds(10));
+                        redraw = true;
+                    }
                 }
             }
 
@@ -317,7 +306,7 @@ int main(int argc, char **argv) {
         }
 
         return 0;
-    } 
+    }
 
     catch (std::exception &ex) {
         std::cerr << "Fatal> " << ex.what() << '\n';

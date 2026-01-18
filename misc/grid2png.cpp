@@ -12,43 +12,43 @@
 #include <string>
 #include <vector>
 
-void grid2Image(const std::vector<std::vector<char>> &grid, const std::string &fname) {
+void charGrid2Image(const std::vector<std::vector<char>> &grid, const std::string &fname) {
     // Dimensions & font setup
     constexpr int cellSize {35}, cellBorderWidth {1};
-    constexpr char fontPath[] {"/usr/share/fonts/truetype/noto/NotoMono-Regular.ttf"};
+    constexpr char fontPath[] {"/usr/share/fonts/TTF/FiraCodeNerdFontMono-Regular.ttf"};
     const std::size_t rows {grid.size()}, cols {grid[0].size()};
     const std::size_t imageHeight {rows * cellSize}, imageWidth {cols * cellSize};
 
     // Create a render texture
-    sf::RenderTexture renderTexture;
-    renderTexture.create(static_cast<unsigned int>(imageWidth), static_cast<unsigned int>(imageHeight));
+    sf::Vector2u textureSize {static_cast<unsigned int>(imageWidth), static_cast<unsigned int>(imageHeight)};
+    sf::RenderTexture renderTexture{textureSize};
 
     // Setup font
     sf::Font font;
-    if (!font.loadFromFile(fontPath))
-        throw "Failed to load font, please reconfigure.";
+    if (!font.openFromFile(fontPath))
+        throw std::runtime_error{"Failed to load font, please reconfigure."};
 
     // Clear the texture
     renderTexture.clear(sf::Color::White);
 
     // Draw the grid
-    for (std::size_t i {0}; i < rows; i++) {
-        for (std::size_t j {0}; j < cols; j++) {
+    for (std::size_t i {}; i < rows; ++i) {
+        for (std::size_t j {}; j < cols; ++j) {
             // Draw cell background + borders
             sf::RectangleShape cell(sf::Vector2f(cellSize, cellSize));
-            cell.setPosition(static_cast<float>(j * cellSize), static_cast<float>(i * cellSize));
+            cell.setPosition({static_cast<float>(j * cellSize), static_cast<float>(i * cellSize)});
             cell.setFillColor(sf::Color::White);
             cell.setOutlineThickness(cellBorderWidth);
             cell.setOutlineColor(sf::Color::Black);
             renderTexture.draw(cell);
 
             // Draw the text
-            sf::Text letter {grid[i][j], font, cellSize - 10};
+            sf::Text letter {font, grid[i][j], cellSize - 10};
             letter.setFillColor(sf::Color::Black);
-            letter.setPosition(
+            letter.setPosition({
                 static_cast<float>(j * cellSize) + static_cast<float>(cellSize) / 4,
                 static_cast<float>(i * cellSize)
-            );
+            });
             renderTexture.draw(letter);
         }
     }
@@ -56,13 +56,14 @@ void grid2Image(const std::vector<std::vector<char>> &grid, const std::string &f
     // Flust & save to output file
     renderTexture.display();
     sf::Image img {renderTexture.getTexture().copyToImage()};
-    img.saveToFile(fname);
+    if (!img.saveToFile(fname))
+        throw std::runtime_error{"Failed to write to file."};
 }
 
 int main(int argc, char **argv) {
     if (argc != 3) {
         std::cout << "Write a grid of chars to a PNG file, all spaces are stripped.\n"
-                  << "Usage: grid2png <gridTxt> <outputFname>\n";
+                  << "Usage: grid2png <inputFname> <outputFname>\n";
     } else {
         std::ifstream ifs{argv[1]};
         if (!ifs) { std::cerr << "Error reading input text file.\n"; return 1; }
@@ -79,7 +80,7 @@ int main(int argc, char **argv) {
         }
 
         // Write to specified output filename
-        grid2Image(grid, argv[2]);
+        charGrid2Image(grid, argv[2]);
         std::cout << "Successfully written to file: '" << argv[2] << "'\n";
     }
 

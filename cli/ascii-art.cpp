@@ -98,7 +98,7 @@ int main(int argc, char **argv) {
         result.reserve(grayscaled.size() * (grayscaled[0].size() + 1));
         for (const std::vector<double> &row: grayscaled) {
             for (const double &pixel: row)
-                result.push_back(mapPixel(pixel, min, max, invertMapping)) ;
+                result.push_back(mapPixel(pixel, min, max, invertMapping));
             result.push_back('\n');
         }
 
