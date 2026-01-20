@@ -7,7 +7,6 @@
 #include <SFML/Window/Keyboard.hpp>
 #include <SFML/Window/VideoMode.hpp>
 #include <array>
-#include <cmath>
 #include <memory>
 
 #include "include/GhostStrategy.hpp"
@@ -18,12 +17,15 @@
 
 int main() {
 
-    sf::RenderWindow window{sf::VideoMode{CELL_SIZE * MAP_WIDTH, CELL_SIZE * MAP_HEIGHT}, "Pacman"};
+
+    sf::RenderWindow window{sf::VideoMode{{CELL_SIZE * MAP_WIDTH, CELL_SIZE * MAP_HEIGHT}}, "Pacman"};
     std::array<std::array<CELL, MAP_WIDTH>, MAP_HEIGHT> map{getMap()};
 
     // Create the frightened animation common to all ghosts
     sf::Texture frightTexture;
-    frightTexture.loadFromFile(FRIGHTENED_GHOST_SPRITE_FILE);
+    if (!frightTexture.loadFromFile(FRIGHTENED_GHOST_SPRITE_FILE))
+        throw std::runtime_error{"Failed to load Sprite: FRIGHTENED_GHOST_SPRITE_FILE"};
+
     sf::Vector2u textureSize{frightTexture.getSize()};
     unsigned int spriteHeight {textureSize.y / FRIGHTENED_GHOST_SPRITE_ROWS};
     unsigned int spriteWidth {textureSize.x / FRIGHTENED_GHOST_SPRITE_COLS};
@@ -70,14 +72,9 @@ int main() {
         // Get time elapsed
         deltaTime = clk.restart().asSeconds();
 
-        sf::Event evnt;
-        while (window.pollEvent(evnt)) {
-            switch (evnt.type) {
-                case sf::Event::Closed: {
-                    window.close();
-                    break;
-                } default: {}
-            }
+        while (auto evnt = window.pollEvent()) {
+            if (evnt->is<sf::Event::Closed>())
+                window.close();
         }
 
         // Update the ghost manager

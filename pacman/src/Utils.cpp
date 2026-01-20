@@ -36,11 +36,15 @@ bool renderWorld(
             } else if (map[i][j] == CELL::PELLET) {
                 pelletExists = true;
                 food.setPosition(i, j);
-                food.setTextureRect({0, 0, static_cast<int>(food.getWidth()), static_cast<int>(food.getHeight())});
+                sf::IntRect rect {{0, 0}, {static_cast<int>(food.getWidth()), 
+                    static_cast<int>(food.getHeight())}};
+                food.setTextureRect(rect);
                 food.draw(window);
             } else if (map[i][j] == CELL::ENERGIZER) {
                 food.setPosition(i, j);
-                food.setTextureRect({static_cast<int>(food.getWidth()), 0, static_cast<int>(food.getWidth()), static_cast<int>(food.getHeight())});
+                sf::IntRect rect {{static_cast<int>(food.getWidth()), 0}, 
+                    {static_cast<int>(food.getWidth()), static_cast<int>(food.getHeight())}};
+                food.setTextureRect(rect);
                 food.draw(window);
             }
         }

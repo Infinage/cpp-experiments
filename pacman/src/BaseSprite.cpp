@@ -4,9 +4,12 @@
 #include "../include/BaseSprite.hpp"
 #include "../include/Utils.hpp"
 
-BaseSprite::BaseSprite(const char* SPRITE_FILE, unsigned int rows, unsigned int cols, float speed): speed(speed) {
+BaseSprite::BaseSprite(const char* SPRITE_FILE, unsigned int rows, unsigned int cols, float speed): 
+    body{texture}, speed(speed) 
+{
     // Load the sprite texture
-    texture.loadFromFile(SPRITE_FILE);
+    if (!texture.loadFromFile(SPRITE_FILE))
+        throw std::runtime_error{"Failed to load sprite texture"};
     body.setTexture(texture);
 
     // Set the appropriate scale
@@ -15,11 +18,11 @@ BaseSprite::BaseSprite(const char* SPRITE_FILE, unsigned int rows, unsigned int 
     scaleY = static_cast<float>(CELL_SIZE) / static_cast<float>(spriteHeight);
     spriteWidth = textureSize.x / cols;
     scaleX = static_cast<float>(CELL_SIZE) / static_cast<float>(spriteWidth);
-    body.setScale(scaleX, scaleY);
+    body.setScale({scaleX, scaleY});
 }
 
 void BaseSprite::setPosition(std::size_t row, std::size_t col) { 
-    body.setPosition(static_cast<float>(col * CELL_SIZE), static_cast<float>(row * CELL_SIZE)); 
+    body.setPosition({static_cast<float>(col * CELL_SIZE), static_cast<float>(row * CELL_SIZE)}); 
 }
 
 std::pair<std::size_t, std::size_t> BaseSprite::getPosition() const {
