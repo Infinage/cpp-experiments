@@ -1,62 +1,40 @@
-cmake_minimum_required(VERSION 3.1...3.14)
-project(webdriverxx LANGUAGES CXX)
+cmake_minimum_required(VERSION 3.28)
+project(webdriverxx VERSION 0.0.1 LANGUAGES CXX)
 
 # Set C++ standard
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
-
-# Enable testing at the root level
-enable_testing()
-
-# Include directories
-include_directories(include)
-
-# Generate compile_commands.json for clangd
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-# Set CPPLIB root directory
-set(CPPLIB_DIR "$ENV{HOME}/cpplib")
-set(CPPLIB_REPOS_DIR "${CPPLIB_DIR}/repos")
+# Options for consumers
+option(WEBDRIVERXX_BUILD_TESTS "Build webdriverxx tests" OFF)
+option(WEBDRIVERXX_BUILD_EXAMPLES "Build webdriverxx examples" OFF)
 
-# Check if CPR is available in ~/cpplib (specify custom dir if already built)
-find_library(CPR_LIB NAMES cpr PATHS "${CPPLIB_DIR}/lib" NO_DEFAULT_PATH)
-find_path(CPR_INCLUDE_DIR NAMES cpr/cpr.h PATHS "${CPPLIB_DIR}/include" NO_DEFAULT_PATH)
+file(
+  DOWNLOAD
+  https://github.com/cpm-cmake/CPM.cmake/releases/download/v0.42.1/CPM.cmake
+  ${CMAKE_CURRENT_BINARY_DIR}/cmake/CPM.cmake
+  EXPECTED_HASH SHA256=f3a6dcc6a04ce9e7f51a127307fa4f699fb2bade357a8eb4c5b45df76e1dc6a5
+)
 
-if (CPR_LIB AND CPR_INCLUDE_DIR)
-    message(STATUS "Using prebuilt CPR from ${CPPLIB_DIR}")
-    add_library(cpr::cpr INTERFACE IMPORTED)
-    set_target_properties(cpr::cpr PROPERTIES
-        INTERFACE_INCLUDE_DIRECTORIES "${CPR_INCLUDE_DIR}"
-        INTERFACE_LINK_LIBRARIES "${CPR_LIB}"
-    )
-else()
-    message(STATUS "CPR not found in ${CPPLIB_DIR}, fetching from GitHub...")
-    include(FetchContent)
-    FetchContent_Declare(cpr 
-        GIT_REPOSITORY https://github.com/libcpr/cpr.git
-        GIT_TAG 1.11.2
-    )
-    FetchContent_MakeAvailable(cpr)
-endif()
+include(${CMAKE_CURRENT_BINARY_DIR}/cmake/CPM.cmake)
+CPMAddPackage("gh:yhirose/cpp-httplib@0.30.1")
+CPMAddPackage("gh:nlohmann/json@3.12.0")
 
 # Define `webdriverxx` as an INTERFACE library
 add_library(webdriverxx INTERFACE)
-
-# Link libraries
-target_link_libraries(webdriverxx INTERFACE cpr::cpr)
-
-# Install headers and binary inside the build folder
-set(CMAKE_INSTALL_PREFIX ${CMAKE_BINARY_DIR}/install)
-
-install(DIRECTORY ${CMAKE_SOURCE_DIR}/include/
-    DESTINATION ${CMAKE_INSTALL_PREFIX}/include
-    FILES_MATCHING PATTERN "*.hpp")
-
-install(TARGETS webdriverxx
-    RUNTIME DESTINATION ${CMAKE_INSTALL_PREFIX}/bin)
+add_library(webdriverxx::webdriverxx ALIAS webdriverxx)
+target_include_directories(webdriverxx INTERFACE include)
+target_link_libraries(webdriverxx INTERFACE httplib::httplib nlohmann_json::nlohmann_json)
+set_target_properties(webdriverxx PROPERTIES VERSION ${PROJECT_VERSION})
 
 # Include tests
-add_subdirectory(tests)
+if (WEBDRIVERXX_BUILD_TESTS)
+    include(CTest)
+    add_subdirectory(tests)
+endif()
 
 # Include examples
-add_subdirectory(examples)
+if (WEBDRIVERXX_BUILD_EXAMPLES)
+    add_subdirectory(examples)
+endif()

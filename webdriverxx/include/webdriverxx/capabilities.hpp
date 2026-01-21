@@ -8,7 +8,7 @@ using json = nlohmann::json;
 
 namespace webdriverxx {
 
-    enum BROWSERS {MSEDGE, CHROME, FIREFOX};
+    enum class BROWSERS {MSEDGE, CHROME, FIREFOX};
 
     class Capabilities {
         private:

@@ -3,6 +3,7 @@
 #include "utils.hpp"
 #include "rect.hpp"
 #include "base64.hpp"
+#include <fstream>
 #include <stdexcept>
 
 using json = nlohmann::json;

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "cpr/api.h"
+#include "httplib.h"
 #include "json.hpp"
 
 #include "apierror.hpp"
@@ -10,12 +10,7 @@
 #include <locale>
 #include <thread>
 
-using json = nlohmann::json;
-
 namespace webdriverxx {
-
-    const cpr::Header HEADER_ACC_RECV_JSON {{"Content-Type", "application/json"}, {"Accept", "application/json"}};
-
     enum LOCATION_STRATEGY {CSS, TAGNAME, XPATH};
     enum API_METHOD {GET, POST, DELETE};
 
@@ -72,30 +67,47 @@ namespace webdriverxx {
         return false;
     }
 
-    inline json sendRequest(
+    inline nlohmann::json sendRequest(
         const API_METHOD &requestType, 
-        const std::string &url, 
+        const std::string &url,
         const std::string &body = "{}", 
         const long OK = 200, bool ignoreError = false
     ) {
-        cpr::Response response;
+        // Parse the URL into host + path
+        auto pos = url.find("://");
+        if (pos == std::string::npos) 
+            throw std::runtime_error("Invalid URL: " + url);
+
+        auto slash_pos = url.find('/', pos + 3); // Skip "://"
+        std::string host = url.substr(pos + 3, slash_pos - pos - 3);
+        std::string path = url.substr(slash_pos);
+
+        // Setup client and placeholder for result
+        httplib::Client cli{host.c_str()};
+        httplib::Result res;
+
         switch (requestType) {
             case API_METHOD::GET:
-                response = cpr::Get(cpr::Url(url), HEADER_ACC_RECV_JSON);
+                res = cli.Get(path.c_str(), httplib::Headers{{"Accept", "application/json"}});
                 break;
             case API_METHOD::POST:
-                response = cpr::Post(cpr::Url(url), cpr::Body{body}, HEADER_ACC_RECV_JSON);
+                res = cli.Post(path.c_str(), body, "application/json");
                 break;
             case API_METHOD::DELETE:
-                response = cpr::Delete(cpr::Url(url), HEADER_ACC_RECV_JSON);
+                res = cli.Delete(path.c_str(), httplib::Headers{{"Accept", "application/json"}});
                 break;
         }
 
-        if (response.status_code != OK && !ignoreError) {
-            std::string methodStr {requestType == GET? "GET": requestType == POST? "POST": "DELETE"};
-            throw APIError{url, body, methodStr, response.status_code, response.text};
-        } else {
-            return json::parse(response.text);
+        if (!res) {
+            if (!ignoreError) throw APIError{url, body, "httplib failure", 0, ""};
+            return {};
         }
+
+        if (res->status != OK && !ignoreError) {
+            std::string methodStr {requestType == GET ? "GET" : requestType == POST ? "POST" : "DELETE"};
+            throw APIError{url, body, methodStr, res->status, res->body};
+        }
+
+        return nlohmann::json::parse(res->body);
     }
 }

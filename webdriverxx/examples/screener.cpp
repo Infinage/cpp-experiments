@@ -4,7 +4,7 @@ namespace fs = std::filesystem;
 using namespace webdriverxx;
 
 // Specify Browser type, Location and driver port
-auto browserType = CHROME;
+auto browserType = BROWSERS::CHROME;
 auto browserPath = "C:/Program Files/Google/Chrome/Application/chrome.exe";
 auto driverPort = "1000";
 
