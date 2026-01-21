@@ -99,7 +99,7 @@ namespace Redis {
     bool Cache::save(const std::string &fname) {
         // Remove the expired keys - SNAPSHOT TIME
         unsigned long TS {timeSinceEpoch()};
-        for (std::unordered_map<const std::string, std::unique_ptr<RedisNode>>::iterator it {cache.begin()}; it != cache.end();) {
+        for (auto it {cache.begin()}; it != cache.end();) {
             if (ttl.find(it->first) != ttl.end() && ttl[it->first] < TS) {
                 ttl.erase(it->first);
                 it = cache.erase(it);

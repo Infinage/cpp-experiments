@@ -25,13 +25,13 @@ namespace Redis {
             static void closeSockets(int);
 
             // Init Server socket
-            int initServer(const char* serverIP, const int serverPort, int serverBacklog);
+            int initServer(const char* serverIP, const uint16_t serverPort, int serverBacklog);
 
             // Create poll request from socketInfo
             std::vector<pollfd> createPollInput();
 
         public:
-            Server(const char* serverIP, const int serverPort, int serverBacklog, const char* dbFP);
+            Server(const char* serverIP, const uint16_t serverPort, int serverBacklog, const char* dbFP);
             int getServerFD() const;
             void run();
     };

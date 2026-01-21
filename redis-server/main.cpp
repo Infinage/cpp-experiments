@@ -9,7 +9,7 @@ int main(int argc, char **argv) {
         return 1;
     } 
 
-    int PORT;
+    uint16_t PORT;
     if (argc != 2) PORT = 6379;
     else {
         std::from_chars_result parseResult {std::from_chars(argv[1], argv[1] + std::strlen(argv[1]), PORT)};
@@ -17,7 +17,7 @@ int main(int argc, char **argv) {
             std::cerr << "Not a valid port.\n";
             return 1;
         }
-    } 
+    }
 
     constexpr const char* SERVER_IP {"0.0.0.0"};
     constexpr const char* DB_SAVE_FP {"dump.rdb"};

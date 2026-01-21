@@ -100,7 +100,7 @@ namespace Redis {
         return currPos == 0;
     }
 
-    int Server::initServer(const char* serverIP, const int serverPort, int serverBacklog) {
+    int Server::initServer(const char* serverIP, const uint16_t serverPort, int serverBacklog) {
         // Create sockaddr struct for port + IP binding
         sockaddr_in serverAddr;
         serverAddr.sin_family = AF_INET;
@@ -155,7 +155,7 @@ namespace Redis {
         return result;
     }
     
-    Server::Server(const char* serverIP, const int serverPort, int serverBacklog, const char* dbFP): 
+    Server::Server(const char* serverIP, const uint16_t serverPort, int serverBacklog, const char* dbFP): 
         handler(dbFP) {
 
         // Initialize server socket and start listening
