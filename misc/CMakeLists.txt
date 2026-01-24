@@ -1,4 +1,3 @@
-# TODO: Can we scope the target links?
 cmake_minimum_required(VERSION 3.27)
 project(InfinageProjects LANGUAGES CXX)
 
@@ -54,9 +53,14 @@ endif()
 
 # mandelbrot (requires SFML)
 if("mandelbrot" IN_LIST BUILD_LIST)
+    find_package(OpenMP REQUIRED)
     CPMAddPackage("gh:SFML/SFML#3.0.2")
     add_executable(mandelbrot mandelbrot.cpp)
-    target_link_libraries(mandelbrot PRIVATE SFML::Graphics SFML::Window SFML::System)
+    target_compile_options(mandelbrot PRIVATE -march=native -ffast-math)
+    target_link_libraries(mandelbrot PRIVATE 
+        SFML::Graphics SFML::Window SFML::System 
+        OpenMP::OpenMP_CXX
+    )
 endif()
 
 # grid2png (requires SFML)
