@@ -59,7 +59,7 @@ Calc::Tokenizer::tokenize(std::string_view input) const {
 
             default:
                 return std::unexpected{"Invalid character: '" + std::string{ch} 
-                    + "' @ index: " + std::to_string(idx)};
+                    + "' at index: " + std::to_string(idx)};
         }
     }
 

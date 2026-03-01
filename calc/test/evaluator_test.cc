@@ -61,5 +61,5 @@ TEST(Evaluator, InvalidFinalStack) {
     std::vector<Calc::Token> postfix{{TT::Num, 1}, {TT::Num, 2}};
     auto res = evaluator.eval(postfix);
     ASSERT_FALSE(res.has_value());
-    ASSERT_EQ(res.error(), "Invalid postfix sequence");
+    ASSERT_EQ(res.error(), "Invalid input sequence");
 }

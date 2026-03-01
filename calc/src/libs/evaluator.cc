@@ -29,7 +29,7 @@ Calc::Evaluator::eval(std::span<Token> postfix) const {
     }
 
     if (stack.size() != 1) 
-        return std::unexpected{"Invalid postfix sequence"};
+        return std::unexpected{"Invalid input sequence"};
 
     return stack.top();
 }
