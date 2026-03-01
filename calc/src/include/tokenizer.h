@@ -1,17 +1,13 @@
 #pragma once
 
+#include "token.h"
+
 #include <expected>
-#include <optional>
 #include <unordered_map>
 #include <vector>
 #include <string>
 
 namespace Calc {
-    struct Token {
-        enum class TokenType {Num, Open, Close, Mul, Div, Add, Sub} type;
-        std::optional<double> number;
-    };
-
     /*
      * Given input string, return back a vector of parsed tokens
      * Valid tokens: numbers, operators [+,-,*,/], paranthesis, whitespace

@@ -8,11 +8,10 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 option(DEV_MODE "Developer Mode" OFF)
 message("Developer mode is ${DEV_MODE}")
 
-add_subdirectory(src)
-
 if (DEV_MODE)
     set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
-
     include(CTest)
     add_subdirectory(test)
 endif(DEV_MODE)
+
+add_subdirectory(src)

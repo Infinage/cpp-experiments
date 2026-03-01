@@ -8,7 +8,7 @@ Calc::Tokenizer::processToken(std::string_view raw) const {
 
     auto it = validTokens.find(raw);
     if (it != validTokens.end())
-        return Token{it->second, std::nullopt};
+        return Token{it->second};
 
     double value;
     auto [ptr, ec] = std::from_chars(raw.begin(), raw.end(), value);
@@ -23,7 +23,8 @@ Calc::Tokenizer::tokenize(std::string_view input) const {
     std::vector<Token> tokens;
     std::string acc;
 
-    for (char ch: input) {
+    for (auto idx = 0ul; idx < input.size(); ++idx) {
+        char ch = input.at(idx);
         switch (ch) {
             case '0': case '1': case '2': case '3': case '4': case '5':
             case '6': case '7': case '8': case '9': case '.': {
@@ -57,7 +58,8 @@ Calc::Tokenizer::tokenize(std::string_view input) const {
             }
 
             default:
-                return std::unexpected{"Invalid character: '" + std::string{ch} + "'"};
+                return std::unexpected{"Invalid character: '" + std::string{ch} 
+                    + "' @ index: " + std::to_string(idx)};
         }
     }
 

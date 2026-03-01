@@ -7,5 +7,9 @@ FetchContent_MakeAvailable(googletest)
 add_executable(tokenizerTest tokenizer_test.cc)
 target_link_libraries(tokenizerTest PRIVATE tokenizer GTest::gtest_main)
 
+add_executable(parserTest parser_test.cc)
+target_link_libraries(parserTest PRIVATE parser GTest::gtest_main)
+
 include(GoogleTest)
 gtest_discover_tests(tokenizerTest)
+gtest_discover_tests(parserTest)
