@@ -52,7 +52,7 @@ namespace async {
 
                                 // We have finished one task, notify all waiters
                                 {
-                                    std::lock_guard lock(taskMutex);
+                                    std::scoped_lock lock(taskMutex);
                                     --activeTasks;
                                 }
                                 completedCV.notify_all();
@@ -74,7 +74,7 @@ namespace async {
                 using R = std::invoke_result_t<Fn>;
                 std::packaged_task<R()> task{std::forward<Fn>(fn)};
                 std::future<R> future = task.get_future();
-                std::lock_guard lock(taskMutex);
+                std::scoped_lock lock(taskMutex);
                 tasks.emplace(std::move(task));
                 tasksCV.notify_one();
                 return future;
