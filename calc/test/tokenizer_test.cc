@@ -2,6 +2,7 @@
 #include <gtest/gtest.h>
 
 Calc::Tokenizer tokenizer;
+using TT = Calc::Token::TokenType;
 
 TEST(Tokenizer, Empty) {
     auto tok = tokenizer.processToken("");
@@ -31,14 +32,14 @@ TEST(Tokenizer, NoSpaces) {
     ASSERT_EQ(toks.value().size(), 3);
 
     auto tok1 = toks.value().at(0);
-    ASSERT_EQ(tok1.type, Calc::Token::TokenType::Num);
+    ASSERT_EQ(tok1.type, TT::Num);
     ASSERT_EQ(tok1.number, 1.);
 
     auto tok2 = toks.value().at(1);
-    ASSERT_EQ(tok2.type, Calc::Token::TokenType::Add);
+    ASSERT_EQ(tok2.type, TT::Add);
 
     auto tok3 = toks.value().at(2);
-    ASSERT_EQ(tok3.type, Calc::Token::TokenType::Num);
+    ASSERT_EQ(tok3.type, TT::Num);
     ASSERT_EQ(tok3.number, 2.);
 }
 
@@ -49,21 +50,21 @@ TEST(Tokenizer, MixedSpaces) {
         auto &vals = toks.value();
 
         ASSERT_EQ(vals.size(), 5);
-        ASSERT_EQ(vals.at(0).type, Calc::Token::TokenType::Num);
+        ASSERT_EQ(vals.at(0).type, TT::Num);
         ASSERT_TRUE(vals.at(0).number.has_value());
         ASSERT_EQ(vals.at(0).number.value(), 12.);
 
-        ASSERT_EQ(vals.at(1).type, Calc::Token::TokenType::Num);
+        ASSERT_EQ(vals.at(1).type, TT::Num);
         ASSERT_TRUE(vals.at(1).number.has_value());
         ASSERT_EQ(vals.at(1).number.value(), 91.);
 
-        ASSERT_EQ(vals.at(2).type, Calc::Token::TokenType::Add);
+        ASSERT_EQ(vals.at(2).type, TT::Add);
 
-        ASSERT_EQ(vals.at(3).type, Calc::Token::TokenType::Num);
+        ASSERT_EQ(vals.at(3).type, TT::Num);
         ASSERT_TRUE(vals.at(3).number.has_value());
         ASSERT_EQ(vals.at(3).number.value(), 1.);
 
-        ASSERT_EQ(vals.at(4).type, Calc::Token::TokenType::Num);
+        ASSERT_EQ(vals.at(4).type, TT::Num);
         ASSERT_TRUE(vals.at(4).number.has_value());
         ASSERT_EQ(vals.at(4).number.value(), 3.);
     }
@@ -74,11 +75,11 @@ TEST(Tokenizer, MixedSpaces) {
         auto &vals = toks.value(); 
 
         ASSERT_EQ(vals.size(), 3); 
-        ASSERT_EQ(vals[0].type, Calc::Token::TokenType::Num); 
+        ASSERT_EQ(vals[0].type, TT::Num); 
         ASSERT_EQ(vals[0].number.value(), 12.); 
 
-        ASSERT_EQ(vals[1].type, Calc::Token::TokenType::Add); 
-        ASSERT_EQ(vals[2].type, Calc::Token::TokenType::Num); 
+        ASSERT_EQ(vals[1].type, TT::Add); 
+        ASSERT_EQ(vals[2].type, TT::Num); 
         ASSERT_EQ(vals[2].number.value(), 3.);
     }
 }
@@ -103,17 +104,17 @@ TEST(Tokenizer, Parentheses) {
     auto &vals = toks.value();
     ASSERT_EQ(vals.size(), 7);
 
-    ASSERT_EQ(vals[0].type, Calc::Token::TokenType::Open);
-    ASSERT_EQ(vals[1].type, Calc::Token::TokenType::Num);
+    ASSERT_EQ(vals[0].type, TT::Open);
+    ASSERT_EQ(vals[1].type, TT::Num);
     ASSERT_EQ(vals[1].number.value(), 1.);
 
-    ASSERT_EQ(vals[2].type, Calc::Token::TokenType::Add);
-    ASSERT_EQ(vals[3].type, Calc::Token::TokenType::Num);
+    ASSERT_EQ(vals[2].type, TT::Add);
+    ASSERT_EQ(vals[3].type, TT::Num);
     ASSERT_EQ(vals[3].number.value(), 2.);
 
-    ASSERT_EQ(vals[4].type, Calc::Token::TokenType::Close);
-    ASSERT_EQ(vals[5].type, Calc::Token::TokenType::Mul);
-    ASSERT_EQ(vals[6].type, Calc::Token::TokenType::Num);
+    ASSERT_EQ(vals[4].type, TT::Close);
+    ASSERT_EQ(vals[5].type, TT::Mul);
+    ASSERT_EQ(vals[6].type, TT::Num);
     ASSERT_EQ(vals[6].number.value(), 3.);
 }
 
@@ -123,17 +124,17 @@ TEST(Tokenizer, FloatingPointNumbers) {
     auto &vals = toks.value();
     ASSERT_EQ(vals.size(), 5);
 
-    ASSERT_EQ(vals[0].type, Calc::Token::TokenType::Num);
+    ASSERT_EQ(vals[0].type, TT::Num);
     ASSERT_DOUBLE_EQ(vals[0].number.value(), 3.14);
 
-    ASSERT_EQ(vals[1].type, Calc::Token::TokenType::Add);
+    ASSERT_EQ(vals[1].type, TT::Add);
 
-    ASSERT_EQ(vals[2].type, Calc::Token::TokenType::Num);
+    ASSERT_EQ(vals[2].type, TT::Num);
     ASSERT_DOUBLE_EQ(vals[2].number.value(), 0.001);
 
-    ASSERT_EQ(vals[3].type, Calc::Token::TokenType::Sub);
+    ASSERT_EQ(vals[3].type, TT::Sub);
 
-    ASSERT_EQ(vals[4].type, Calc::Token::TokenType::Num);
+    ASSERT_EQ(vals[4].type, TT::Num);
     ASSERT_DOUBLE_EQ(vals[4].number.value(), 2.0);
 }
 
@@ -142,7 +143,7 @@ TEST(Tokenizer, EdgeNumbers) {
         auto toks = tokenizer.tokenize(inp);
         ASSERT_TRUE(toks.has_value()) << "Input: " << inp;
         ASSERT_EQ(toks.value().size(), 1);
-        ASSERT_EQ(toks.value()[0].type, Calc::Token::TokenType::Num);
+        ASSERT_EQ(toks.value()[0].type, TT::Num);
     }
 }
 
@@ -152,8 +153,8 @@ TEST(Tokenizer, EmptyParentheses) {
     auto &vals = toks.value();
     ASSERT_EQ(vals.size(), 2);
 
-    ASSERT_EQ(vals[0].type, Calc::Token::TokenType::Open);
-    ASSERT_EQ(vals[1].type, Calc::Token::TokenType::Close);
+    ASSERT_EQ(vals[0].type, TT::Open);
+    ASSERT_EQ(vals[1].type, TT::Close);
 
     toks = tokenizer.tokenize("(())");
     ASSERT_TRUE(toks.has_value()) << "Error: " << toks.error();

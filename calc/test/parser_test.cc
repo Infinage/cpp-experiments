@@ -87,11 +87,8 @@ TEST(Parser, ImbalancedParentheses) {
 }
 
 TEST(Parser, ComplexExpression) {
-    using T = Calc::Token;
-    using TT = Calc::Token::TokenType;
-
     //  3 + 4 * 2 / ( 1 - 5 )
-    std::vector<T> input{
+    std::vector<Calc::Token> input{
         {TT::Num, 3.0},
         {TT::Add},
         {TT::Num, 4.0},

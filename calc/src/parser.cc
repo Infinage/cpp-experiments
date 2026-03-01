@@ -5,7 +5,7 @@ std::expected<std::vector<Calc::Token>, std::string>
 Calc::Parser::parse(std::span<Token> tokens) const {
     std::vector<Token> result;
     std::stack<Token> stack;
-    for (auto token: tokens) {
+    for (auto &token: tokens) {
         if (token.type == Token::TokenType::Num)
             result.push_back(token);
         else if (token.type == Token::TokenType::Close) {
