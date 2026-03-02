@@ -1,6 +1,7 @@
 # Features to include:
 1. Doxygen
 2. clangtidy + linting
-3. CPack
-4. Docker
-5. Modules support?
+4. CPack
+5. Docker
+6. Nix flake files?
+7. Modules support?

@@ -16,8 +16,35 @@ target_link_libraries(evaluatorTest PRIVATE evaluator GTest::gtest_main)
 add_executable(calculatorTest calculator_test.cc)
 target_link_libraries(calculatorTest PRIVATE calculator GTest::gtest_main)
 
+# With below we auto generate .gcda files for coverage
 include(GoogleTest)
 gtest_discover_tests(tokenizerTest)
 gtest_discover_tests(parserTest)
 gtest_discover_tests(evaluatorTest)
 gtest_discover_tests(calculatorTest)
+
+# Produce coverage report
+find_program(GCOVR_PATH gcovr)
+if(GCOVR_PATH)
+    add_custom_target(coverage
+        COMMAND ${CMAKE_COMMAND} -E echo "Cleaning old coverage data..."
+        COMMAND find ${CMAKE_BINARY_DIR} -name "*.gcda" -delete
+
+        COMMAND ${CMAKE_COMMAND} -E echo "Running tests..."
+        COMMAND ctest --output-on-failure
+
+        COMMAND ${CMAKE_COMMAND} -E echo "Generating coverage..."
+        COMMAND ${GCOVR_PATH} -r ${CMAKE_SOURCE_DIR} --html --html-details
+            --html-single-page --decisions --calls --html-theme github.dark-green 
+            -o ${CMAKE_SOURCE_DIR}/coverage.html
+
+        WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+        BYPRODUCTS ${CMAKE_SOURCE_DIR}/coverage
+        DEPENDS tokenizerTest parserTest evaluatorTest calculatorTest
+    )
+else()
+    add_custom_target(coverage
+        COMMAND ${CMAKE_COMMAND} -E echo "gcovr not found!"
+        COMMAND ${CMAKE_COMMAND} -E false
+    )
+endif()

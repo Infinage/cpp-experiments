@@ -81,9 +81,14 @@ TEST(Parser, Parentheses) {
 
 TEST(Parser, ImbalancedParentheses) {
     std::vector<Calc::Token> infix {{TT::Open}, {TT::Num,1}, {TT::Add}, {TT::Num,2}};
-    auto res = parser.parse(infix);
-    ASSERT_FALSE(res.has_value());
-    ASSERT_EQ(res.error(), "Imbalanced paranthesis");
+    auto res1 = parser.parse(infix);
+    ASSERT_FALSE(res1.has_value());
+    ASSERT_EQ(res1.error(), "Imbalanced paranthesis");
+
+    infix = {{TT::Num,1}, {TT::Add}, {TT::Num,2}, {TT::Close}};
+    auto res2 = parser.parse(infix);
+    ASSERT_FALSE(res2.has_value());
+    ASSERT_EQ(res2.error(), "Imbalanced paranthesis");
 }
 
 TEST(Parser, ComplexExpression) {
