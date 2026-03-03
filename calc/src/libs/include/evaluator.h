@@ -6,9 +6,11 @@
 #include <span>
 #include <string>
 
-namespace Calc {
-    class Evaluator {
-        public:
-            std::expected<double, std::string> eval(std::span<Token> postfix) const;    
-    };
-}
+namespace Calc
+{
+class Evaluator
+{
+public:
+  std::expected<double, std::string> eval(std::span<Token> postfix) const;
+};
+} // namespace Calc

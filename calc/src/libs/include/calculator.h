@@ -4,14 +4,16 @@
 #include "parser.h"
 #include "tokenizer.h"
 
-namespace Calc {
-    class Calculator {
-        public:
-            std::expected<double, std::string> compute(std::string_view expr) const;
+namespace Calc
+{
+class Calculator
+{
+public:
+  std::expected<double, std::string> compute(std::string_view expr) const;
 
-        private:
-            Tokenizer tokenizer;
-            Parser parser;
-            Evaluator evaluator;
-    };
-}
+private:
+  Tokenizer tokenizer;
+  Parser parser;
+  Evaluator evaluator;
+};
+} // namespace Calc
