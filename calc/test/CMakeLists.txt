@@ -40,11 +40,7 @@ if(GCOVR_PATH)
 
         WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
         BYPRODUCTS ${CMAKE_SOURCE_DIR}/coverage
-        DEPENDS tokenizerTest parserTest evaluatorTest calculatorTest
-    )
+        DEPENDS tokenizerTest parserTest evaluatorTest calculatorTest)
 else()
-    add_custom_target(coverage
-        COMMAND ${CMAKE_COMMAND} -E echo "gcovr not found!"
-        COMMAND ${CMAKE_COMMAND} -E false
-    )
+    add_custom_target(coverage COMMAND false COMMENT "Gcovr not found")
 endif()
