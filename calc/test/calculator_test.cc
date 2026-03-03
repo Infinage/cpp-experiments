@@ -63,5 +63,5 @@ TEST(Calculator, ImbalancedParentheses)
 {
   auto res = calculator.compute("(1+2");
   ASSERT_FALSE(res.has_value());
-  ASSERT_EQ(res.error(), "Imbalanced paranthesis");
+  ASSERT_EQ(res.error(), "Imbalanced parentheses");
 }

@@ -20,7 +20,7 @@ Calc::Parser::parse(std::span<Token> tokens) const
         matched = curr.type == Token::TokenType::Open;
         if (!matched) result.push_back(curr);
       }
-      if (!matched) return std::unexpected{"Imbalanced paranthesis"};
+      if (!matched) return std::unexpected{"Imbalanced parentheses"};
     }
     else
     {
@@ -39,7 +39,7 @@ Calc::Parser::parse(std::span<Token> tokens) const
     result.push_back(stack.top());
     stack.pop();
     if (result.back().type == Token::TokenType::Open)
-      return std::unexpected{"Imbalanced paranthesis"};
+      return std::unexpected{"Imbalanced parentheses"};
   }
 
   return result;

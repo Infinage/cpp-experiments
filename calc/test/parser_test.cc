@@ -84,12 +84,12 @@ TEST(Parser, ImbalancedParentheses)
       {TT::Open}, {TT::Num, 1}, {TT::Add}, {TT::Num, 2}};
   auto res1 = parser.parse(infix);
   ASSERT_FALSE(res1.has_value());
-  ASSERT_EQ(res1.error(), "Imbalanced paranthesis");
+  ASSERT_EQ(res1.error(), "Imbalanced parentheses");
 
   infix = {{TT::Num, 1}, {TT::Add}, {TT::Num, 2}, {TT::Close}};
   auto res2 = parser.parse(infix);
   ASSERT_FALSE(res2.has_value());
-  ASSERT_EQ(res2.error(), "Imbalanced paranthesis");
+  ASSERT_EQ(res2.error(), "Imbalanced parentheses");
 }
 
 TEST(Parser, ComplexExpression)
