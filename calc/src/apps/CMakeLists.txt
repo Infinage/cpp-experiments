@@ -6,5 +6,9 @@ FetchContent_Declare(webview
     GIT_REPOSITORY https://github.com/webview/webview
     GIT_TAG 9a608c2ce21521f2e1006df2003970cf02871ede)
 FetchContent_MakeAvailable(webview)
+
 add_executable(calc-gui calc_gui.cc)
 target_link_libraries(calc-gui PRIVATE calculator webview::core)
+
+# Tie executables to an export target
+install(TARGETS calc calc-gui RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})

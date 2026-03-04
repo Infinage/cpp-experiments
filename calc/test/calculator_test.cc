@@ -1,4 +1,4 @@
-#include "calculator.h"
+#include "calc/calculator.h"
 #include <gtest/gtest.h>
 
 Calc::Calculator calculator;

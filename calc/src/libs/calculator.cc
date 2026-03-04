@@ -1,4 +1,4 @@
-#include "calculator.h"
+#include "calc/calculator.h"
 
 std::expected<double, std::string>
 Calc::Calculator::compute(std::string_view expr) const

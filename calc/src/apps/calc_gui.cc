@@ -1,5 +1,5 @@
 // WEBKIT_DISABLE_COMPOSITING_MODE=1 ./build/src/apps/calc-gui
-#include "calculator.h"
+#include "calc/calculator.h"
 #include <webview/webview.h>
 
 #include <format>

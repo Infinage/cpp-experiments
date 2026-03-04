@@ -1,4 +1,4 @@
-#include "calculator.h"
+#include "calc/calculator.h"
 #include <iostream>
 
 int main(int argc, char **argv)

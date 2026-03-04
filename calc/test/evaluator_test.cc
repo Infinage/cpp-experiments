@@ -1,4 +1,4 @@
-#include "evaluator.h"
+#include "calc/evaluator.h"
 #include <gtest/gtest.h>
 
 Calc::Evaluator evaluator;
