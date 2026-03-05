@@ -8,10 +8,11 @@ set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-option(DEV_MODE "Developer Mode" OFF)
+option(CALC_DEV_MODE "Enable developer tooling" OFF)
+
 message("Build type is ${CMAKE_BUILD_TYPE}")
 
-if (DEV_MODE)
+if (CALC_DEV_MODE)
     message("Developer mode is enabled")
     set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
@@ -59,7 +60,32 @@ if (DEV_MODE)
 
     include(CTest)
     add_subdirectory(test)
-
-endif(DEV_MODE)
+endif(CALC_DEV_MODE)
 
 add_subdirectory(src)
+
+# Create CalcConfig.cmake file
+include(CMakePackageConfigHelpers)
+set(LIB_INSTALL_DIR ${CMAKE_INSTALL_LIBDIR}/cmake/calc)
+configure_package_config_file(
+    "${CMAKE_CURRENT_SOURCE_DIR}/cmake/CalcConfig.cmake.in"
+    "${CMAKE_CURRENT_BINARY_DIR}/CalcConfig.cmake"
+    INSTALL_DESTINATION ${LIB_INSTALL_DIR}
+    PATH_VARS LIB_INSTALL_DIR
+)
+
+# Create a CalcConfigVersion.cmake file
+write_basic_package_version_file(
+    "${CMAKE_CURRENT_BINARY_DIR}/CalcConfigVersion.cmake"
+    VERSION ${PROJECT_VERSION}
+    COMPATIBILITY SameMajorVersion
+)
+
+# Install export target under namespace, creates CalcTargets.cmake
+install(EXPORT CalcTargets NAMESPACE Calc:: DESTINATION ${LIB_INSTALL_DIR})
+
+# Install the config file to required path
+install(FILES 
+    "${CMAKE_CURRENT_BINARY_DIR}/CalcConfig.cmake" 
+    "${CMAKE_CURRENT_BINARY_DIR}/CalcConfigVersion.cmake" 
+    DESTINATION ${LIB_INSTALL_DIR})

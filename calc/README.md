@@ -1,5 +1,5 @@
 # TODO:
-- Version file + importable via find_package
+- Use configure_file
 - Minify docs to docs-sample
 - CPack + executable artifacts + installers
 - Python bindings
