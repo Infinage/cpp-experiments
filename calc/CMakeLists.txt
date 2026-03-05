@@ -89,3 +89,11 @@ install(FILES
     "${CMAKE_CURRENT_BINARY_DIR}/CalcConfig.cmake" 
     "${CMAKE_CURRENT_BINARY_DIR}/CalcConfigVersion.cmake" 
     DESTINATION ${LIB_INSTALL_DIR})
+
+# CPack config; Use: cpack -G "TGZ;DEB" -B packages
+set(CPACK_PACKAGE_NAME "Calculator")
+set(CPACK_PACKAGE_VENDOR "Naresh Jagadeesan")
+set(CPACK_PACKAGE_DESCRIPTION "A simple Calculator written in C++")
+set(CPACK_PACKAGE_CONTACT "37257700+Infinage@users.noreply.github.com")
+set(CPACK_GENERATOR TGZ) 
+include(CPack)

@@ -1,7 +1,6 @@
 # TODO:
 - Use configure_file
 - Minify docs to docs-sample
-- CPack + executable artifacts + installers
 - Python bindings
 - WASM build for javascript
 - Bindings for Rust / GO
