@@ -9,6 +9,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 option(CALC_DEV_MODE "Enable developer tooling" OFF)
+option(CALC_LANG_BINDINGS "Build language bindings" OFF)
 
 message("Build type is ${CMAKE_BUILD_TYPE}")
 
