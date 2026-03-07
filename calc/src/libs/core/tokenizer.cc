@@ -10,8 +10,10 @@ Calc::Tokenizer::processToken(std::string_view raw) const
   if (it != validTokens.end()) return Token{it->second};
 
   double value;
-  auto [ptr, ec] = std::from_chars(raw.begin(), raw.end(), value);
-  if (ec != std::errc{} || ptr != raw.end())
+  const char *start = raw.data(); 
+  const char *end = raw.data() + raw.size();
+  auto [ptr, ec] = std::from_chars(start, end, value);
+  if (ec != std::errc{} || ptr != end)
     return std::unexpected{"Not a valid number: '" + std::string{raw} + "'"};
 
   return Token{Token::TokenType::Num, value};
