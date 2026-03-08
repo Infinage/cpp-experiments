@@ -1,3 +1,6 @@
 [submodule "webdriverxx"]
 	path = webdriverxx
 	url = https://github.com/infinage/webdriverxx
+[submodule "calculator"]
+	path = calculator
+	url = https://github.com/infinage/calculator
