@@ -1,7 +1,0 @@
-BasedOnStyle: LLVM
-BreakBeforeBraces: Allman
-AllowShortIfStatementsOnASingleLine: true
-AllowShortFunctionsOnASingleLine: InlineOnly
-ColumnLimit: 80
-BinPackArguments: true
-KeepEmptyLinesAtTheStartOfBlocks: false
