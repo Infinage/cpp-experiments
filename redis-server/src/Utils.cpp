@@ -1,7 +1,7 @@
 #include <algorithm>
 #include <string>
 
-#include "../include/Utils.hpp"
+#include "Utils.hpp"
 
 namespace Redis {
     /* --------------- HELPER FUNCTIONS --------------- */

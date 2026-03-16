@@ -39,10 +39,12 @@ A lite version clone of Redis Server implemented in C++. This project supports c
 
 - Build and start the server in release mode:
 ```bash
-make
-./bin/server
+cmake -B build -DBUILD_TESTS=ON
+cmake --build build
+./bin/redis-server
 ```
-- Build and run the tests:
+
+- Run the tests:
 ```bash
-make test
+ctest --test-dir build
 ```

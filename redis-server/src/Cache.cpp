@@ -9,7 +9,7 @@
 #include <memory>
 #include <unordered_map>
 
-#include "../include/Cache.hpp"
+#include "Cache.hpp"
 
 namespace Redis {
 

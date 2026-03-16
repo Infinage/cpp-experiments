@@ -1,5 +1,5 @@
 #include "../networking/net.hpp"
-#include "../json-parser/json.hpp"
+#include "../json-parser/json/json.hpp"
 #include "../misc/CSVUtil.hpp"
 #include "../misc/sqlite.hpp"
 

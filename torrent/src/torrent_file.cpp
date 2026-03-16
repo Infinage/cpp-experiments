@@ -2,7 +2,7 @@
 #include "../include/torrent_file.hpp"
 
 #include "../../cryptography/hashlib.hpp"
-#include "../../json-parser/json.hpp"
+#include "../../json-parser/json/json.hpp"
 #include "../../misc/logger.hpp"
 
 #include <fstream>

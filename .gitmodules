@@ -4,3 +4,6 @@
 [submodule "calculator"]
 	path = calculator
 	url = https://github.com/infinage/calculator
+[submodule "ascii-art"]
+	path = ascii-art
+	url = https://github.com/infinage/ascii-art

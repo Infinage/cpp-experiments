@@ -32,7 +32,7 @@
 #include <openssl/ssl.h>
 #include <openssl/err.h>
 
-#include "../json-parser/json.hpp"
+#include "../json-parser/json/json.hpp"
 
 namespace net {
     // Abstracing SOCK_STREAM, SOCK_DGRAM; AF_INET, AF_INET6

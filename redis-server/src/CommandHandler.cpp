@@ -7,8 +7,8 @@
 #include <regex>
 #include <sstream>
 
-#include "../include/CommandHandler.hpp"
-#include "../include/Utils.hpp"
+#include "CommandHandler.hpp"
+#include "Utils.hpp"
 
 namespace Redis {
     CommandHandler::CommandHandler(const char* dbFP) {

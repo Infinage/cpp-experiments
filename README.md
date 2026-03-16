@@ -37,7 +37,7 @@ A growing collection of practical C++ projects — from system tools and network
 | `misc/threadPool.hpp`  | Custom thread pool supporting task queueing, worker control, and stateful execution.                          |
 | `misc/fnmatch.hpp`     | Filename matching utility similar to Python’s `fnmatch`.                                                      |
 | `misc/iniparser.hpp`   | INI config parser with an interface similar to Python’s `configparser`.                                       |
-| `json-parser/json.hpp` | Standalone JSON parser with object manipulation and validation support. First project; may be messy.          |
+| `json-parser/json/json.hpp` | Standalone JSON parser with object manipulation and validation support. First project; may be messy.          |
 | `networking/net.hpp`   | TCP/SSL sockets, serialization helpers, safer wrappers, and other goodies                                     |
 | `misc/tarfile.hpp`     | POSIX ustar-compatible TAR reader/writer with support for files, directories, symlinks, and metadata.         |
 | `misc/xml.hpp`         | Lightweight XML parser and serializer with DOM-style traversal and zero external dependencies.                |

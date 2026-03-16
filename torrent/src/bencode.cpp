@@ -1,6 +1,6 @@
 #include "../include/bencode.hpp"
 
-#include "../../json-parser/json.hpp"
+#include "../../json-parser/json/json.hpp"
 
 #include <sstream>
 #include <stack>

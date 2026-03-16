@@ -5,7 +5,8 @@
 #include <fstream>
 #include <sstream>
 #include <filesystem>
-#include "json.hpp"
+
+#include "json/json.hpp"
 
 bool validateFile(const std::string &fname) {
     // Read file

@@ -7,8 +7,8 @@
 #include <netinet/in.h>
 #include <sys/poll.h>
 
-#include "../include/Server.hpp"
-#include "../include/Utils.hpp"
+#include "Server.hpp"
+#include "Utils.hpp"
 
 // Init static variables for the server
 std::atomic<bool> Redis::Server::serverRunning {true};

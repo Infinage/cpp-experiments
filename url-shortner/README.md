@@ -1,6 +1,6 @@
 # URL Shortener
 
-Deployed on AWS Lightsail: http://url-shortner.deesa.space<br>
+Deployed on AWS Lightsail: http://url-shortner.infinage.space<br>
 Docker image: https://hub.docker.com/r/infinage/url-shortner
 
 This is a lightweight, in-memory URL shortener built entirely in C++ with no external dependencies. It uses sockets in async mode for network connectivity and a simple UI built with barebone HTML, CSS, and JavaScript.

@@ -2,7 +2,7 @@
 #include <memory>
 #include <vector>
 
-#include "../include/Node.hpp"
+#include "Node.hpp"
 
 int main() {
     // Sample Tests for Serialization

@@ -1,7 +1,8 @@
-#include "json.hpp"
 #include <fstream>
 #include <iostream>
 #include <string>
+
+#include "json/json.hpp"
 
 int main() {
     std::string fpath{"test/pass03.json"}, buffer{""}, raw{""};
